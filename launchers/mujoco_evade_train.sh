@@ -3,15 +3,15 @@
 cd ..
 
 mpirun -np $2 python -m algorithms.ddpg.run \
-    --cuda \
+    --no-cuda \
     --env_id=$1 \
     --seed=0 \
     --checkpoint_dir="data/checkpoints" \
-    --enable_visdom \
+    --no-enable_visdom \
     --visdom_dir="data/visdom" \
     --log_dir="data/logs" \
     --task="train" \
-    --algo="ad2d" \
+    --algo="evade" \
     --save_frequency=100 \
     --num_iters=10000000 \
     --training_steps_per_iter=20 \

@@ -122,7 +122,13 @@ class Critic(nn.Module):
         psi = self.psi_embedding(ob, ac)
         psi = psi.repeat(num_quantiles, 1)
         # Embed quantiles
-        batch_size, out_dim = ob.shape[0], ob.shape[-1]
+
+        # batch_size = torch.FloatTensor(ob.shape[0])
+        # out_dim = torch.FloatTensor(ob.shape[-1])
+
+        batch_size = ob.shape[0]
+        out_dim = ob.shape[-1]
+
         phi = self.phi_embedding(num_quantiles, out_dim, batch_size)
         # Multiply the embedding element-wise
         hadamard = psi * (1.0 + phi)
@@ -136,7 +142,11 @@ class Critic(nn.Module):
         return z
 
     def Q(self, ob, ac, num_quantiles):
+
+        # batch_size = torch.FloatTensor(ob.shape[0])
+
         batch_size = ob.shape[0]
+
         z = self.Z(ob, ac, num_quantiles).view(batch_size, num_quantiles)
         q = z.mean(dim=-1).view(batch_size, 1)
         return q
@@ -284,8 +294,8 @@ class EvadeAgent(object):
 
         # Place on cpu and collapse into one dimension
         # tau tilde
-        q = self.critic.Q(ob, ac, self.hps.num_tau_tilde).cpu().numpy().flatten()
-        ac = ac.cpu().numpy().flatten()
+        q = self.critic.Q(ob, ac, self.hps.num_tau_tilde).cpu().detach().numpy().flatten()
+        ac = ac.cpu().detach().numpy().flatten()
 
         if apply_noise and self.ac_noise is not None:
             # Apply additive action noise once the action has been predicted,
@@ -308,6 +318,7 @@ class EvadeAgent(object):
 
     def train(self, update_actor=True):
         """Train the agent"""
+
         # Get a batch of transitions from the replay buffer
         if self.hps.n_step_returns:
             batch = self.replay_buffer.lookahead_sample(self.hps.batch_size,
@@ -334,8 +345,7 @@ class EvadeAgent(object):
 
         if self.hps.enable_targ_actor_smoothing:
             n_ = torch.FloatTensor(mb.acs).data.normal_(0, self.hps.td3_std).to(self.device)
-            # n_ = n_.clamp(-self.hps.c, self.hps.c)
-            n_ = n_.clamp(-0.2, 0.2)
+            n_ = n_.clamp(-self.hps.c, self.hps.c)
             next_action = (self.targ_actor(next_state) + n_).clamp(-self.max_ac, self.max_ac)
         else:
             next_action = self.targ_actor(next_state)

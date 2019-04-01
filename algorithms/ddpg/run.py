@@ -11,7 +11,7 @@ from algorithms.helpers.experiment_initializer import ExperimentInitializer
 from algorithms.helpers.env_makers import make_env
 from algorithms.ddpg import orchestrator
 from algorithms.ddpg.ddpg_agent import DDPGAgent
-from algorithms.ddpg.ad2d_agent import EvadeAgent
+from algorithms.ddpg.evade_agent import EvadeAgent
 
 
 def train(args):
@@ -53,7 +53,7 @@ def train(args):
     if args.algo == 'ddpg':
         def agent_wrapper():
             return DDPGAgent(env=env, device=device, hps=args, comm=comm)
-    elif args.algo == 'ad2d':
+    elif args.algo == 'evade':
         def agent_wrapper():
             return EvadeAgent(env=env, device=device, hps=args, comm=comm)
     else:
@@ -138,7 +138,7 @@ def evaluate(args):
     if args.algo == 'ddpg':
         def agent_wrapper():
             return DDPGAgent(env=env, device='cpu', hps=args, comm=None)
-    elif args.algo == 'ad2d':
+    elif args.algo == 'evade':
         def agent_wrapper():
             return EvadeAgent(env=env, device='cpu', hps=args, comm=None)
     else:

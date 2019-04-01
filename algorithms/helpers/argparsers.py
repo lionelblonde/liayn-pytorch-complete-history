@@ -31,7 +31,7 @@ def ddpg_argparser(description="DDPG Experiment"):
     parser.add_argument('--video_len', help='duration of the video to record',
                         type=int, default=200)
     parser.add_argument('--task', type=str, choices=['train', 'evaluate'], default=None)
-    parser.add_argument('--algo', type=str, choices=['ddpg', 'ad2d'], default=None)
+    parser.add_argument('--algo', type=str, choices=['ddpg', 'evade'], default=None)
     parser.add_argument('--save_frequency', help='save model every xx iterations',
                         type=int, default=100)
     parser.add_argument('--num_iters', help='cummulative number of iterations since launch',
