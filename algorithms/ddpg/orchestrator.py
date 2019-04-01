@@ -179,9 +179,6 @@ def learn(args,
           prefill,
           max_iters):
 
-    print("ckpt_dir: {}".format(ckpt_dir))  # FIXME
-    print("visdom_dir: {}".format(visdom_dir))  # FIXME
-
     assert not training_steps_per_iter % actor_update_delay, "must be a multiple"
 
     # Create an agent
@@ -226,9 +223,6 @@ def learn(args,
     if rank == 0 and enable_visdom:
 
         # Create visdom
-        assert not osp.exists(visdom_dir)
-        os.makedirs(visdom_dir)
-
         viz = visdom.Visdom(env="job_{}".format(experiment_name),
                             log_to_filename=visdom_dir)
         assert viz.check_connection(timeout_seconds=4), "viz co not great"

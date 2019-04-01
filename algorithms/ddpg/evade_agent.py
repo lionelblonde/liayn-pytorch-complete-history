@@ -99,37 +99,37 @@ class Critic(nn.Module):
         embedding = F.leaky_relu(self.psi_hid_fc(embedding))
         return embedding
 
-    def phi_embedding(self, num_quantiles, out_dim, batch_size):
+    def phi_embedding(self, num_quantiles, out_dim, batch_size, device):
         """Equation 4 in IQN paper"""
+
         shape = [batch_size, num_quantiles, 1]
+
         # Generate quantiles (`self` used to grab them from outside the class)
-        quantiles = self.uniform.rsample(sample_shape=shape)
+        quantiles = self.uniform.rsample(sample_shape=shape).to(device)
+
         self.sampled_quantiles = quantiles  # grabbable from outside
+
         # Reshape
         quantiles = quantiles.view(batch_size * num_quantiles, 1)
         # Expand the quantiles, e.g. [tau1, tau2, tau3] tiled with [1, dim]
         # becomes [[tau1, tau2, tau3], [tau1, tau2, tau3], ...]
         embedding = quantiles.repeat(1, self.hps.quantile_emb_dim)
-        index_range = torch.range(1, self.hps.quantile_emb_dim, dtype=torch.float32)
-        embedding *= torch.mul(index_range, math.pi)
+        indices = torch.arange(1, self.hps.quantile_emb_dim + 1, dtype=torch.float32).to(device)
+        pi = math.pi * torch.ones(self.hps.quantile_emb_dim, dtype=torch.float32).to(device)
+        embedding *= torch.mul(indices, pi)
         embedding = torch.cos(embedding)
         # Wrap with unique layer
         embedding = F.relu(self.phi_hid_fc(embedding))
         return embedding
 
-    def Z(self, ob, ac, num_quantiles):
+    def Z(self, ob, ac, num_quantiles, device):
         # Embed state and action
         psi = self.psi_embedding(ob, ac)
         psi = psi.repeat(num_quantiles, 1)
         # Embed quantiles
-
-        # batch_size = torch.FloatTensor(ob.shape[0])
-        # out_dim = torch.FloatTensor(ob.shape[-1])
-
         batch_size = ob.shape[0]
         out_dim = ob.shape[-1]
-
-        phi = self.phi_embedding(num_quantiles, out_dim, batch_size)
+        phi = self.phi_embedding(num_quantiles, out_dim, batch_size, device)
         # Multiply the embedding element-wise
         hadamard = psi * (1.0 + phi)
         hadamard = F.relu(self.hadamard_hid_fc(hadamard))
@@ -137,17 +137,13 @@ class Critic(nn.Module):
         z = z.view(batch_size, num_quantiles, 1)
         return z
 
-    def forward(self, ob, ac, num_quantiles):
-        z = self.Z(ob, ac, num_quantiles)
+    def forward(self, ob, ac, num_quantiles, device):
+        z = self.Z(ob, ac, num_quantiles, device)
         return z
 
-    def Q(self, ob, ac, num_quantiles):
-
-        # batch_size = torch.FloatTensor(ob.shape[0])
-
+    def Q(self, ob, ac, num_quantiles, device):
         batch_size = ob.shape[0]
-
-        z = self.Z(ob, ac, num_quantiles).view(batch_size, num_quantiles)
+        z = self.Z(ob, ac, num_quantiles, device).view(batch_size, num_quantiles)
         q = z.mean(dim=-1).view(batch_size, 1)
         return q
 
@@ -294,7 +290,7 @@ class EvadeAgent(object):
 
         # Place on cpu and collapse into one dimension
         # tau tilde
-        q = self.critic.Q(ob, ac, self.hps.num_tau_tilde).cpu().detach().numpy().flatten()
+        q = self.critic.Q(ob, ac, self.hps.num_tau_tilde, self.device).cpu().detach().numpy().flatten()
         ac = ac.cpu().detach().numpy().flatten()
 
         if apply_noise and self.ac_noise is not None:
@@ -352,18 +348,18 @@ class EvadeAgent(object):
 
         # Compute Q estimate(s)
         # tau
-        q = self.critic(state, action, self.hps.num_tau)
+        q = self.critic(state, action, self.hps.num_tau, self.device)
         if self.hps.enable_clipped_double:
             # twin tau
-            twin_q = self.twin_critic(state, action, self.hps.num_tau)
+            twin_q = self.twin_critic(state, action, self.hps.num_tau, self.device)
 
         # Compute target Q estimate
         # tau prime
-        q_prime = self.targ_critic(next_state, next_action, self.hps.num_tau_prime)
+        q_prime = self.targ_critic(next_state, next_action, self.hps.num_tau_prime, self.device)
         if self.hps.enable_clipped_double:
             # Define Q' as the minimum Q value between TD3's twin Q's
             # twin tau prime
-            twin_q_prime = self.targ_twin_critic(next_state, next_action, self.hps.num_tau_prime)
+            twin_q_prime = self.targ_twin_critic(next_state, next_action, self.hps.num_tau_prime, self.device)
             q_prime = torch.min(q_prime, twin_q_prime)
         # Reshape rewards to be of shape [batch_size x num_tau_prime, 1]
         reward = reward.repeat(self.hps.num_tau_prime, 1)
@@ -450,7 +446,7 @@ class EvadeAgent(object):
 
         # Actor loss
         # tau tilde
-        actor_loss = -self.critic.Q(state, self.actor(state), self.hps.num_tau_tilde).mean()
+        actor_loss = -self.critic.Q(state, self.actor(state), self.hps.num_tau_tilde, self.device).mean()
 
         # Actor grads
         self.actor_optimizer.zero_grad()

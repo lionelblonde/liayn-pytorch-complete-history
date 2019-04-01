@@ -3,11 +3,11 @@
 cd ..
 
 mpirun -np $2 python -m algorithms.ddpg.run \
-    --no-cuda \
+    --cuda \
     --env_id=$1 \
     --seed=0 \
     --checkpoint_dir="data/checkpoints" \
-    --no-enable_visdom \
+    --enable_visdom \
     --visdom_dir="data/visdom" \
     --log_dir="data/logs" \
     --task="train" \
@@ -29,7 +29,7 @@ mpirun -np $2 python -m algorithms.ddpg.run \
     --num_tau_prime=8 \
     --num_tau_tilde=32 \
     --enable_clipped_double \
-    --enable_targ_actor_smoothing \
+    --no-enable_targ_actor_smoothing \
     --actor_update_delay=2 \
     --actor_lr=1e-3 \
     --critic_lr=1e-3 \
