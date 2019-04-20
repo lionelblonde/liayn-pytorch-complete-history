@@ -3,7 +3,7 @@
 cd ..
 
 mpirun -np $2 python -m algorithms.ddpg.run \
-    --cuda \
+    --no-cuda \
     --env_id=$1 \
     --seed=0 \
     --checkpoint_dir="data/checkpoints" \
@@ -17,24 +17,24 @@ mpirun -np $2 python -m algorithms.ddpg.run \
     --training_steps_per_iter=20 \
     --eval_steps_per_iter=20 \
     --eval_frequency=10 \
-    --prefill=200 \
+    --prefill=0 \
     --no-render \
     --rollout_len=5 \
     --batch_size=128 \
     --polyak=0.005 \
     --no-with_layernorm \
     --reward_scale=1. \
-    --quantile_emb_dim=32 \
-    --num_tau=8 \
-    --num_tau_prime=8 \
-    --num_tau_tilde=32 \
-    --enable_clipped_double \
+    --quantile_emb_dim=4 \
+    --num_tau=2 \
+    --num_tau_prime=2 \
+    --num_tau_tilde=4 \
+    --no-enable_clipped_double \
     --no-enable_targ_actor_smoothing \
     --actor_update_delay=2 \
-    --actor_lr=1e-3 \
-    --critic_lr=1e-3 \
-    --clip_norm=40. \
-    --noise_type="normal_0.2, ou_0.2" \
+    --actor_lr=3e-4 \
+    --critic_lr=3e-4 \
+    --clip_norm=5. \
+    --noise_type="adaptive-param_0.2, normal_0.2" \
     --pn_adapt_frequency=10 \
     --gamma=0.99 \
     --mem_size=1000000 \

@@ -22,6 +22,8 @@ def train(args):
     comm = MPI.COMM_WORLD
     rank = comm.Get_rank()
     world_size = comm.Get_size()
+    # Override batch size
+    args.batch_size = args.batch_size // world_size
 
     torch.set_num_threads(1)
 
@@ -85,7 +87,7 @@ def train(args):
                        save_frequency=args.save_frequency,
                        pn_adapt_frequency=args.pn_adapt_frequency,
                        rollout_len=args.rollout_len,
-                       batch_size=args.batch_size // world_size,
+                       batch_size=args.batch_size,
                        training_steps_per_iter=args.training_steps_per_iter,
                        eval_steps_per_iter=args.eval_steps_per_iter,
                        eval_frequency=args.eval_frequency,

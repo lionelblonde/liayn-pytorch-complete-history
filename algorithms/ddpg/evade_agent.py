@@ -80,12 +80,9 @@ class Critic(nn.Module):
         self.ac_dim = self.ac_space.shape[0]
         self.hps = hps
 
-        self.uniform = D.uniform.Uniform(0., 1.)
-
         self.emb_out_dim = 64
-        # self.psi_hid_fc_1 = nn.Linear(self.ob_dim + self.ac_dim, 128)
-        # self.psi_hid_fc_2 = nn.Linear(128, self.emb_out_dim)
-        self.psi_hid_fc = nn.Linear(self.ob_dim + self.ac_dim, self.emb_out_dim)
+        self.psi_hid_fc_1 = nn.Linear(self.ob_dim + self.ac_dim, 128)
+        self.psi_hid_fc_2 = nn.Linear(128, self.emb_out_dim)
 
         self.phi_hid_fc = nn.Linear(self.hps.quantile_emb_dim, self.emb_out_dim)
 
@@ -94,42 +91,39 @@ class Critic(nn.Module):
 
     def psi_embedding(self, ob, ac):
         embedding = torch.cat([ob, ac], dim=-1)
-        # embedding = F.leaky_relu(self.psi_hid_fc_1(embedding))
-        # embedding = F.leaky_relu(self.psi_hid_fc_2(embedding))
-        embedding = F.leaky_relu(self.psi_hid_fc(embedding))
+        embedding = F.leaky_relu(self.psi_hid_fc_1(embedding))
+        embedding = F.leaky_relu(self.psi_hid_fc_2(embedding))
         return embedding
 
-    def phi_embedding(self, num_quantiles, out_dim, batch_size, device):
+    def phi_embedding(self, quantiles):
         """Equation 4 in IQN paper"""
-
-        shape = [batch_size, num_quantiles, 1]
-
-        # Generate quantiles (`self` used to grab them from outside the class)
-        quantiles = self.uniform.rsample(sample_shape=shape).to(device)
-
-        self.sampled_quantiles = quantiles  # grabbable from outside
-
+        # Retrieve device from quantiles tensor
+        device = quantiles.device
         # Reshape
+        batch_size, num_quantiles = list(quantiles.shape)[:-1]
         quantiles = quantiles.view(batch_size * num_quantiles, 1)
         # Expand the quantiles, e.g. [tau1, tau2, tau3] tiled with [1, dim]
         # becomes [[tau1, tau2, tau3], [tau1, tau2, tau3], ...]
         embedding = quantiles.repeat(1, self.hps.quantile_emb_dim)
         indices = torch.arange(1, self.hps.quantile_emb_dim + 1, dtype=torch.float32).to(device)
         pi = math.pi * torch.ones(self.hps.quantile_emb_dim, dtype=torch.float32).to(device)
+        assert indices.shape == pi.shape
         embedding *= torch.mul(indices, pi)
         embedding = torch.cos(embedding)
         # Wrap with unique layer
         embedding = F.relu(self.phi_hid_fc(embedding))
         return embedding
 
-    def Z(self, ob, ac, num_quantiles, device):
+    def Z(self, ob, ac, quantiles):
         # Embed state and action
         psi = self.psi_embedding(ob, ac)
+        batch_size, num_quantiles = list(quantiles.shape)[:-1]
         psi = psi.repeat(num_quantiles, 1)
         # Embed quantiles
-        batch_size = ob.shape[0]
-        out_dim = ob.shape[-1]
-        phi = self.phi_embedding(num_quantiles, out_dim, batch_size, device)
+        phi = self.phi_embedding(quantiles)
+
+        assert psi.shape == phi.shape, "{}, {}".format(psi.shape, phi.shape)
+
         # Multiply the embedding element-wise
         hadamard = psi * (1.0 + phi)
         hadamard = F.relu(self.hadamard_hid_fc(hadamard))
@@ -137,13 +131,13 @@ class Critic(nn.Module):
         z = z.view(batch_size, num_quantiles, 1)
         return z
 
-    def forward(self, ob, ac, num_quantiles, device):
-        z = self.Z(ob, ac, num_quantiles, device)
+    def forward(self, ob, ac, quantiles):
+        z = self.Z(ob, ac, quantiles)
         return z
 
-    def Q(self, ob, ac, num_quantiles, device):
-        batch_size = ob.shape[0]
-        z = self.Z(ob, ac, num_quantiles, device).view(batch_size, num_quantiles)
+    def Q(self, ob, ac, quantiles):
+        batch_size, num_quantiles = list(quantiles.shape)[:-1]
+        z = self.Z(ob, ac, quantiles).view(batch_size, num_quantiles)
         q = z.mean(dim=-1).view(batch_size, 1)
         return q
 
@@ -165,6 +159,9 @@ class EvadeAgent(object):
         assert self.hps.n > 1 or not self.hps.n_step_returns
 
         self.comm = comm
+
+        # Uniform distribution from which quantiles are sampled
+        self.uniform = D.uniform.Uniform(0., 1.)
 
         # Define action clipping range
         assert all(self.ac_space.low == -self.ac_space.high)
@@ -289,8 +286,12 @@ class EvadeAgent(object):
             ac = self.actor(ob)
 
         # Place on cpu and collapse into one dimension
-        # tau tilde
-        q = self.critic.Q(ob, ac, self.hps.num_tau_tilde, self.device).cpu().detach().numpy().flatten()
+
+        # Generate quantiles
+        shape = [1, self.hps.num_tau_tilde, 1]
+        quantiles_tilde = self.uniform.rsample(sample_shape=shape).to(self.device)
+
+        q = self.critic.Q(ob, ac, quantiles_tilde).cpu().detach().numpy().flatten()
         ac = ac.cpu().detach().numpy().flatten()
 
         if apply_noise and self.ac_noise is not None:
@@ -347,20 +348,27 @@ class EvadeAgent(object):
             next_action = self.targ_actor(next_state)
 
         # Compute Q estimate(s)
-        # tau
-        q = self.critic(state, action, self.hps.num_tau, self.device)
+
+        # Generate quantiles
+        shape = [self.hps.batch_size, self.hps.num_tau, 1]
+        quantiles = self.uniform.rsample(sample_shape=shape).to(self.device)
+
+        q = self.critic(state, action, quantiles)
         if self.hps.enable_clipped_double:
-            # twin tau
-            twin_q = self.twin_critic(state, action, self.hps.num_tau, self.device)
+            twin_q = self.twin_critic(state, action, quantiles)
 
         # Compute target Q estimate
-        # tau prime
-        q_prime = self.targ_critic(next_state, next_action, self.hps.num_tau_prime, self.device)
+
+        # Generate quantiles
+        shape = [self.hps.batch_size, self.hps.num_tau_prime, 1]
+        quantiles_prime = self.uniform.rsample(sample_shape=shape).to(self.device)
+
+        q_prime = self.targ_critic(next_state, next_action, quantiles_prime)
         if self.hps.enable_clipped_double:
             # Define Q' as the minimum Q value between TD3's twin Q's
-            # twin tau prime
-            twin_q_prime = self.targ_twin_critic(next_state, next_action, self.hps.num_tau_prime, self.device)
+            twin_q_prime = self.targ_twin_critic(next_state, next_action, quantiles_prime)
             q_prime = torch.min(q_prime, twin_q_prime)
+
         # Reshape rewards to be of shape [batch_size x num_tau_prime, 1]
         reward = reward.repeat(self.hps.num_tau_prime, 1)
         # Reshape product of gamma and mask to be of shape [batch_size x num_tau_prime, 1]
@@ -374,19 +382,11 @@ class EvadeAgent(object):
 
         # Critic(s) loss(es)
 
-        # Retrieve the quantile values sampled during the forward pass
-        quantiles = self.critic.sampled_quantiles
-        if self.hps.enable_clipped_double:
-            twin_quantiles = self.twin_critic.sampled_quantiles
-        # Quantiles are shaped as: [batch_size, num_tau, 1]
-
         # Tile by num_tau_prime_samples along a new dimension, the goal is to give
         # the Huber quantile regression loss quantiles that have the same shape
         # as the TD errors for it to deal with each component as expected
         quantiles = quantiles[:, None, :, :].repeat(1, self.hps.num_tau_prime, 1, 1)
         # The resulting shape is [batch_size, num_tau_prime, num_tau, 1]
-        if self.hps.enable_clipped_double:
-            twin_quantiles = twin_quantiles[:, None, :, :].repeat(1, self.hps.num_tau_prime, 1, 1)
 
         # Compute the TD error loss
         # Note: online version has shape [batch_size, num_tau, 1],
@@ -400,7 +400,7 @@ class EvadeAgent(object):
         huber_td_errors = huber_quant_reg_loss(td_errors, quantiles)
         # The resulting shape is [batch_size, num_tau_prime, num_tau, 1]
         if self.hps.enable_clipped_double:
-            twin_huber_td_errors = huber_quant_reg_loss(twin_td_errors, twin_quantiles)
+            twin_huber_td_errors = huber_quant_reg_loss(twin_td_errors, quantiles)
 
         if self.hps.prioritized_replay:
             # Adjust with importance weights
@@ -445,8 +445,14 @@ class EvadeAgent(object):
             self.twin_critic_optimizer.step()
 
         # Actor loss
-        # tau tilde
-        actor_loss = -self.critic.Q(state, self.actor(state), self.hps.num_tau_tilde, self.device).mean()
+
+        # Generate quantiles
+        shape = [self.hps.batch_size, self.hps.num_tau_tilde, 1]
+        quantiles_tilde = self.uniform.rsample(sample_shape=shape).to(self.device)
+
+        actor_loss = -self.critic.Q(state, self.actor(state), quantiles_tilde).mean()  # TODO
+        # print("self.actor(state): {}".format(self.actor(state)))  # FIXME
+        # print("actor_loss: {}".format(actor_loss))  # FIXME
 
         # Actor grads
         self.actor_optimizer.zero_grad()
