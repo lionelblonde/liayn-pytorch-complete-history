@@ -8,8 +8,6 @@ import torch.nn.utils as U
 import torch.nn.functional as F
 import torch.distributions as D
 
-from algorithms.helpers.spectral_normalization import SNLinear
-
 from algorithms.helpers import logger
 from algorithms.helpers.console_util import log_module_info
 from algorithms.helpers.distributed_util import average_gradients, sync_with_root
@@ -38,9 +36,7 @@ class Actor(nn.Module):
         self.ac_dim = self.ac_space.shape[0]
         self.hps = hps
 
-        # self.hid_fc_1 = nn.Linear(self.ob_dim, 300)
-
-        self.hid_fc_1 = SNLinear(self.ob_dim, 300)
+        self.hid_fc_1 = nn.Linear(self.ob_dim, 300)
 
         if self.hps.with_layernorm:
             self.layer_norm_1 = nn.LayerNorm(300)

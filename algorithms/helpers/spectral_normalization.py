@@ -16,13 +16,13 @@ def normalize(v):
     return v / (torch.norm(v) + 1e-8)
 
 
-def normalize_spectrally(weight, u=None, power_iters=2):
+def normalize_spectrally(weight, u, v, power_iters=1):
     """Power iteration method for weight matrix `weights`"""
     assert power_iters > 0, "power method should iterate at least once"
     # Perform power method iterations
     for _ in range(power_iters):
-        v = normalize(torch.mv(weight.t(), u))
-        u = normalize(torch.mv(weight, v))
+        v.copy_(normalize(torch.mv(weight.t(), u)))
+        u.copy_(normalize(torch.mv(weight, v)))
     # Compute the spectral norm as u^T*W*v
     spectral_norm = torch.dot(u, torch.mv(weight, v))
     return spectral_norm, u
@@ -52,9 +52,11 @@ class SNLinear(nn.Linear):
     def __init__(self, in_features, out_features, bias=True):
         super(SNLinear, self).__init__(in_features, out_features, bias)
         self.register_buffer('u', torch.zeros(out_features).normal_(0, 1))
+        self.register_buffer('v', torch.zeros(in_features).normal_(0, 1))
 
     def forward(self, input):
         with torch.no_grad():
-            spectral_norm, u = normalize_spectrally(self.weight, self.u)
+            spectral_norm, u = normalize_spectrally(self.weight, self.u, self.v)
+            # print("self.u: {}".format(self.u))  # FIXME
             self.u.copy_(u)
         return F.linear(input, self.weight / spectral_norm, self.bias)
