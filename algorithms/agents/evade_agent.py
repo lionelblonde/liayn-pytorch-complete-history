@@ -8,10 +8,12 @@ import torch.nn.utils as U
 import torch.nn.functional as F
 import torch.distributions as D
 
+from algorithms.helpers.spectral_normalization import SNLinear
+
 from algorithms.helpers import logger
 from algorithms.helpers.console_util import log_module_info
 from algorithms.helpers.distributed_util import average_gradients, sync_with_root
-from algorithms.ddpg.memory import ReplayBuffer, PrioritizedReplayBuffer, UnrealReplayBuffer
+from algorithms.agents.memory import ReplayBuffer, PrioritizedReplayBuffer, UnrealReplayBuffer
 
 
 def huber_quant_reg_loss(td_errors, quantile, kappa=1.0):
@@ -36,7 +38,10 @@ class Actor(nn.Module):
         self.ac_dim = self.ac_space.shape[0]
         self.hps = hps
 
-        self.hid_fc_1 = nn.Linear(self.ob_dim, 300)
+        # self.hid_fc_1 = nn.Linear(self.ob_dim, 300)
+
+        self.hid_fc_1 = SNLinear(self.ob_dim, 300)
+
         if self.hps.with_layernorm:
             self.layer_norm_1 = nn.LayerNorm(300)
         self.hid_fc_2 = nn.Linear(300, 200)
@@ -226,7 +231,7 @@ class EvadeAgent(object):
             # If 'adaptive-param' is in the specified string for noise type
             elif 'adaptive-param' in cur_noise_type:
                 # Set parameter noise
-                from algorithms.ddpg.param_noise import AdaptiveParamNoise
+                from algorithms.agents.param_noise import AdaptiveParamNoise
                 _, std = cur_noise_type.split('_')
                 std = float(std)
                 param_noise = AdaptiveParamNoise(initial_std=std, delta=std)
@@ -234,14 +239,14 @@ class EvadeAgent(object):
             elif 'normal' in cur_noise_type:
                 _, std = cur_noise_type.split('_')
                 # Spherical (isotropic) gaussian action noise
-                from algorithms.ddpg.ac_noise import NormalAcNoise
+                from algorithms.agents.ac_noise import NormalAcNoise
                 ac_noise = NormalAcNoise(mu=np.zeros(self.ac_dim),
                                          sigma=float(std) * np.ones(self.ac_dim))
                 logger.info("  {} configured".format(ac_noise))
             elif 'ou' in cur_noise_type:
                 _, std = cur_noise_type.split('_')
                 # Ornstein-Uhlenbeck action noise
-                from algorithms.ddpg.ac_noise import OUAcNoise
+                from algorithms.agents.ac_noise import OUAcNoise
                 ac_noise = OUAcNoise(mu=np.zeros(self.ac_dim),
                                      sigma=(float(std) * np.ones(self.ac_dim)))
                 logger.info("  {} configured".format(ac_noise))

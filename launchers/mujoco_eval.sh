@@ -3,7 +3,7 @@
 
 cd ..
 
-python -m algorithms.ddpg.run \
+python -m algorithms.agents.run \
     --env_id=$1 \
     --seed=0 \
     --log_dir="data/logs" \

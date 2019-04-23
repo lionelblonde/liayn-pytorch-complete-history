@@ -3,7 +3,7 @@
 
 cd ..
 
-mpirun -np $2 python -m algorithms.ddpg.run \
+mpirun -np $2 python -m algorithms.agents.run \
     --no-cuda \
     --env_id=$1 \
     --seed=0 \

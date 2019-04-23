@@ -2,8 +2,8 @@
 # Example: ./mujoco_evade_train.sh <env_id> <num_learners>
 cd ..
 
-mpirun -np $2 python -m algorithms.ddpg.run \
-    --no-cuda \
+mpirun -np $2 python -m algorithms.agents.run \
+    --cuda \
     --env_id=$1 \
     --seed=0 \
     --checkpoint_dir="data/checkpoints" \

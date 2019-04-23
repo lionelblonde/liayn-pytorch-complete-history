@@ -9,9 +9,9 @@ from algorithms.helpers import logger
 from algorithms.helpers.argparsers import ddpg_argparser
 from algorithms.helpers.experiment_initializer import ExperimentInitializer
 from algorithms.helpers.env_makers import make_env
-from algorithms.ddpg import orchestrator
-from algorithms.ddpg.ddpg_agent import DDPGAgent
-from algorithms.ddpg.evade_agent import EvadeAgent
+from algorithms.agents import orchestrator
+from algorithms.agents.ddpg_agent import DDPGAgent
+from algorithms.agents.evade_agent import EvadeAgent
 
 
 def train(args):

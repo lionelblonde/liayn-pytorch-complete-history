@@ -9,7 +9,7 @@ import numpy as np
 import visdom
 
 from algorithms.helpers import logger
-from algorithms.ddpg.memory import RingBuffer
+from algorithms.agents.memory import RingBuffer
 from algorithms.helpers.console_util import (timed_cm_wrapper, pretty_iter,
                                              pretty_elapsed, columnize)
 
