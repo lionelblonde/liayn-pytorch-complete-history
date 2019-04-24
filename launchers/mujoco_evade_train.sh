@@ -31,7 +31,7 @@ mpirun -np $2 python -m algorithms.agents.run \
     --no-enable_clipped_double \
     --no-enable_targ_actor_smoothing \
     --actor_update_delay=2 \
-    --actor_lr=1e-3 \
+    --actor_lr=1e-5 \
     --critic_lr=1e-3 \
     --clip_norm=5. \
     --noise_type="adaptive-param_0.2, normal_0.2" \
