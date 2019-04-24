@@ -36,14 +36,13 @@ class Actor(nn.Module):
         self.ac_dim = self.ac_space.shape[0]
         self.hps = hps
 
-        self.hid_fc_1 = nn.Linear(self.ob_dim, 300)
-
+        self.hid_fc_1 = nn.Linear(self.ob_dim, 64)
         if self.hps.with_layernorm:
-            self.layer_norm_1 = nn.LayerNorm(300)
-        self.hid_fc_2 = nn.Linear(300, 200)
+            self.layer_norm_1 = nn.LayerNorm(64)
+        self.hid_fc_2 = nn.Linear(64, 64)
         if self.hps.with_layernorm:
-            self.layer_norm_2 = nn.LayerNorm(200)
-        self.out_fc_3 = nn.Linear(200, self.ac_dim)
+            self.layer_norm_2 = nn.LayerNorm(64)
+        self.out_fc_3 = nn.Linear(64, self.ac_dim)
 
         self.perturbable_params = [p for p in self.state_dict()
                                    if 'layer_norm' not in p]
@@ -82,8 +81,8 @@ class Critic(nn.Module):
         self.hps = hps
 
         self.emb_out_dim = 64
-        self.psi_hid_fc_1 = nn.Linear(self.ob_dim + self.ac_dim, 128)
-        self.psi_hid_fc_2 = nn.Linear(128, self.emb_out_dim)
+        self.psi_hid_fc_1 = nn.Linear(self.ob_dim + self.ac_dim, 64)
+        self.psi_hid_fc_2 = nn.Linear(64, self.emb_out_dim)
 
         self.phi_hid_fc = nn.Linear(self.hps.quantile_emb_dim, self.emb_out_dim)
 
@@ -451,9 +450,7 @@ class EvadeAgent(object):
         shape = [self.hps.batch_size, self.hps.num_tau_tilde, 1]
         quantiles_tilde = self.uniform.rsample(sample_shape=shape).to(self.device)
 
-        actor_loss = -self.critic.Q(state, self.actor(state), quantiles_tilde).mean()  # TODO
-        # print("self.actor(state): {}".format(self.actor(state)))  # FIXME
-        # print("actor_loss: {}".format(actor_loss))  # FIXME
+        actor_loss = -self.critic.Q(state, self.actor(state), quantiles_tilde).mean()
 
         # Actor grads
         self.actor_optimizer.zero_grad()
