@@ -57,6 +57,5 @@ class SNLinear(nn.Linear):
     def forward(self, input):
         with torch.no_grad():
             spectral_norm, u = normalize_spectrally(self.weight, self.u, self.v)
-            # print("self.u: {}".format(self.u))  # FIXME
             self.u.copy_(u)
         return F.linear(input, self.weight / spectral_norm, self.bias)
