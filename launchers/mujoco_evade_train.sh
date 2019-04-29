@@ -12,15 +12,15 @@ mpirun -np $2 python -m algorithms.agents.run \
     --log_dir="data/logs" \
     --task="train" \
     --algo="evade" \
-    --save_frequency=20 \
+    --save_frequency=100 \
     --num_iters=10000000 \
-    --training_steps_per_iter=20 \
-    --eval_steps_per_iter=20 \
-    --eval_frequency=10 \
+    --training_steps_per_iter=25 \
+    --eval_steps_per_iter=50 \
+    --eval_frequency=100 \
     --prefill=200 \
     --no-render \
     --rollout_len=5 \
-    --batch_size=128 \
+    --batch_size=32 \
     --polyak=0.005 \
     --with_layernorm \
     --reward_scale=1. \
@@ -28,7 +28,7 @@ mpirun -np $2 python -m algorithms.agents.run \
     --num_tau=2 \
     --num_tau_prime=2 \
     --num_tau_tilde=4 \
-    --no-enable_clipped_double \
+    --enable_clipped_double \
     --no-enable_targ_actor_smoothing \
     --actor_update_delay=2 \
     --d_update_ratio=5 \
@@ -46,7 +46,7 @@ mpirun -np $2 python -m algorithms.agents.run \
     --beta=1. \
     --no-ranked \
     --no-unreal \
-    --wd_scale=0. \
+    --wd_scale=1e-3 \
     --n_step_returns \
     --n=60 \
     --ent_reg_scale=0. \
