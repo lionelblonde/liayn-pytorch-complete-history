@@ -46,6 +46,7 @@ def ddpg_argparser(description="DDPG Experiment"):
     parser.add_argument('--model_path', type=str, default=None)
     parser.add_argument('--actor_lr', type=float, default=1e-3)
     parser.add_argument('--critic_lr', type=float, default=1e-3)
+    parser.add_argument('--d_lr', type=float, default=1e-3)
     parser.add_argument('--quantile_emb_dim', type=int, default=64, help='n in IQN paper')
     parser.add_argument('--num_tau', type=int, default=32, help='N in IQN paper')
     parser.add_argument('--num_tau_prime', type=int, default=32, help='N prime in IQN paper')
@@ -68,6 +69,7 @@ def ddpg_argparser(description="DDPG Experiment"):
     parser.add_argument('--beta', help='importance weights usage', default=1.0, type=float)
     parser.add_argument('--reward_scale', type=float, default=1.)
     parser.add_argument('--clip_norm', type=float, default=None)
+    boolean_flag(parser, 'minimax_only', default=True)
     parser.add_argument('--noise_type', help='choices: adaptive-param_xx, normal_xx, ou_xx, none',
                         type=str, default='adaptive-param_0.2, ou_0.1, normal_0.1')
     parser.add_argument('--pn_adapt_frequency', type=float, default=50)
@@ -75,6 +77,7 @@ def ddpg_argparser(description="DDPG Experiment"):
     parser.add_argument('--wd_scale', help='critic wd scale', type=float, default=0.001)
     boolean_flag(parser, 'n_step_returns', default=True)
     parser.add_argument('--n', help='number of steps for the TD lookahead', type=int, default=10)
+    parser.add_argument('--ent_reg_scale', help='d entropy reg coeff', type=float, default=0.)
     parser.add_argument('--training_steps_per_iter', type=int, default=50)
     parser.add_argument('--eval_steps_per_iter', type=int, default=100)
     parser.add_argument('--eval_frequency', type=int, default=500)
@@ -82,6 +85,8 @@ def ddpg_argparser(description="DDPG Experiment"):
                         help='number of initial steps during which actions are uniformly picked')
     parser.add_argument('--actor_update_delay', type=int, default=1,
                         help='number of critic updates to perform per actor update')
+    parser.add_argument('--d_update_ratio', type=int, default=5,
+                        help='number of discriminator update per generator update')
     boolean_flag(parser, 'add_demos_to_mem', default=False)
     parser.add_argument('--expert_path', help='.npz archive containing the demos',
                         type=str, default=None)

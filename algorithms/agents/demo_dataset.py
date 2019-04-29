@@ -96,16 +96,13 @@ class DemoDataset(object):
         self.log_info()
 
     def log_info(self):
-        logger.info("successfully initialized (obs0,acs) dataset, w/ statitics:")
-        logger.info("  extracted num trajectories: {}".format(self.size))
-        logger.info("  extracted num transitions: {}".format(len(self.obs0)))  # arbitrarily
-        logger.info("  trajectory return mean: {}".format(self.ret_mean))
-        logger.info("  trajectory return std: {}".format(self.ret_std))
-        logger.info("  trajectory length mean: {}".format(self.len_mean))
-        logger.info("  trajectory length std: {}".format(self.len_std))
+        fmtstr = "dataset: extracted {} transitions from {} trajectories"
+        logger.info(fmtstr.format(len(self.obs0), self.size))
+        logger.info("  episodic return: {}({})".format(self.ret_mean, self.ret_std))
+        logger.info("  episodic length: {}({})".format(self.len_mean, self.len_std))
 
     def get_next_pair_batch(self, batch_size, split=None):
-        """Returns a batch of pairs"""
+        """Return a batch of pairs"""
         if split is None:
             return self.pair_dset.get_next_batch(batch_size)
         elif split == 'train':
@@ -116,6 +113,7 @@ class DemoDataset(object):
             raise NotImplementedError
 
     def plot(self):
+        """Plot an histogram of the returns"""
         import matplotlib.pyplot as plt
         plt.hist(self.ep_rets, bins=10, density=True, facecolor='b', alpha=0.75)
         plt.xlabel('Return')
@@ -153,7 +151,7 @@ def flatten(x):
     if np.isscalar(atom_dim):
         new_shape = (total_num_transitions, atom_dim)
     else:
-        new_shape = (total_num_transitions, *atom_dim)
+        new_shape = tuple([total_num_transitions] + atom_dim)
     # Reshape the array to have the desired shape. Could use `np.reshape(x, new_shape)`
     # but this does not work w/ embedded np arrays, only w/ purely embedded py lists
     # Initialize array w/ the correct size

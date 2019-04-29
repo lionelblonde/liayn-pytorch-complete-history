@@ -5,11 +5,11 @@ import torch
 
 
 def mpi_mean_like(x, comm, device):
-    """Computes element-wise mean across sbires"""
-    num_sbires = comm.Get_size()
+    """Computes element-wise mean across workers"""
+    num_workers = comm.Get_size()
     sum_ = torch.empty_like(x).cpu().data.numpy()
     comm.Allreduce(x.cpu().data.numpy(), sum_, op=MPI.SUM)
-    return torch.FloatTensor(sum_ / num_sbires).to(device)
+    return torch.FloatTensor(sum_ / num_workers).to(device)
 
 
 def average_gradients(model, comm, device):

@@ -51,22 +51,23 @@ def train(args):
     # Create environment
     env = make_env(args.env_id, args.seed)
 
+    expert_dataset = None
+    if args.add_demos_to_mem or args.algo == 'evade':
+        # Create the expert demonstrations dataset from expert trajectories
+        from algorithms.agents.demo_dataset import DemoDataset
+        expert_dataset = DemoDataset(expert_arxiv=args.expert_path, size=args.num_demos,
+                                     train_fraction=None, randomize=True, full=True)
+
     # Create an agent wrapper
     if args.algo == 'ddpg':
         def agent_wrapper():
             return DDPGAgent(env=env, device=device, hps=args, comm=comm)
     elif args.algo == 'evade':
         def agent_wrapper():
-            return EvadeAgent(env=env, device=device, hps=args, comm=comm)
+            return EvadeAgent(env=env, device=device, hps=args, comm=comm,
+                              expert_dataset=expert_dataset)
     else:
         raise NotImplementedError("algorithm not covered")
-
-    expert_dataset = None
-    if args.add_demos_to_mem:
-        # Create the expert demonstrations dataset from expert trajectories
-        from algorithms.ddpg.demo_dataset import DemoDataset
-        expert_dataset = DemoDataset(expert_arxiv=args.expert_path, size=args.num_demos,
-                                     train_fraction=None, randomize=True, full=True)
 
     # Create an evaluation environment not to mess up with training rollouts
     eval_env = None
@@ -92,6 +93,7 @@ def train(args):
                        eval_steps_per_iter=args.eval_steps_per_iter,
                        eval_frequency=args.eval_frequency,
                        actor_update_delay=args.actor_update_delay,
+                       d_update_ratio=args.d_update_ratio,
                        render=args.render,
                        expert_dataset=expert_dataset,
                        add_demos_to_mem=args.add_demos_to_mem,

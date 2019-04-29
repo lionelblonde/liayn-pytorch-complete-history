@@ -27,6 +27,8 @@ def rollout_generator(env, agent, rollout_len, prefill=0):
     obs = RingBuffer(rollout_len, shape=(agent.ob_dim,))
     acs = RingBuffer(rollout_len, shape=(agent.ac_dim,))
     qs = RingBuffer(rollout_len, shape=(1,), dtype='float32')
+    if hasattr(agent, 'discriminator'):
+        syn_rews = RingBuffer(rollout_len, shape=(1,), dtype='float32')
     env_rews = RingBuffer(rollout_len, shape=(1,), dtype='float32')
     dones = RingBuffer(rollout_len, shape=(1,), dtype='int32')
 
@@ -39,11 +41,15 @@ def rollout_generator(env, agent, rollout_len, prefill=0):
             ac = env.action_space.sample()
 
         if t > 0 and t % rollout_len == 0:
-            yield {"obs": obs.data.reshape(-1, agent.ob_dim),
+            out = {"obs": obs.data.reshape(-1, agent.ob_dim),
                    "acs": acs.data.reshape(-1, agent.ac_dim),
                    "qs": qs.data.reshape(-1, 1),
                    "env_rews": env_rews.data.reshape(-1, 1),
                    "dones": dones.data.reshape(-1, 1)}
+            if hasattr(agent, 'discriminator'):
+                out.update({"syn_rews": syn_rews.data.reshape(-1, 1)})
+
+            yield out
 
             _, q_pred = agent.predict(ob, apply_noise=True)
 
@@ -52,16 +58,20 @@ def rollout_generator(env, agent, rollout_len, prefill=0):
         qs.append(q_pred)
         dones.append(done)
 
-        # ac = ac.reshape(-1, agent.ac_dim)
         # Interact with env(s)
         new_ob, env_rew, done, _ = env.step(ac)
 
-        # env_rew = env_rew.reshape(-1, 1)
         env_rews.append(env_rew)
-        # done = done.reshape(-1, 1)
+
+        if hasattr(agent, 'discriminator'):
+            syn_rew = np.asscalar(agent.discriminator.get_reward(ob, ac).cpu().numpy().flatten())
+            syn_rews.append(syn_rew)
 
         # Store transition(s) in the replay buffer
-        agent.store_transition(ob, ac, env_rew, new_ob, done)
+        if hasattr(agent, 'discriminator'):
+            agent.store_transition(ob, ac, syn_rew, new_ob, done)
+        else:
+            agent.store_transition(ob, ac, env_rew, new_ob, done)
 
         assert isinstance(ob, np.ndarray), "copy ignored for torch tensors -> clone"
         ob = copy.copy(new_ob)
@@ -173,6 +183,7 @@ def learn(args,
           eval_steps_per_iter,
           eval_frequency,
           actor_update_delay,
+          d_update_ratio,
           render,
           expert_dataset,
           add_demos_to_mem,
@@ -276,8 +287,13 @@ def learn(args,
                         deques.pn_cur_std.append(agent.param_noise.cur_std)
 
                 # Train the actor-critic architecture
-                update_actor = not bool(training_step % actor_update_delay)
-                losses, gradnorms = agent.train(update_actor=update_actor)
+                update_critic = True
+                if hasattr(agent, 'discriminator'):
+                    update_critic = not bool(training_step % d_update_ratio)
+                update_actor = update_critic and not bool(training_step % actor_update_delay)
+
+                losses, gradnorms = agent.train(update_critic=update_critic,
+                                                update_actor=update_actor)
                 # Store the losses and gradients in their respective deques
                 deques.actor_gradnorms.append(gradnorms['actor'])
                 deques.actor_losses.append(losses['actor'])

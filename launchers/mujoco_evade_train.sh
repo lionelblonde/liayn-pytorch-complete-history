@@ -12,11 +12,11 @@ mpirun -np $2 python -m algorithms.agents.run \
     --log_dir="data/logs" \
     --task="train" \
     --algo="evade" \
-    --save_frequency=100 \
+    --save_frequency=20 \
     --num_iters=10000000 \
     --training_steps_per_iter=20 \
     --eval_steps_per_iter=20 \
-    --eval_frequency=100 \
+    --eval_frequency=10 \
     --prefill=200 \
     --no-render \
     --rollout_len=5 \
@@ -31,9 +31,12 @@ mpirun -np $2 python -m algorithms.agents.run \
     --no-enable_clipped_double \
     --no-enable_targ_actor_smoothing \
     --actor_update_delay=2 \
-    --actor_lr=1e-5 \
+    --d_update_ratio=5 \
+    --actor_lr=3e-4 \
     --critic_lr=1e-3 \
+    --d_lr=3e-4 \
     --clip_norm=5. \
+    --minimax_only \
     --noise_type="adaptive-param_0.2, normal_0.2" \
     --pn_adapt_frequency=10 \
     --gamma=0.99 \
@@ -46,4 +49,7 @@ mpirun -np $2 python -m algorithms.agents.run \
     --wd_scale=0. \
     --n_step_returns \
     --n=60 \
-    --no-add_demos_to_mem
+    --ent_reg_scale=0. \
+    --no-add_demos_to_mem \
+    --expert_path=$3 \
+    --num_demos=$4

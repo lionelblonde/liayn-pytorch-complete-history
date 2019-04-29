@@ -7,8 +7,10 @@ import torch.nn as nn
 import torch.nn.utils as U
 import torch.nn.functional as F
 import torch.distributions as D
+from torch import autograd
 
 from algorithms.helpers import logger
+from algorithms.helpers.spectral_norm import SNLinear
 from algorithms.helpers.console_util import log_module_info
 from algorithms.helpers.distributed_util import average_gradients, sync_with_root
 from algorithms.agents.memory import ReplayBuffer, PrioritizedReplayBuffer, UnrealReplayBuffer
@@ -65,6 +67,95 @@ class Actor(nn.Module):
             plop = self.layer_norm_2(plop)
         ac = float(self.ac_space.high[0]) * torch.tanh(self.out_fc_3(plop))
         return ac
+
+
+class Discriminator(nn.Module):
+
+    def __init__(self, ob_space, ac_space, hps):
+        super(Discriminator, self).__init__()
+        self.ob_space = ob_space
+        self.ac_space = ac_space
+        self.ob_dim = self.ob_space.shape[0]
+        self.ac_dim = self.ac_space.shape[0]
+        self.hps = hps
+
+        self.hid_fc_1 = SNLinear(self.ob_dim + self.ac_dim, 64)
+        if self.hps.with_layernorm:
+            self.layer_norm_1 = nn.LayerNorm(64)
+        self.hid_fc_2 = SNLinear(64, 64)
+        if self.hps.with_layernorm:
+            self.layer_norm_2 = nn.LayerNorm(64)
+        self.out_fc_3 = SNLinear(64, 1)
+
+    def get_grad_pen(self, p_ob, p_ac, e_ob, e_ac, lambda_=10):
+        """Add a gradient penalty (motivation from WGANs (Gulrajani),
+        but empirically useful in JS-GANs (Lucic et al. 2017)) and later
+        in (Karol et al. 2018)
+        """
+        # Retrieve device from either input tensor
+        device = p_ob.device
+        # Assemble interpolated state-action pair
+        ob_eps = torch.rand(self.ob_dim).to(device)
+        ac_eps = torch.rand(self.ac_dim).to(device)
+        ob_interp = ob_eps * p_ob + (1. - ob_eps) * e_ob
+        ac_interp = ac_eps * p_ac + (1. - ac_eps) * e_ac
+        # Set `requires_grad=True` to later have access to
+        # gradients w.r.t. the inputs (not populated by default)
+        ob_interp.requires_grad = True
+        ac_interp.requires_grad = True
+        # Create the operation of interest
+        score = self.D(ob_interp, ac_interp)
+        # Get the gradient of this operation with respect to its inputs
+        grads = autograd.grad(outputs=score,
+                              inputs=[ob_interp, ac_interp],
+                              only_inputs=True,
+                              grad_outputs=torch.ones(score.size()).to(device),
+                              retain_graph=True,
+                              create_graph=True)
+        assert len(list(grads)) == 2, "length must be exactly 2"
+        # Return the gradient penalty (try to induce 1-Lipschitzness)
+        grads_concat = torch.cat(list(grads), dim=-1)
+        return lambda_ * (grads_concat.norm(2, dim=-1) - 1.).pow(2).mean()
+
+    def get_reward(self, ob, ac):
+        """Craft surrogate reward"""
+        ob = torch.FloatTensor(ob).cpu()
+        ac = torch.FloatTensor(ac).cpu()
+
+        # Counterpart of GAN's minimax (also called "saturating") loss
+        # Numerics: 0 for non-expert-like states, goes to +inf for expert-like states
+        # compatible with envs with traj cutoffs for bad (non-expert-like) behavior
+        # e.g. walking simulations that get cut off when the robot falls over
+        minimax_reward = -torch.log(1. - torch.sigmoid(self.D(ob, ac).detach()) + 1e-8)
+
+        if self.hps.minimax_only:
+            return minimax_reward
+        else:
+            # Counterpart of GAN's non-saturating loss
+            # Recommended in the original GAN paper and later in (Fedus et al. 2017)
+            # Numerics: 0 for expert-like states, goes to -inf for non-expert-like states
+            # compatible with envs with traj cutoffs for good (expert-like) behavior
+            # e.g. mountain car, which gets cut off when the car reaches the destination
+            non_satur_reward = torch.log(torch.sigmoid(self.D(ob, ac).detach()))
+            # Return the sum the two previous reward functions (as in AIRL, Fu et al. 2018)
+            # Numerics: might be better might be way worse
+            return non_satur_reward + minimax_reward
+            # return minimax_reward
+
+    def D(self, ob, ac):
+        plop = torch.cat([ob, ac], dim=-1)
+        plop = F.leaky_relu(self.hid_fc_1(plop))
+        if self.hps.with_layernorm:
+            plop = self.layer_norm_1(plop)
+        plop = F.leaky_relu(self.hid_fc_2(plop))
+        if self.hps.with_layernorm:
+            plop = self.layer_norm_2(plop)
+        score = self.out_fc_3(plop)
+        return score
+
+    def forward(self, ob, ac):
+        score = self.D(ob, ac)
+        return score
 
 
 class Critic(nn.Module):
@@ -144,7 +235,7 @@ class Critic(nn.Module):
 
 class EvadeAgent(object):
 
-    def __init__(self, env, device, hps, comm):
+    def __init__(self, env, device, hps, comm, expert_dataset):
         self.env = env
         self.ob_space = self.env.observation_space
         self.ob_shape = self.ob_space.shape
@@ -195,8 +286,14 @@ class EvadeAgent(object):
             self.apnp_actor = Actor(self.ob_space, self.ac_space, self.hps).to(self.device)
             self.apnp_actor.load_state_dict(self.actor.state_dict())
 
+        self.discriminator = Discriminator(self.ob_space, self.ac_space, self.hps).to(self.device)
+        sync_with_root(self.discriminator, self.comm)
+
         # Set up replay buffer
         self.setup_replay_buffer()
+
+        # Set up demonstrations dataset
+        self.expert_dataset = expert_dataset
 
         # Set up the optimizers
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(),
@@ -208,6 +305,9 @@ class EvadeAgent(object):
             self.twin_critic_optimizer = torch.optim.Adam(self.twin_critic.parameters(),
                                                           lr=self.hps.critic_lr,
                                                           weight_decay=self.hps.wd_scale)
+
+        self.d_optimizer = torch.optim.Adam(self.discriminator.parameters(),
+                                            lr=self.hps.d_lr)
 
         log_module_info(logger, 'actor', self.actor)
         log_module_info(logger, 'critic', self.critic)
@@ -313,7 +413,7 @@ class EvadeAgent(object):
         # Store the transition in the replay buffer
         self.replay_buffer.append(ob0, ac, rew, ob1, done1)
 
-    def train(self, update_actor=True):
+    def train(self, update_critic, update_actor):
         """Train the agent"""
 
         # Get a batch of transitions from the replay buffer
@@ -437,12 +537,13 @@ class EvadeAgent(object):
             twin_critic_gradnorm = U.clip_grad_norm_(self.twin_critic.parameters(),
                                                      self.hps.clip_norm)
 
-        # Update critic(s)
-        average_gradients(self.critic, self.comm, self.device)
-        self.critic_optimizer.step()
-        if self.hps.enable_clipped_double:
-            average_gradients(self.twin_critic, self.comm, self.device)
-            self.twin_critic_optimizer.step()
+        if update_critic:
+            # Update critic(s)
+            average_gradients(self.critic, self.comm, self.device)
+            self.critic_optimizer.step()
+            if self.hps.enable_clipped_double:
+                average_gradients(self.twin_critic, self.comm, self.device)
+                self.twin_critic_optimizer.step()
 
         # Actor loss
 
@@ -466,6 +567,53 @@ class EvadeAgent(object):
             # Update target nets
             self.update_target_net()
 
+        # Discriminator loss
+
+        # Sample minibatch from the expert dataset
+        e_obs0, e_acs = self.expert_dataset.get_next_pair_batch(batch_size=self.hps.batch_size)
+        e_state = torch.FloatTensor(e_obs0).to(self.device)
+        e_action = torch.FloatTensor(e_acs).to(self.device)
+
+        # Compute scores
+        p_scores = self.discriminator(state, action)
+        e_scores = self.discriminator(e_state, e_action)
+
+        # Create entropy loss
+        scores = torch.cat([p_scores, e_scores], dim=0)
+        entropy = F.binary_cross_entropy_with_logits(input=scores, target=F.sigmoid(scores))
+        entropy_loss = -self.hps.ent_reg_scale * entropy
+
+        # Create labels
+        fake_labels = torch.zeros_like(p_scores).to(self.device)
+        real_labels = torch.ones_like(e_scores).to(self.device)
+        # Label smoothing, suggested in 'Improved Techniques for Training GANs',
+        # Salimans 2016, https://arxiv.org/abs/1606.03498
+        # The paper advises on the use of one-sided label smoothing, i.e.
+        # only smooth out the positive (real) targets side.
+        # Extra comment explanation: https://github.com/openai/improved-gan/blob/
+        # 9ff96a7e9e5ac4346796985ddbb9af3239c6eed1/imagenet/build_model.py#L88-L121
+        # Additional material: https://github.com/soumith/ganhacks/issues/10
+        real_labels.uniform_(0.7, 1.2)
+
+        # Create binary classification (cross-entropy) losses
+        p_loss = F.binary_cross_entropy_with_logits(input=p_scores, target=fake_labels)
+        e_loss = F.binary_cross_entropy_with_logits(input=e_scores, target=real_labels)
+
+        # Add a gradient penaly
+        grad_pen = self.discriminator.get_grad_pen(state, action, e_state, e_action)
+
+        d_loss = p_loss + e_loss + entropy_loss + grad_pen
+
+        # Discriminator grads
+        self.d_optimizer.zero_grad()
+        d_loss.backward()
+        d_gradnorm = U.clip_grad_norm_(self.discriminator.parameters(),
+                                       self.hps.clip_norm)
+
+        # Update discriminator
+        average_gradients(self.discriminator, self.comm, self.device)
+        self.d_optimizer.step()
+
         if self.hps.prioritized_replay:
             # Update priorities
             td_errors = q - targ_q
@@ -474,9 +622,11 @@ class EvadeAgent(object):
 
         # Aggregate the elements to return
         losses = {'actor': actor_loss.clone().cpu().data.numpy(),
-                  'critic': critic_loss.clone().cpu().data.numpy()}
+                  'critic': critic_loss.clone().cpu().data.numpy(),
+                  'discriminator': d_loss.clone().cpu().data.numpy()}
         gradnorms = {'actor': actor_gradnorm,
-                     'critic': critic_gradnorm}
+                     'critic': critic_gradnorm,
+                     'discriminator': d_gradnorm}
         if self.hps.enable_clipped_double:
             losses.update({'twin_critic': twin_critic_loss.clone().cpu().data.numpy()})
             gradnorms.update({'twin_critic': twin_critic_gradnorm})
@@ -538,7 +688,7 @@ class EvadeAgent(object):
             for p in self.actor.perturbable_params:
                 param = (self.actor.state_dict()[p]).clone()
                 param_ = param.clone()
-                noise = param_.data.normal_(0, self.param_noise.cur_std)
+                noise = param_.data.normal_(0., self.param_noise.cur_std)
                 self.pnp_actor.state_dict()[p].data.copy_((param + noise).data)
             # Update the non-perturbable params
             for p in self.actor.nonperturbable_params:

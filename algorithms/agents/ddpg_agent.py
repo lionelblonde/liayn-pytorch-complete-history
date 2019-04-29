@@ -230,8 +230,8 @@ class DDPGAgent(object):
             ac = self.actor(ob)
 
         # Place on cpu and collapse into one dimension
-        q = self.critic.Q(ob, ac).cpu().numpy().flatten()
-        ac = ac.cpu().numpy().flatten()
+        q = self.critic.Q(ob, ac).cpu().detach().numpy().flatten()
+        ac = ac.cpu().detach().numpy().flatten()
 
         if apply_noise and self.ac_noise is not None:
             # Apply additive action noise once the action has been predicted,
@@ -252,7 +252,7 @@ class DDPGAgent(object):
         # Store the transition in the replay buffer
         self.replay_buffer.append(ob0, ac, rew, ob1, done1)
 
-    def train(self, update_actor=True):
+    def train(self, update_critic, update_actor):
         """Train the agent"""
         # Get a batch of transitions from the replay buffer
         if self.hps.n_step_returns:

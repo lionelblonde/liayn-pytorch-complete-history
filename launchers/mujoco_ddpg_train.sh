@@ -35,7 +35,7 @@ mpirun -np $2 python -m algorithms.agents.run \
     --pn_adapt_frequency=10 \
     --gamma=0.99 \
     --mem_size=1000000 \
-    --prioritized_replay \
+    --no-prioritized_replay \
     --alpha=0.3 \
     --beta=1. \
     --no-ranked \
