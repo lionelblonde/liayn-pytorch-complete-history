@@ -203,7 +203,7 @@ def learn(args,
     timed = timed_cm_wrapper(logger)
 
     # Create rollout generator for training the agent
-    seg_gen = rollout_generator(env, agent, rollout_len, prefill)
+    roll_gen = rollout_generator(env, agent, rollout_len, prefill)
     if eval_env is not None:
         assert rank == 0, "non-zero rank mpi worker forbidden here"
         # Create episode generator for evaluating the agent
@@ -268,11 +268,11 @@ def learn(args,
 
         # Sample mini-batch in env w/ perturbed actor and store transitions
         with timed("interacting"):
-            seg = seg_gen.__next__()
+            rollout = roll_gen.__next__()
 
         # Extend deques with collected experiential data
-        deques.ac.extend(seg['acs'])
-        deques.q.extend(seg['qs'])
+        deques.ac.extend(rollout['acs'])
+        deques.q.extend(rollout['qs'])
 
         with timed("training"):
             for training_step in range(training_steps_per_iter):

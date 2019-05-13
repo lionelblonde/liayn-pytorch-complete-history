@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Example: ./mujoco_evade_train.sh <env_id> <num_learners>
+# Example: ./mujoco_evade_train.sh <env_id> <num_learners> <expert_path> <num_demos>
 cd ..
 
 mpirun -np $2 python -m algorithms.agents.run \
@@ -37,7 +37,7 @@ mpirun -np $2 python -m algorithms.agents.run \
     --d_lr=3e-4 \
     --clip_norm=5. \
     --minimax_only \
-    --noise_type="adaptive-param_0.2, normal_0.2" \
+    --noise_type="adaptive-param_0.2, ou_0.2" \
     --pn_adapt_frequency=10 \
     --gamma=0.99 \
     --mem_size=1000000 \

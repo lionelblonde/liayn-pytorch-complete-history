@@ -140,7 +140,6 @@ class Discriminator(nn.Module):
             # Return the sum the two previous reward functions (as in AIRL, Fu et al. 2018)
             # Numerics: might be better might be way worse
             return non_satur_reward + minimax_reward
-            # return minimax_reward
 
     def D(self, ob, ac):
         plop = torch.cat([ob, ac], dim=-1)
@@ -311,6 +310,7 @@ class EvadeAgent(object):
 
         log_module_info(logger, 'actor', self.actor)
         log_module_info(logger, 'critic', self.critic)
+        log_module_info(logger, 'discriminator', self.discriminator)
 
     def parse_noise_type(self, noise_type):
         """Parse the `noise_type` hyperparameter"""
