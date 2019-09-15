@@ -3,9 +3,9 @@
 
 cd ..
 
-python -m algorithms.agents.run \
+python main.py \
     --env_id=$1 \
-    --seed=0 \
+    --seed=1 \
     --log_dir="data/logs" \
     --task="evaluate" \
     --algo="ddpg" \

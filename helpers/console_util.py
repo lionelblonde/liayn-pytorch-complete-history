@@ -3,7 +3,7 @@ from contextlib import contextmanager
 
 import numpy as np
 
-from algorithms.helpers.misc_util import zipsame, prettify_time
+from helpers.misc_util import zipsame, prettify_time
 
 
 def cell(x, width):

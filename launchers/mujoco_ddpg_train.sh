@@ -3,13 +3,14 @@
 
 cd ..
 
-mpirun -np $2 python -m algorithms.agents.run \
+mpiexec -n $2 python main.py \
     --no-cuda \
+    --no-pixels \
     --env_id=$1 \
-    --seed=0 \
+    --seed=1 \
     --checkpoint_dir="data/checkpoints" \
     --enable_visdom \
-    --visdom_dir="data/visdom" \
+    --visdom_dir="data/summaries" \
     --log_dir="data/logs" \
     --task="train" \
     --algo="ddpg" \

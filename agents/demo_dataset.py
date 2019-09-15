@@ -1,6 +1,9 @@
-import numpy as np
+import argparse
 
-from algorithms.helpers import logger
+import numpy as np
+import matplotlib.pyplot as plt
+
+from helpers import logger
 
 
 class PairDataset(object):
@@ -114,7 +117,6 @@ class DemoDataset(object):
 
     def plot(self):
         """Plot an histogram of the returns"""
-        import matplotlib.pyplot as plt
         plt.hist(self.ep_rets, bins=10, density=True, facecolor='b', alpha=0.75)
         plt.xlabel('Return')
         plt.title("Histogram of Episodic Returns")
@@ -189,7 +191,6 @@ def test(expert_arxiv, size, plot):
 
 
 if __name__ == '__main__':
-    import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--expert_arxiv", type=str, default=None)
     parser.add_argument("--num_demos", type=int, default=None)

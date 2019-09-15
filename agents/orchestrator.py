@@ -1,20 +1,22 @@
 import time
 import copy
 import os
-import os.path as osp
 from collections import namedtuple, deque, OrderedDict
 import yaml
 
 import numpy as np
 import visdom
 
-from algorithms.helpers import logger
-from algorithms.agents.memory import RingBuffer
-from algorithms.helpers.console_util import (timed_cm_wrapper, pretty_iter,
-                                             pretty_elapsed, columnize)
+from helpers import logger
+from helpers.distributed_util import sync_check, mpi_mean_reduce
+from agents.memory import RingBuffer
+from helpers.console_util import (timed_cm_wrapper, pretty_iter,
+                                  pretty_elapsed, columnize)
 
 
 def rollout_generator(env, agent, rollout_len, prefill=0):
+
+    pixels = len(env.observation_space.shape) >= 3
 
     # Reset noise processes
     agent.reset_noise()
@@ -23,9 +25,11 @@ def rollout_generator(env, agent, rollout_len, prefill=0):
     done = True
     env_rew = 0.0
     ob = env.reset()
+    if pixels:
+        ob = np.array(ob)
 
-    obs = RingBuffer(rollout_len, shape=(agent.ob_dim,))
-    acs = RingBuffer(rollout_len, shape=(agent.ac_dim,))
+    obs = RingBuffer(rollout_len, shape=agent.ob_shape)
+    acs = RingBuffer(rollout_len, shape=agent.ac_shape)
     qs = RingBuffer(rollout_len, shape=(1,), dtype='float32')
     if hasattr(agent, 'discriminator'):
         syn_rews = RingBuffer(rollout_len, shape=(1,), dtype='float32')
@@ -39,10 +43,21 @@ def rollout_generator(env, agent, rollout_len, prefill=0):
             # Override predicted action with actions which are sampled
             # from a uniform random distribution over valid actions
             ac = env.action_space.sample()
+            # LEAVE IT HERE NOT TO FORGET >>>>>>>>>>>>>>>>>>>>>>> NON-DETERMINISTIC
+
+        # NaN-proof and clip
+        ac = np.nan_to_num(ac)
+        ac = np.clip(ac, env.action_space.low, env.action_space.high)
 
         if t > 0 and t % rollout_len == 0:
-            out = {"obs": obs.data.reshape(-1, agent.ob_dim),
-                   "acs": acs.data.reshape(-1, agent.ac_dim),
+
+            obs_ = obs.data.reshape(-1, *agent.ob_shape)
+
+            if not pixels:
+                agent.rms_obs.update(obs_)
+
+            out = {"obs": obs_,
+                   "acs": acs.data.reshape(-1, *agent.ac_shape),
                    "qs": qs.data.reshape(-1, 1),
                    "env_rews": env_rews.data.reshape(-1, 1),
                    "dones": dones.data.reshape(-1, 1)}
@@ -50,8 +65,6 @@ def rollout_generator(env, agent, rollout_len, prefill=0):
                 out.update({"syn_rews": syn_rews.data.reshape(-1, 1)})
 
             yield out
-
-            _, q_pred = agent.predict(ob, apply_noise=True)
 
         obs.append(ob)
         acs.append(ac)
@@ -73,8 +86,9 @@ def rollout_generator(env, agent, rollout_len, prefill=0):
         else:
             agent.store_transition(ob, ac, env_rew, new_ob, done)
 
-        assert isinstance(ob, np.ndarray), "copy ignored for torch tensors -> clone"
         ob = copy.copy(new_ob)
+        if pixels:
+            ob = np.array(ob)
 
         if done:
             agent.reset_noise()
@@ -226,16 +240,18 @@ def learn(args,
     deques = Deques(**{k: deque(maxlen=maxlen) for k in keys})
 
     # Set up model save directory
-    assert not osp.exists(ckpt_dir)
-    os.makedirs(ckpt_dir)
-    path = osp.join(ckpt_dir, experiment_name)
+    if rank == 0:
+        os.makedirs(ckpt_dir, exist_ok=True)
 
     # Setup Visdom
     if rank == 0 and enable_visdom:
 
+        # Setup the Visdom directory
+        os.makedirs(visdom_dir, exist_ok=True)
+
         # Create visdom
-        viz = visdom.Visdom(env="job_{}".format(experiment_name),
-                            log_to_filename=visdom_dir)
+        viz = visdom.Visdom(env="job_{}_{}".format(int(time.time()), experiment_name),
+                            log_to_filename=os.path.join(visdom_dir, "vizlog.txt"))
         assert viz.check_connection(timeout_seconds=4), "viz co not great"
 
         viz.text("World size: {}".format(world_size))
@@ -261,10 +277,17 @@ def learn(args,
         pretty_iter(logger, iters_so_far)
         pretty_elapsed(logger, tstart)
 
-        # Save the model
-        if iters_so_far % save_frequency == 0:
-            agent.save(path, iters_so_far)
-            logger.info("saving model:\n  @: {}".format(path))
+        if iters_so_far % 20 == 0:
+            # Check if the mpi workers are still synced
+            sync_check(agent.actor)
+            sync_check(agent.critic)
+            if hasattr(agent, 'discriminator'):
+                sync_check(agent.discriminator)
+
+        if rank == 0 and iters_so_far % save_frequency == 0:
+            # Save the model
+            agent.save(ckpt_dir, iters_so_far)
+            logger.info("saving model:\n  @: {}".format(ckpt_dir))
 
         # Sample mini-batch in env w/ perturbed actor and store transitions
         with timed("interacting"):
@@ -309,6 +332,7 @@ def learn(args,
             if iters_so_far % eval_frequency == 0:
 
                 with timed("evaluating"):
+
                     for eval_step in range(eval_steps_per_iter):
 
                         # Sample an episode w/ non-perturbed actor w/o storing anything
@@ -331,6 +355,7 @@ def learn(args,
         stats.update({'min_ac_comp': np.amin(ac_np_mean)})
         stats.update({'max_ac_comp': np.amax(ac_np_mean)})
         stats.update({'mean_ac_comp': np.mean(ac_np_mean)})
+        stats.update({'mean_ac_comp_mpi': mpi_mean_reduce(ac_np_mean)})
 
         # Add Q values mean and std
         stats.update({'q_value': np.mean(deques.q)})

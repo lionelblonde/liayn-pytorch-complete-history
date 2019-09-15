@@ -3,10 +3,10 @@ from math import floor
 
 import numpy as np
 
-from algorithms.helpers.math_util import discount
-from algorithms.helpers import logger
-from algorithms.helpers.misc_util import zipsame
-from algorithms.helpers.segment_tree import SumSegmentTree, MinSegmentTree
+from helpers.math_util import discount
+from helpers import logger
+from helpers.misc_util import zipsame
+from helpers.segment_tree import SumSegmentTree, MinSegmentTree
 
 
 # Global variable for debugging purposes

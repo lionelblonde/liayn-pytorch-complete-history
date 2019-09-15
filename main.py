@@ -2,26 +2,37 @@ import os
 import os.path as osp
 import random
 
+from mpi4py import MPI
 import numpy as np
 import torch
 
-from algorithms.helpers import logger
-from algorithms.helpers.argparsers import ddpg_argparser
-from algorithms.helpers.experiment_initializer import ExperimentInitializer
-from algorithms.helpers.env_makers import make_env
-from algorithms.agents import orchestrator
+from helpers import logger
+from helpers.argparsers import argparser
+from helpers.experiment import ExperimentInitializer
+from helpers.distributed_util import setup_mpi_gpus
+from helpers.env_makers import make_env
+from helpers.video_recorder import VideoRecorder
+from agents import orchestrator
+from agents.demo_dataset import DemoDataset
+from agents.ddpg_agent import DDPGAgent
+from agents.evade_agent import EvadeAgent
 
 
 def train(args):
     """Train an agent"""
 
+    # Seedify
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+
     # Get the current process rank
-    from mpi4py import MPI
     comm = MPI.COMM_WORLD
     rank = comm.Get_rank()
     world_size = comm.Get_size()
-    # Override batch size
-    args.batch_size = args.batch_size // world_size
+
+    worker_seed = args.seed + (1000000 * (rank + 1))
+    eval_seed = args.seed + 1000000
 
     torch.set_num_threads(1)
 
@@ -29,45 +40,33 @@ def train(args):
     experiment = ExperimentInitializer(args, rank=rank, world_size=world_size)
     experiment.configure_logging()
     # Create experiment name
-    experiment_name = experiment.get_long_name()
+    experiment_name = experiment.get_name()
 
     # Set device-related knobs
     if args.cuda and torch.cuda.is_available():
         torch.backends.cudnn.benchmark = False
         torch.backends.cudnn.deterministic = True
+        setup_mpi_gpus()
     device = torch.device("cuda:0" if args.cuda else "cpu")
     logger.info("device in use: {}".format(device))
 
-    # Seedify
-    torch.manual_seed(args.seed)
-    torch.cuda.manual_seed_all(args.seed)
-    np.random.seed(args.seed)
-    random.seed(args.seed)
-    # Override the specified seed
-    args.seed += (1000000 * rank)
-
     # Create environment
-    env = make_env(args.env_id, args.seed)
+    env = make_env(args.env_id, worker_seed)
 
     expert_dataset = None
     if args.add_demos_to_mem or args.algo == 'evade':
         # Create the expert demonstrations dataset from expert trajectories
-        from algorithms.agents.demo_dataset import DemoDataset
         expert_dataset = DemoDataset(expert_arxiv=args.expert_path, size=args.num_demos,
                                      train_fraction=None, randomize=True, full=True)
 
     # Create an agent wrapper
     if args.algo == 'ddpg':
-        from algorithms.agents.ddpg_agent import DDPGAgent
-
         def agent_wrapper():
-            return DDPGAgent(env=env, device=device, hps=args, comm=comm)
+            return DDPGAgent(env=env, device=device, hps=args,)
 
     elif args.algo == 'evade':
-        from algorithms.agents.evade_agent import EvadeAgent
-
         def agent_wrapper():
-            return EvadeAgent(env=env, device=device, hps=args, comm=comm,
+            return EvadeAgent(env=env, device=device, hps=args,
                               expert_dataset=expert_dataset)
 
     else:
@@ -76,7 +75,7 @@ def train(args):
     # Create an evaluation environment not to mess up with training rollouts
     eval_env = None
     if rank == 0:
-        eval_env = make_env(args.env_id, args.seed)
+        eval_env = make_env(args.env_id, eval_seed)
 
     # Train
     orchestrator.learn(args=args,
@@ -116,15 +115,14 @@ def train(args):
 def evaluate(args):
     """Evaluate an agent"""
 
+    # Seedify
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+
     # Initialize and configure experiment
     experiment = ExperimentInitializer(args)
     experiment.configure_logging()
-
-    # Seedify
-    torch.manual_seed(args.seed)
-    torch.cuda.manual_seed_all(args.seed)
-    np.random.seed(args.seed)
-    random.seed(args.seed)
 
     # Create environment
     env = make_env(args.env_id, args.seed)
@@ -135,7 +133,6 @@ def evaluate(args):
         save_dir = osp.join(args.video_dir, experiment_name)
         os.makedirs(save_dir, exist_ok=True)
         # Wrap the environment again to record videos
-        from algorithms.helpers.video_recorder import VideoRecorder
         env = VideoRecorder(env=env,
                             save_dir=save_dir,
                             record_video_trigger=lambda x: x % x == 0,  # record at the very start
@@ -147,13 +144,13 @@ def evaluate(args):
         from algorithms.agents.ddpg_agent import DDPGAgent
 
         def agent_wrapper():
-            return DDPGAgent(env=env, device='cpu', hps=args, comm=None)
+            return DDPGAgent(env=env, device='cpu', hps=args)
 
     elif args.algo == 'evade':
         from algorithms.agents.evade_agent import EvadeAgent
 
         def agent_wrapper():
-            return EvadeAgent(env=env, device='cpu', hps=args, comm=None)
+            return EvadeAgent(env=env, device='cpu', hps=args)
 
     else:
         raise NotImplementedError("algorithm not covered")
@@ -171,7 +168,7 @@ def evaluate(args):
 
 
 if __name__ == '__main__':
-    _args = ddpg_argparser().parse_args()
+    _args = argparser().parse_args()
     if _args.task == 'train':
         train(_args)
     elif _args.task == 'evaluate':

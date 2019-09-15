@@ -2,7 +2,8 @@ import os.path as osp
 
 import gym
 from gym.wrappers.monitoring import video_recorder
-from algorithms.helpers import logger
+
+from helpers import logger
 
 
 class VideoRecorder(gym.Wrapper):

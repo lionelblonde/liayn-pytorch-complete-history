@@ -134,40 +134,6 @@ class CSVOutputFormat(KVWriter):
         self.file.close()
 
 
-class TensorBoardOutputFormat(KVWriter):
-    """Dumps key/value pairs into TensorBoard's numeric format"""
-    def __init__(self, dir):
-        os.makedirs(dir, exist_ok=True)
-        self.dir = dir
-        self.step = 1
-        prefix = 'events'
-        path = osp.join(osp.abspath(dir), prefix)
-        import tensorflow as tf
-        from tensorflow.python import pywrap_tensorflow
-        from tensorflow.core.util import event_pb2
-        from tensorflow.python.util import compat
-        self.tf = tf
-        self.event_pb2 = event_pb2
-        self.pywrap_tensorflow = pywrap_tensorflow
-        self.writer = pywrap_tensorflow.EventsWriter(compat.as_bytes(path))
-
-    def writekvs(self, kvs):
-        def summary_val(k, v):
-            kwargs = {'tag': k, 'simple_value': float(v)}
-            return self.tf.Summary.Value(**kwargs)
-        summary = self.tf.Summary(value=[summary_val(k, v) for k, v in kvs.items()])
-        event = self.event_pb2.Event(wall_time=time.time(), summary=summary)
-        event.step = self.step # is there any reason why you'd want to specify the step?
-        self.writer.WriteEvent(event)
-        self.writer.Flush()
-        self.step += 1
-
-    def close(self):
-        if self.writer:
-            self.writer.Close()
-            self.writer = None
-
-
 def make_output_format(format, ev_dir, suffix=''):
     os.makedirs(ev_dir, exist_ok=True)
     if format == 'stdout':
@@ -178,8 +144,6 @@ def make_output_format(format, ev_dir, suffix=''):
         return JSONOutputFormat(osp.join(ev_dir, "progress{}.json".format(suffix)))
     elif format == 'csv':
         return CSVOutputFormat(osp.join(ev_dir, "progress{}.csv".format(suffix)))
-    elif format == 'tensorboard':
-        return TensorBoardOutputFormat(osp.join(ev_dir, "tb{}".format(suffix)))
     else:
         raise ValueError("unknown format specified: {}".format(format))
 
@@ -255,8 +219,8 @@ dump_tabular = dumpkvs
 
 class Logger(object):
 
-    DEFAULT = None  # Default logger
-    CURRENT = None  # Current logger
+    DEFAULT = None
+    CURRENT = None
 
     def __init__(self, dir_, output_formats):
         self.name2val = OrderedDict()  # values this iteration
@@ -298,9 +262,7 @@ class Logger(object):
 
 
 def configure(dir_=None, format_strs=None):
-    """Configure where the logger writes.
-    The full list of available output formats is: ['stdout', 'log', 'csv', 'json']
-    """
+    """Configure logger"""
     if dir_ is None:
         dir_ = osp.join(tempfile.gettempdir(),
                         datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S-%f_temp_log"))
@@ -315,12 +277,7 @@ def configure(dir_=None, format_strs=None):
 
 
 def configure_default_logger():
-    """Configure a default logger.
-    When using several mpi workers, each will have its own logger upon import
-    of this module (this method is executed at the end of this file).
-    Once the loggers are configured however, only the master (rank zero worker)
-    will have the right to log anything (see `experiment_initializer.py`)
-    """
+    """Configure default logger"""
     # Write to stdout by default
     format_strs = ['stdout']
     # Configure the current logger
@@ -338,22 +295,4 @@ def reset():
         log('resetting logger')
 
 
-# @contextmanager
-# def scoped_configure(dir_=None, format_strs=None):
-#     prevlogger = Logger.CURRENT
-#     configure(dir_=dir, format_strs=format_strs)
-#     try:
-#         yield
-#     finally:
-#         Logger.CURRENT.close()
-#         Logger.CURRENT = prevlogger
-
-
-"""Configure the default logger upon import
-Note: all mpi workers will all print to 'stdout' from import to configure,
-then only the master (rank zero worker) will be logging.
-A huge advantage of configuring all workers' logger upon import is that we
-dont need to worry about where to use the `logger.log` function, since it is
-available to every single worker upon import.
-"""
 configure_default_logger()

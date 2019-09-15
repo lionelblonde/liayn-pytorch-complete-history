@@ -2,13 +2,13 @@
 # Example: ./mujoco_evade_train.sh <env_id> <num_learners> <expert_path> <num_demos>
 cd ..
 
-mpirun -np $2 python -m algorithms.agents.run \
+mpiexec -n $2 python main.py \
     --no-cuda \
     --env_id=$1 \
-    --seed=0 \
+    --seed=1 \
     --checkpoint_dir="data/checkpoints" \
     --enable_visdom \
-    --visdom_dir="data/visdom" \
+    --visdom_dir="data/summaries" \
     --log_dir="data/logs" \
     --task="train" \
     --algo="evade" \

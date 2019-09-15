@@ -2,12 +2,12 @@ import yaml
 
 import gym
 
-from algorithms.helpers import logger
+from helpers import logger
 
 
 def get_benchmark(env_id):
     """Verify that the specified env is amongst the admissible ones"""
-    envs = yaml.load(open("admissible_envs.yml"))['environments']
+    envs = yaml.safe_load(open("admissible_envs.yml"))['environments']
     benchmark = None
     for k, v in envs.items():
         if env_id in list(v.keys()):

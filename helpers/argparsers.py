@@ -1,20 +1,15 @@
-from algorithms.helpers.misc_util import boolean_flag
+import argparse
+
+from helpers.misc_util import boolean_flag
 
 
-def argparse(description):
-    """Create an empty argparse.ArgumentParser"""
-    import argparse
-    return argparse.ArgumentParser(description=description,
-                                   formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-
-
-def ddpg_argparser(description="DDPG Experiment"):
-    """Create an argparse.ArgumentParser for DDPG-related tasks"""
-    parser = argparse(description)
-    parser.add_argument('--note', help='w/e note', type=str, default=None)
-    parser.add_argument('--num_sbires', type=int, default=0,
-                        help='number of parallel data collectors')
+def argparser(description="DDPG Experiment"):
+    """Create an argparse.ArgumentParser"""
+    parser = argparse.ArgumentParser(description=description,
+                                     formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument('--uuid', type=str, default=None)
     boolean_flag(parser, 'cuda', default=False)
+    boolean_flag(parser, 'pixels', default=False)
     parser.add_argument('--env_id', help='environment identifier', default='Hopper-v2')
     parser.add_argument('--seed', help='RNG seed', type=int, default=0)
     parser.add_argument('--checkpoint_dir', help='directory to save the models',

@@ -2,94 +2,34 @@ from collections import namedtuple
 
 import numpy as np
 import torch
-import torch.nn as nn
 import torch.nn.utils as U
 import torch.nn.functional as F
+import torch.distributions as D
 
-from algorithms.helpers import logger
-from algorithms.helpers.console_util import log_module_info
-from algorithms.helpers.distributed_util import average_gradients, sync_with_root
-from algorithms.agents.memory import ReplayBuffer, PrioritizedReplayBuffer, UnrealReplayBuffer
-
-
-class Actor(nn.Module):
-
-    def __init__(self, ob_space, ac_space, hps):
-        super(Actor, self).__init__()
-        self.ob_space = ob_space
-        self.ac_space = ac_space
-        self.ob_dim = self.ob_space.shape[0]
-        self.ac_dim = self.ac_space.shape[0]
-        self.hps = hps
-
-        self.hid_fc_1 = nn.Linear(self.ob_dim, 300)
-        if self.hps.with_layernorm:
-            self.layer_norm_1 = nn.LayerNorm(300)
-        self.hid_fc_2 = nn.Linear(300, 200)
-        if self.hps.with_layernorm:
-            self.layer_norm_2 = nn.LayerNorm(200)
-        self.out_fc_3 = nn.Linear(200, self.ac_dim)
-
-        self.perturbable_params = [p for p in self.state_dict()
-                                   if 'layer_norm' not in p]
-        self.nonperturbable_params = [p for p in self.state_dict()
-                                      if 'layer_norm' in p]
-        assert (set(self.perturbable_params + self.nonperturbable_params) ==
-                set(self.state_dict().keys()))
-        # Following the paper 'Parameter Space Noise for Exploration', we do not
-        # perturb the conv2d layers, only the fully-connected part of the network.
-        # Additionally, the extra variables introduced by layer normalization should remain
-        # unperturbed as they do not play any role in exploration.
-
-    def forward(self, ob):
-        plop = ob
-        plop = F.leaky_relu(self.hid_fc_1(plop))
-        if self.hps.with_layernorm:
-            plop = self.layer_norm_1(plop)
-        plop = F.leaky_relu(self.hid_fc_2(plop))
-        if self.hps.with_layernorm:
-            plop = self.layer_norm_2(plop)
-        ac = float(self.ac_space.high[0]) * torch.tanh(self.out_fc_3(plop))
-        return ac
+from helpers import logger
+from helpers.console_util import log_module_info
+from helpers.distributed_util import average_gradients, sync_with_root
+from agents.memory import ReplayBuffer, PrioritizedReplayBuffer, UnrealReplayBuffer
+from agents.nets import Actor, QuantileCritic, Discriminator
+from agents.param_noise import AdaptiveParamNoise
+from agents.ac_noise import NormalAcNoise, OUAcNoise
 
 
-class Critic(nn.Module):
-
-    def __init__(self, ob_space, ac_space, hps):
-        super(Critic, self).__init__()
-        self.ob_space = ob_space
-        self.ac_space = ac_space
-        self.ob_dim = self.ob_space.shape[0]
-        self.ac_dim = self.ac_space.shape[0]
-        self.hps = hps
-
-        self.hid_fc_1 = nn.Linear(self.ob_dim + self.ac_dim, 400)
-        if self.hps.with_layernorm:
-            self.layer_norm_1 = nn.LayerNorm(400)
-        self.hid_fc_2 = nn.Linear(400, 300)
-        if self.hps.with_layernorm:
-            self.layer_norm_2 = nn.LayerNorm(300)
-        self.out_fc_3 = nn.Linear(300, 1)
-
-    def Q(self, ob, ac):
-        plop = torch.cat([ob, ac], dim=-1)
-        plop = F.leaky_relu(self.hid_fc_1(plop))
-        if self.hps.with_layernorm:
-            plop = self.layer_norm_1(plop)
-        plop = F.leaky_relu(self.hid_fc_2(plop))
-        if self.hps.with_layernorm:
-            plop = self.layer_norm_2(plop)
-        q = self.out_fc_3(plop)
-        return q
-
-    def forward(self, ob, ac):
-        q = self.Q(ob, ac)
-        return q
+def huber_quant_reg_loss(td_errors, quantile, kappa=1.0):
+    """Huber regression loss (introduced in 1964) following the definition
+    in section 2.3 in the IQN paper (https://arxiv.org/abs/1806.06923).
+    The loss involves a disjunction of 2 cases:
+        case one: |td_errors| <= kappa
+        case two: |td_errors| > kappa
+    """
+    aux = (0.5 * td_errors ** 2 * (torch.abs(td_errors) <= kappa).float() +
+           kappa * (torch.abs(td_errors) - (0.5 * kappa)) * (torch.abs(td_errors) > kappa).float())
+    return torch.abs(quantile - ((td_errors < 0).float()).detach()) * aux / kappa
 
 
-class DDPGAgent(object):
+class EvadeAgent(object):
 
-    def __init__(self, env, device, hps, comm):
+    def __init__(self, env, device, hps, expert_dataset):
         self.env = env
         self.ob_space = self.env.observation_space
         self.ob_shape = self.ob_space.shape
@@ -103,7 +43,8 @@ class DDPGAgent(object):
         self.hps = hps
         assert self.hps.n > 1 or not self.hps.n_step_returns
 
-        self.comm = comm
+        # Uniform distribution from which quantiles are sampled
+        self.uniform = D.uniform.Uniform(0., 1.)
 
         # Define action clipping range
         assert all(self.ac_space.low == -self.ac_space.high)
@@ -114,35 +55,39 @@ class DDPGAgent(object):
         self.param_noise, self.ac_noise = self.parse_noise_type(self.hps.noise_type)
 
         # Create online and target nets, and initilize the target nets
-        self.actor = Actor(self.ob_space, self.ac_space, self.hps).to(self.device)
-        sync_with_root(self.actor, comm)
-        self.targ_actor = Actor(self.ob_space, self.ac_space, self.hps).to(self.device)
+        self.actor = Actor(self.env, self.hps).to(self.device)
+        sync_with_root(self.actor)
+        self.targ_actor = Actor(self.env, self.hps).to(self.device)
         self.targ_actor.load_state_dict(self.actor.state_dict())
-        self.critic = Critic(self.ob_space, self.ac_space, self.hps).to(self.device)
-        sync_with_root(self.critic, comm)
-        self.targ_critic = Critic(self.ob_space, self.ac_space, self.hps).to(self.device)
+        self.critic = QuantileCritic(self.env, self.hps).to(self.device)
+        sync_with_root(self.critic)
+        self.targ_critic = QuantileCritic(self.env, self.hps).to(self.device)
         self.targ_critic.load_state_dict(self.critic.state_dict())
         if self.hps.enable_clipped_double:
             # Create second ('twin') critic and target critic
             # TD3, https://arxiv.org/abs/1802.09477
-            self.twin_critic = Critic(self.ob_space, self.ac_space, self.hps).to(self.device)
-            sync_with_root(self.twin_critic, comm)
-            self.targ_twin_critic = Critic(self.ob_space, self.ac_space, self.hps).to(self.device)
+            self.twin_critic = QuantileCritic(self.env, self.hps).to(self.device)
+            self.targ_twin_critic = QuantileCritic(self.env, self.hps).to(self.device)
             self.targ_twin_critic.load_state_dict(self.targ_twin_critic.state_dict())
 
         if self.param_noise is not None:
             # Create parameter-noise-perturbed ('pnp') actor
-            self.pnp_actor = Actor(self.ob_space, self.ac_space, self.hps).to(self.device)
+            self.pnp_actor = Actor(self.env, self.hps).to(self.device)
             self.pnp_actor.load_state_dict(self.actor.state_dict())
             # Create adaptive-parameter-noise-perturbed ('apnp') actor
-            self.apnp_actor = Actor(self.ob_space, self.ac_space, self.hps).to(self.device)
+            self.apnp_actor = Actor(self.env, self.hps).to(self.device)
             self.apnp_actor.load_state_dict(self.actor.state_dict())
+
+        self.discriminator = Discriminator(self.env, self.hps).to(self.device)
+        sync_with_root(self.discriminator)
 
         # Set up replay buffer
         self.setup_replay_buffer()
 
-        # Set up the optimizers
+        # Set up demonstrations dataset
+        self.expert_dataset = expert_dataset
 
+        # Set up the optimizers
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(),
                                                 lr=self.hps.actor_lr)
         self.critic_optimizer = torch.optim.Adam(self.critic.parameters(),
@@ -153,8 +98,12 @@ class DDPGAgent(object):
                                                           lr=self.hps.critic_lr,
                                                           weight_decay=self.hps.wd_scale)
 
+        self.d_optimizer = torch.optim.Adam(self.discriminator.parameters(),
+                                            lr=self.hps.d_lr)
+
         log_module_info(logger, 'actor', self.actor)
         log_module_info(logger, 'critic', self.critic)
+        log_module_info(logger, 'discriminator', self.discriminator)
 
     def parse_noise_type(self, noise_type):
         """Parse the `noise_type` hyperparameter"""
@@ -170,7 +119,6 @@ class DDPGAgent(object):
             # If 'adaptive-param' is in the specified string for noise type
             elif 'adaptive-param' in cur_noise_type:
                 # Set parameter noise
-                from algorithms.agents.param_noise import AdaptiveParamNoise
                 _, std = cur_noise_type.split('_')
                 std = float(std)
                 param_noise = AdaptiveParamNoise(initial_std=std, delta=std)
@@ -178,14 +126,12 @@ class DDPGAgent(object):
             elif 'normal' in cur_noise_type:
                 _, std = cur_noise_type.split('_')
                 # Spherical (isotropic) gaussian action noise
-                from algorithms.agents.ac_noise import NormalAcNoise
                 ac_noise = NormalAcNoise(mu=np.zeros(self.ac_dim),
                                          sigma=float(std) * np.ones(self.ac_dim))
                 logger.info("  {} configured".format(ac_noise))
             elif 'ou' in cur_noise_type:
                 _, std = cur_noise_type.split('_')
                 # Ornstein-Uhlenbeck action noise
-                from algorithms.agents.ac_noise import OUAcNoise
                 ac_noise = OUAcNoise(mu=np.zeros(self.ac_dim),
                                      sigma=(float(std) * np.ones(self.ac_dim)))
                 logger.info("  {} configured".format(ac_noise))
@@ -230,7 +176,12 @@ class DDPGAgent(object):
             ac = self.actor(ob)
 
         # Place on cpu and collapse into one dimension
-        q = self.critic.Q(ob, ac).cpu().detach().numpy().flatten()
+
+        # Generate quantiles
+        shape = [1, self.hps.num_tau_tilde, 1]
+        quantiles_tilde = self.uniform.rsample(sample_shape=shape).to(self.device)
+
+        q = self.critic.Q(ob, ac, quantiles_tilde).cpu().detach().numpy().flatten()
         ac = ac.cpu().detach().numpy().flatten()
 
         if apply_noise and self.ac_noise is not None:
@@ -254,6 +205,7 @@ class DDPGAgent(object):
 
     def train(self, update_critic, update_actor):
         """Train the agent"""
+
         # Get a batch of transitions from the replay buffer
         if self.hps.n_step_returns:
             batch = self.replay_buffer.lookahead_sample(self.hps.batch_size,
@@ -280,50 +232,87 @@ class DDPGAgent(object):
 
         if self.hps.enable_targ_actor_smoothing:
             n_ = torch.FloatTensor(mb.acs).data.normal_(0, self.hps.td3_std).to(self.device)
-            # n_ = n_.clamp(-self.hps.c, self.hps.c)
-            n_ = n_.clamp(-0.2, 0.2)
+            n_ = n_.clamp(-self.hps.c, self.hps.c)
             next_action = (self.targ_actor(next_state) + n_).clamp(-self.max_ac, self.max_ac)
         else:
             next_action = self.targ_actor(next_state)
 
         # Compute Q estimate(s)
-        q = self.critic(state, action)
 
+        # Generate quantiles
+        shape = [self.hps.batch_size, self.hps.num_tau, 1]
+        quantiles = self.uniform.rsample(sample_shape=shape).to(self.device)
+
+        q = self.critic(state, action, quantiles)
         if self.hps.enable_clipped_double:
-            twin_q = self.twin_critic(state, action)
+            twin_q = self.twin_critic(state, action, quantiles)
 
         # Compute target Q estimate
-        q_prime = self.targ_critic(next_state, next_action)
+
+        # Generate quantiles
+        shape = [self.hps.batch_size, self.hps.num_tau_prime, 1]
+        quantiles_prime = self.uniform.rsample(sample_shape=shape).to(self.device)
+
+        q_prime = self.targ_critic(next_state, next_action, quantiles_prime)
         if self.hps.enable_clipped_double:
             # Define Q' as the minimum Q value between TD3's twin Q's
-            twin_q_prime = self.targ_twin_critic(next_state, next_action)
+            twin_q_prime = self.targ_twin_critic(next_state, next_action, quantiles_prime)
             q_prime = torch.min(q_prime, twin_q_prime)
-        targ_q = (reward + (self.hps.gamma ** td_len) * (1 - done) * q_prime).detach()
 
-        # Actor loss
-        actor_loss = -self.critic.Q(state, self.actor(state)).mean()
+        # Reshape rewards to be of shape [batch_size x num_tau_prime, 1]
+        reward = reward.repeat(self.hps.num_tau_prime, 1)
+        # Reshape product of gamma and mask to be of shape [batch_size x num_tau_prime, 1]
+        gamma_mask = ((self.hps.gamma ** td_len) * (1 - done)).repeat(self.hps.num_tau_prime, 1)
+        # Reshape Q prime to be of shape [batch_size x num_tau_prime, 1]
+        q_prime = q_prime.view(-1, 1)
+
+        targ_q = (reward + gamma_mask * q_prime).detach()
+        # Reshape target to be of shape [batch_size, num_tau_prime, 1]
+        targ_q = targ_q.view(-1, self.hps.num_tau_prime, 1)
 
         # Critic(s) loss(es)
+
+        # Tile by num_tau_prime_samples along a new dimension, the goal is to give
+        # the Huber quantile regression loss quantiles that have the same shape
+        # as the TD errors for it to deal with each component as expected
+        quantiles = quantiles[:, None, :, :].repeat(1, self.hps.num_tau_prime, 1, 1)
+        # The resulting shape is [batch_size, num_tau_prime, num_tau, 1]
+
+        # Compute the TD error loss
+        # Note: online version has shape [batch_size, num_tau, 1],
+        # while the target version has shape [batch_size, num_tau_prime, 1].
+        td_errors = targ_q[:, :, None, :] - q[:, None, :, :]  # broadcasting
+        # The resulting shape is [batch_size, num_tau_prime, num_tau, 1]
+        if self.hps.enable_clipped_double:
+            twin_td_errors = targ_q[:, :, None, :] - twin_q[:, None, :, :]  # broadcasting
+
+        # Assemble the Huber Quantile Regression loss
+        huber_td_errors = huber_quant_reg_loss(td_errors, quantiles)
+        # The resulting shape is [batch_size, num_tau_prime, num_tau, 1]
+        if self.hps.enable_clipped_double:
+            twin_huber_td_errors = huber_quant_reg_loss(twin_td_errors, quantiles)
+
         if self.hps.prioritized_replay:
             # Adjust with importance weights
-            squared_td_errors = F.mse_loss(q, targ_q, reduction='none')
-            critic_loss = (iws * squared_td_errors).mean()
-        else:
-            critic_loss = F.mse_loss(q, targ_q)
+            huber_td_errors *= iws
+            if self.hps.enable_clipped_double:
+                twin_huber_td_errors *= iws
 
+        # Sum over current quantile value (tau, N in paper) dimension, and
+        # average over target quantile value (tau prime, N' in paper) dimension.
+        critic_loss = huber_td_errors.sum(dim=2)
+        # Resulting shape is [batch_size, num_tau_prime, 1]
         if self.hps.enable_clipped_double:
-            if self.hps.prioritized_replay:
-                # Adjust with importance weights
-                twin_squared_td_errors = F.mse_loss(twin_q, targ_q, reduction='none')
-                twin_critic_loss = (iws * twin_squared_td_errors).mean()
-            else:
-                twin_critic_loss = F.mse_loss(twin_q, targ_q)
+            twin_critic_loss = twin_huber_td_errors.sum(dim=2)
+        critic_loss = critic_loss.mean(dim=1)
+        # Resulting shape is [batch_size, 1]
+        if self.hps.enable_clipped_double:
+            twin_critic_loss = twin_critic_loss.mean(dim=1)
 
-        # Actor grads
-        self.actor_optimizer.zero_grad()
-        actor_loss.backward()
-        actor_gradnorm = U.clip_grad_norm_(self.actor.parameters(),
-                                           self.hps.clip_norm)
+        # Average across the minibatch
+        critic_loss = critic_loss.mean()
+        if self.hps.enable_clipped_double:
+            twin_critic_loss = twin_critic_loss.mean()
 
         # Critic(s) grads
         self.critic_optimizer.zero_grad()
@@ -338,35 +327,96 @@ class DDPGAgent(object):
             twin_critic_gradnorm = U.clip_grad_norm_(self.twin_critic.parameters(),
                                                      self.hps.clip_norm)
 
-        # Update critic(s)
-        average_gradients(self.critic, self.comm, self.device)
-        self.critic_optimizer.step()
-        if self.hps.enable_clipped_double:
-            average_gradients(self.twin_critic, self.comm, self.device)
-            self.twin_critic_optimizer.step()
+        if update_critic:
+            # Update critic(s)
+            average_gradients(self.critic, self.device)
+            self.critic_optimizer.step()
+            if self.hps.enable_clipped_double:
+                average_gradients(self.twin_critic, self.device)
+                self.twin_critic_optimizer.step()
+
+        # Actor loss
+
+        # Generate quantiles
+        shape = [self.hps.batch_size, self.hps.num_tau_tilde, 1]
+        quantiles_tilde = self.uniform.rsample(sample_shape=shape).to(self.device)
+
+        actor_loss = -self.critic.Q(state, self.actor(state), quantiles_tilde).mean()
+
+        # Actor grads
+        self.actor_optimizer.zero_grad()
+        actor_loss.backward()
+        actor_gradnorm = U.clip_grad_norm_(self.actor.parameters(),
+                                           self.hps.clip_norm)
 
         if update_actor:
             # Update actor
-            average_gradients(self.actor, self.comm, self.device)
+            average_gradients(self.actor, self.device)
             self.actor_optimizer.step()
 
             # Update target nets
             self.update_target_net()
 
+        # Discriminator loss
+
+        # Sample minibatch from the expert dataset
+        e_obs0, e_acs = self.expert_dataset.get_next_pair_batch(batch_size=self.hps.batch_size)
+        e_state = torch.FloatTensor(e_obs0).to(self.device)
+        e_action = torch.FloatTensor(e_acs).to(self.device)
+
+        # Compute scores
+        p_scores = self.discriminator(state, action)
+        e_scores = self.discriminator(e_state, e_action)
+
+        # Create entropy loss
+        scores = torch.cat([p_scores, e_scores], dim=0)
+        entropy = F.binary_cross_entropy_with_logits(input=scores, target=F.sigmoid(scores))
+        entropy_loss = -self.hps.ent_reg_scale * entropy
+
+        # Create labels
+        fake_labels = torch.zeros_like(p_scores).to(self.device)
+        real_labels = torch.ones_like(e_scores).to(self.device)
+        # Label smoothing, suggested in 'Improved Techniques for Training GANs',
+        # Salimans 2016, https://arxiv.org/abs/1606.03498
+        # The paper advises on the use of one-sided label smoothing, i.e.
+        # only smooth out the positive (real) targets side.
+        # Extra comment explanation: https://github.com/openai/improved-gan/blob/
+        # 9ff96a7e9e5ac4346796985ddbb9af3239c6eed1/imagenet/build_model.py#L88-L121
+        # Additional material: https://github.com/soumith/ganhacks/issues/10
+        real_labels.uniform_(0.7, 1.2)
+
+        # Create binary classification (cross-entropy) losses
+        p_loss = F.binary_cross_entropy_with_logits(input=p_scores, target=fake_labels)
+        e_loss = F.binary_cross_entropy_with_logits(input=e_scores, target=real_labels)
+
+        # Add a gradient penaly
+        grad_pen = self.discriminator.get_grad_pen(state, action, e_state, e_action)
+
+        d_loss = p_loss + e_loss + entropy_loss + grad_pen
+
+        # Discriminator grads
+        self.d_optimizer.zero_grad()
+        d_loss.backward()
+        d_gradnorm = U.clip_grad_norm_(self.discriminator.parameters(),
+                                       self.hps.clip_norm)
+
+        # Update discriminator
+        average_gradients(self.discriminator, self.device)
+        self.d_optimizer.step()
+
         if self.hps.prioritized_replay:
             # Update priorities
             td_errors = q - targ_q
-            if self.hps.enable_clipped_double:
-                td_errors = torch.min(q - targ_q, twin_q - targ_q)
             new_priorities = np.abs(td_errors.detach().cpu().numpy()) + 1e-6  # epsilon from paper
-
             self.replay_buffer.update_priorities(mb.idxs, new_priorities)
 
         # Aggregate the elements to return
         losses = {'actor': actor_loss.clone().cpu().data.numpy(),
-                  'critic': critic_loss.clone().cpu().data.numpy()}
+                  'critic': critic_loss.clone().cpu().data.numpy(),
+                  'discriminator': d_loss.clone().cpu().data.numpy()}
         gradnorms = {'actor': actor_gradnorm,
-                     'critic': critic_gradnorm}
+                     'critic': critic_gradnorm,
+                     'discriminator': d_gradnorm}
         if self.hps.enable_clipped_double:
             losses.update({'twin_critic': twin_critic_loss.clone().cpu().data.numpy()})
             gradnorms.update({'twin_critic': twin_critic_gradnorm})
@@ -428,7 +478,7 @@ class DDPGAgent(object):
             for p in self.actor.perturbable_params:
                 param = (self.actor.state_dict()[p]).clone()
                 param_ = param.clone()
-                noise = param_.data.normal_(0, self.param_noise.cur_std)
+                noise = param_.data.normal_(0., self.param_noise.cur_std)
                 self.pnp_actor.state_dict()[p].data.copy_((param + noise).data)
             # Update the non-perturbable params
             for p in self.actor.nonperturbable_params:
