@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Example: ./mujoco_evade_train.sh <env_id> <num_learners> <expert_path> <num_demos>
+
 cd ..
 
 mpiexec -n $2 python main.py \
@@ -11,12 +12,12 @@ mpiexec -n $2 python main.py \
     --visdom_dir="data/summaries" \
     --log_dir="data/logs" \
     --task="train" \
-    --algo="evade" \
+    --algo="my" \
     --save_frequency=100 \
     --num_iters=10000000 \
     --training_steps_per_iter=20 \
     --eval_steps_per_iter=50 \
-    --eval_frequency=100 \
+    --eval_frequency=10 \
     --prefill=200 \
     --no-render \
     --rollout_len=5 \
@@ -37,6 +38,7 @@ mpiexec -n $2 python main.py \
     --d_lr=3e-4 \
     --clip_norm=5. \
     --minimax_only \
+    --no-state_only \
     --noise_type="adaptive-param_0.2, ou_0.2" \
     --pn_adapt_frequency=10 \
     --gamma=0.99 \

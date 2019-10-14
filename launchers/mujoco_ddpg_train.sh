@@ -17,7 +17,7 @@ mpiexec -n $2 python main.py \
     --save_frequency=100 \
     --num_iters=10000000 \
     --training_steps_per_iter=20 \
-    --eval_steps_per_iter=20 \
+    --eval_steps_per_iter=50 \
     --eval_frequency=10 \
     --prefill=200 \
     --no-render \

@@ -15,7 +15,7 @@ from helpers.video_recorder import VideoRecorder
 from agents import orchestrator
 from agents.demo_dataset import DemoDataset
 from agents.ddpg_agent import DDPGAgent
-from agents.evade_agent import EvadeAgent
+from agents.my_agent import MyAgent
 
 
 def train(args):
@@ -54,7 +54,7 @@ def train(args):
     env = make_env(args.env_id, worker_seed)
 
     expert_dataset = None
-    if args.add_demos_to_mem or args.algo == 'evade':
+    if args.add_demos_to_mem or args.algo == 'my':
         # Create the expert demonstrations dataset from expert trajectories
         expert_dataset = DemoDataset(expert_arxiv=args.expert_path, size=args.num_demos,
                                      train_fraction=None, randomize=True, full=True)
@@ -62,12 +62,12 @@ def train(args):
     # Create an agent wrapper
     if args.algo == 'ddpg':
         def agent_wrapper():
-            return DDPGAgent(env=env, device=device, hps=args,)
+            return DDPGAgent(env=env, device=device, hps=args)
 
-    elif args.algo == 'evade':
+    elif args.algo == 'my':
         def agent_wrapper():
-            return EvadeAgent(env=env, device=device, hps=args,
-                              expert_dataset=expert_dataset)
+            return MyAgent(env=env, device=device, hps=args,
+                           expert_dataset=expert_dataset)
 
     else:
         raise NotImplementedError("algorithm not covered")
@@ -141,17 +141,12 @@ def evaluate(args):
 
     # Create an agent wrapper
     if args.algo == 'ddpg':
-        from algorithms.agents.ddpg_agent import DDPGAgent
-
         def agent_wrapper():
             return DDPGAgent(env=env, device='cpu', hps=args)
 
-    elif args.algo == 'evade':
-        from algorithms.agents.evade_agent import EvadeAgent
-
+    elif args.algo == 'my':
         def agent_wrapper():
-            return EvadeAgent(env=env, device='cpu', hps=args)
-
+            return MyAgent(env=env, device='cpu', hps=args)
     else:
         raise NotImplementedError("algorithm not covered")
 

@@ -8,7 +8,7 @@ import torch.distributions as D
 
 from helpers import logger
 from helpers.console_util import log_module_info
-from helpers.distributed_util import average_gradients, sync_with_root
+from helpers.distributed_util import average_gradients, sync_with_root, RunMoms
 from agents.memory import ReplayBuffer, PrioritizedReplayBuffer, UnrealReplayBuffer
 from agents.nets import Actor, QuantileCritic, Discriminator
 from agents.param_noise import AdaptiveParamNoise
@@ -27,7 +27,7 @@ def huber_quant_reg_loss(td_errors, quantile, kappa=1.0):
     return torch.abs(quantile - ((td_errors < 0).float()).detach()) * aux / kappa
 
 
-class EvadeAgent(object):
+class MyAgent(object):
 
     def __init__(self, env, device, hps, expert_dataset):
         self.env = env
@@ -105,6 +105,9 @@ class EvadeAgent(object):
         log_module_info(logger, 'critic', self.critic)
         log_module_info(logger, 'discriminator', self.discriminator)
 
+        if not self.hps.pixels:
+            self.rms_obs = RunMoms(shape=self.ob_shape, use_mpi=True)
+
     def parse_noise_type(self, noise_type):
         """Parse the `noise_type` hyperparameter"""
         ac_noise = None
@@ -168,6 +171,11 @@ class EvadeAgent(object):
         # Create tensor from the state (`require_grad=False` by default)
         ob = torch.FloatTensor(ob[None]).to(self.device)
 
+        if not self.hps.pixels:
+            ob = ((ob - torch.FloatTensor(self.rms_obs.mean)) /
+                  (torch.sqrt(torch.FloatTensor(self.rms_obs.var)) + 1e-8))
+            ob = torch.clamp(ob, -5.0, 5.0)
+
         if apply_noise and self.param_noise is not None:
             # Predict following a parameter-noise-perturbed actor
             ac = self.pnp_actor(ob)
@@ -213,6 +221,11 @@ class EvadeAgent(object):
                                                         gamma=self.hps.gamma)
         else:
             batch = self.replay_buffer.sample(self.hps.batch_size)
+
+        if not self.hps.pixels:
+            batch['obs0'] = ((batch['obs0'] - self.rms_obs.mean) /
+                             (np.sqrt(self.rms_obs.var) + 1e-8))
+            batch['obs0'] = np.clip(batch['obs0'], -5.0, 5.0)
 
         # Create tensors from the inputs (`require_grad=False` by default)
         MiniBatch = namedtuple('MiniBatch', batch.keys())
@@ -389,10 +402,7 @@ class EvadeAgent(object):
         p_loss = F.binary_cross_entropy_with_logits(input=p_scores, target=fake_labels)
         e_loss = F.binary_cross_entropy_with_logits(input=e_scores, target=real_labels)
 
-        # Add a gradient penaly
-        grad_pen = self.discriminator.get_grad_pen(state, action, e_state, e_action)
-
-        d_loss = p_loss + e_loss + entropy_loss + grad_pen
+        d_loss = p_loss + e_loss + entropy_loss
 
         # Discriminator grads
         self.d_optimizer.zero_grad()
@@ -407,7 +417,10 @@ class EvadeAgent(object):
         if self.hps.prioritized_replay:
             # Update priorities
             td_errors = q - targ_q
+            if self.hps.enable_clipped_double:
+                td_errors = torch.min(q - targ_q, twin_q - targ_q)
             new_priorities = np.abs(td_errors.detach().cpu().numpy()) + 1e-6  # epsilon from paper
+
             self.replay_buffer.update_priorities(mb.idxs, new_priorities)
 
         # Aggregate the elements to return

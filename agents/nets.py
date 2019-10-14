@@ -4,9 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.modules.rnn as rnn
 import torch.nn.functional as F
-from torch import autograd
-
-from helpers.spectral_norm import SNLinear
+import torch.nn.utils as U
 
 
 # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> Core.
@@ -201,51 +199,18 @@ class Discriminator(nn.Module):
             in_dim = self.ob_dim + self.ac_dim
 
         # Define hidden layers
-        self.fc_1 = SNLinear(in_dim, 64)
-        self.fc_2 = SNLinear(64, 64)
-        ortho_init(self.fc_1, activ='leaky_relu', constant_bias=0.0)
-        ortho_init(self.fc_2, activ='leaky_relu', constant_bias=0.0)
+        self.fc_1 = U.spectral_norm(nn.Linear(in_dim, 64))
+        self.fc_2 = U.spectral_norm(nn.Linear(64, 64))
+        ortho_init(self.fc_1, nonlinearity='leaky_relu', constant_bias=0.0)
+        ortho_init(self.fc_2, nonlinearity='leaky_relu', constant_bias=0.0)
 
         # Define layernorm layers
         self.ln_1 = nn.LayerNorm(64) if self.hps.with_layernorm else lambda x: x
         self.ln_2 = nn.LayerNorm(64) if self.hps.with_layernorm else lambda x: x
 
         # Define score head
-        self.score_head = SNLinear(64, 1)
-        ortho_init(self.score_head, activ='linear', constant_bias=0.0)
-
-    def get_grad_pen(self, p_ob, p_ac, e_ob, e_ac, lambda_=10):
-        """Add a gradient penalty (motivation from WGANs (Gulrajani),
-        but empirically useful in JS-GANs (Lucic et al. 2017)) and later
-        in (Karol et al. 2018)
-        """
-        # Retrieve device from either input tensor
-        device = p_ob.device
-        # Assemble interpolated state-action pair
-        ob_eps = torch.rand(self.ob_dim).to(device)
-        ac_eps = torch.rand(self.ac_dim).to(device)
-        ob_interp = ob_eps * p_ob + (1. - ob_eps) * e_ob
-        ac_interp = ac_eps * p_ac + (1. - ac_eps) * e_ac
-        # Set `requires_grad=True` to later have access to
-        # gradients w.r.t. the inputs (not populated by default)
-        ob_interp.requires_grad = True
-        ac_interp.requires_grad = True
-        # Create the operation of interest
-        score = self.D(ob_interp, ac_interp)
-        # Get the gradient of this operation with respect to its inputs
-        grads = autograd.grad(outputs=score,
-                              inputs=[ob_interp, ac_interp],
-                              only_inputs=True,
-                              grad_outputs=torch.ones(score.size()).to(device),
-                              retain_graph=True,
-                              create_graph=True,
-                              allow_unused=self.hps.state_only)
-        assert len(list(grads)) == 2, "length must be exactly 2"
-        # Return the gradient penalty (try to induce 1-Lipschitzness)
-        if self.hps.state_only:
-            grads = grads[0]
-        grads_concat = torch.cat(list(grads), dim=-1)
-        return lambda_ * (grads_concat.norm(2, dim=-1) - 1.).pow(2).mean()
+        self.score_head = nn.Linear(64, 1)
+        ortho_init(self.score_head, nonlinearity='linear', constant_bias=0.0)
 
     def get_reward(self, ob, ac):
         """Craft surrogate reward"""

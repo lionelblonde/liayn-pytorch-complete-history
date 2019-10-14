@@ -38,12 +38,12 @@ def rollout_generator(env, agent, rollout_len, prefill=0):
 
     while True:
         ac, q_pred = agent.predict(ob, apply_noise=True)
-        if t < prefill:
-            logger.info("populating the replay buffer with uniform policy")
-            # Override predicted action with actions which are sampled
-            # from a uniform random distribution over valid actions
-            ac = env.action_space.sample()
-            # LEAVE IT HERE NOT TO FORGET >>>>>>>>>>>>>>>>>>>>>>> NON-DETERMINISTIC
+        # if t < prefill:
+        #     logger.info("populating the replay buffer with uniform policy")
+        #     # Override predicted action with actions which are sampled
+        #     # from a uniform random distribution over valid actions
+        #     ac = env.action_space.sample()
+        #     # LEAVE IT HERE NOT TO FORGET >>>>>>>>>>>>>>>>>>>>>>> NON-DETERMINISTIC
 
         # NaN-proof and clip
         ac = np.nan_to_num(ac)

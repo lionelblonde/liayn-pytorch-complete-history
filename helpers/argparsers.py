@@ -26,7 +26,7 @@ def argparser(description="DDPG Experiment"):
     parser.add_argument('--video_len', help='duration of the video to record',
                         type=int, default=200)
     parser.add_argument('--task', type=str, choices=['train', 'evaluate'], default=None)
-    parser.add_argument('--algo', type=str, choices=['ddpg', 'evade'], default=None)
+    parser.add_argument('--algo', type=str, choices=['ddpg', 'my'], default=None)
     parser.add_argument('--save_frequency', help='save model every xx iterations',
                         type=int, default=100)
     parser.add_argument('--num_iters', help='cummulative number of iterations since launch',
@@ -65,6 +65,7 @@ def argparser(description="DDPG Experiment"):
     parser.add_argument('--reward_scale', type=float, default=1.)
     parser.add_argument('--clip_norm', type=float, default=None)
     boolean_flag(parser, 'minimax_only', default=True)
+    boolean_flag(parser, 'state_only', default=False)
     parser.add_argument('--noise_type', help='choices: adaptive-param_xx, normal_xx, ou_xx, none',
                         type=str, default='adaptive-param_0.2, ou_0.1, normal_0.1')
     parser.add_argument('--pn_adapt_frequency', type=float, default=50)
