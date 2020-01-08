@@ -1,40 +1,7 @@
 import time
 from contextlib import contextmanager
 
-import numpy as np
-
 from helpers.misc_util import zipsame, prettify_time
-
-
-def cell(x, width):
-    """Format a tabular cell to the specified width"""
-    if isinstance(x, np.ndarray):
-        x = x.item()
-    rep = "{:G}".format(x) if isinstance(x, float) else str(x)
-    return rep + (' ' * (width - len(rep)))
-
-
-def columnize(names, tuples, widths, indent=2):
-    """Generate and return the content of table
-    (w/o logging or printing anything)
-
-    Args:
-        width (int): Width of each cell in the table
-        indent (int): Indentation spacing prepended to every row in the table
-    """
-    indent_space = indent * ' '
-    # Add row containing the names
-    table = indent_space + " | ".join(cell(name, width) for name, width in zipsame(names, widths))
-    table_width = len(table)
-    # Add header hline
-    table += '\n' + indent_space + ('-' * table_width)
-    for tuple_ in tuples:
-        # Add a new row
-        table += '\n' + indent_space
-        table += " | ".join(cell(value, width) for value, width in zipsame(tuple_, widths))
-    # Add closing hline
-    table += '\n' + indent_space + ('-' * table_width)
-    return table
 
 
 def colorize(string, color, bold=False, highlight=False):
@@ -50,14 +17,41 @@ def colorize(string, color, bold=False, highlight=False):
     return '\x1b[%sm%s\x1b[0m' % (';'.join(attr), string)
 
 
+def log_env_info(logger, env):
+    logger.info(4 * ">" + " logging env \"{}\" specs".format(env))
+    shapes = {'ob_shape': env.observation_space.shape,
+              'ac_shape': (env.action_space.n
+                           if hasattr(env.action_space, 'n')
+                           else env.action_space.shape)}
+    logger.info("[INFO] shapes: {}.".format(shapes))
+
+
 def log_module_info(logger, name, model):
-    logger.info("logging {} specs".format(name))
-    tuples = zip([x for x in model.state_dict()],
-                 [model.state_dict()[x].size() for x in model.state_dict()],
-                 [model.state_dict()[x].numel() for x in model.state_dict()])
-    logger.info(columnize(['param', 'size', 'numel'], tuples, widths=[24, 24, 8]))
-    logger.info("  total num params: {}".format(sum([model.state_dict()[x].numel()
-                                                     for x in model.state_dict()])))
+
+    def _fmt(n):
+        if n // 10 ** 6 > 0:
+            return str(round(n / 10 ** 6, 2)) + ' M'
+        elif n // 10 ** 3:
+            return str(round(n / 10 ** 3, 2)) + ' k'
+        else:
+            return str(n)
+
+    logger.info(4 * ">" + " logging {} specs".format(name))
+    lists = [[x for x in model.state_dict()],
+             [list(model.state_dict()[x].size()) for x in model.state_dict()],
+             [model.state_dict()[x].numel() for x in model.state_dict()],
+             [True
+              if x in [n for (n, p) in model.named_parameters() if p.requires_grad]
+              else False
+              for x in model.state_dict()]]
+    for i, (p, s, n, t) in enumerate(zipsame(*lists)):
+        logger.info("[INFO] ({}:".format(str(i).zfill(2)) +
+                    " param_name={},".format(str(p)) +
+                    " size={},".format(str(s)) +
+                    " numel={},".format(str(n)) +
+                    " trainable={})".format(str(t)))
+    num_params = [p.numel() for (n, p) in model.named_parameters() if p.requires_grad]
+    logger.info("[INFO] trainable params: {}.".format(_fmt(sum(num_params))))
 
 
 def timed_cm_wrapper(logger, color_message='magenta', color_elapsed_time='cyan'):
@@ -67,21 +61,17 @@ def timed_cm_wrapper(logger, color_message='magenta', color_elapsed_time='cyan')
         """Display the time it took for the mpi master
         to perform the task within the context manager
         """
-        logger.info(colorize(message, color=color_message))
+        logger.info(colorize(">>>> {}".format(message).ljust(50, '.'), color=color_message))
         tstart = time.time()
         yield
-        logger.info(colorize("  [done in {:.3f} seconds]".format(time.time() - tstart),
+        logger.info(colorize("[done in {:.3f} seconds]".format(time.time() - tstart).rjust(50, '.'),
                              color=color_elapsed_time))
     return _timed
 
 
-def pretty_iter(logger, i):
-    """Display the current iteration with a colored decorator"""
-    logger.info(colorize("I T E R A T I O N  {}".format(i), color='blue'))
-
-
-def pretty_elapsed(logger, tstart):
-    """Display the elapsed time with a colored decorator"""
+def log_iter_info(logger, iters_so_far, num_iters, tstart):
+    """Display the current iteration and elapsed time"""
     elapsed = prettify_time(time.time() - tstart)
-    # logger.info('')
-    logger.info(colorize("E L A P S E D  {}".format(elapsed), color='green'))
+    fmtstr = " iteration [{}/{}] | elapsed time: {}"
+    logger.info(colorize(fmtstr.format(iters_so_far, num_iters, elapsed).rjust(75, '>'),
+                         color='blue'))

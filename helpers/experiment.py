@@ -1,4 +1,3 @@
-import datetime
 import random
 import os
 import os.path as osp
@@ -43,7 +42,8 @@ class ExperimentInitializer:
 
     def __init__(self, args, rank=None, world_size=None):
         """Initialize the experiment"""
-        self.uuid = uuid() if args.uuid is None else args.uuid
+        self.uuid_provided = (args.uuid is not None)
+        self.uuid = args.uuid if self.uuid_provided else uuid()
         self.args = args
         self.rank = rank
         self.world_size = world_size
@@ -82,13 +82,12 @@ class ExperimentInitializer:
             logger.configure(dir_=None, format_strs=None)
             logger.set_level(logger.DISABLED)
 
-    def prepend_date(undated_name):
-        """Prepend the date to a file or directory name"""
-        now = datetime.datetime.now()
-        return now.strftime("%Y-%m-%d_%H-%M-%S__{}".format(undated_name))
-
     def get_name(self):
         """Assemble long experiment name"""
+        if self.uuid_provided:
+            # If the uuid has been provided, use it.
+            return self.uuid
+        # Assemble the uuid
         name = self.uuid + '.'
         name += "{}.{}.".format(self.args.task, self.args.algo)
         if 'evaluate' in self.args.task:

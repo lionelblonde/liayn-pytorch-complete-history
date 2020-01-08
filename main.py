@@ -1,4 +1,3 @@
-import os
 import os.path as osp
 import random
 
@@ -11,28 +10,18 @@ from helpers.argparsers import argparser
 from helpers.experiment import ExperimentInitializer
 from helpers.distributed_util import setup_mpi_gpus
 from helpers.env_makers import make_env
-from helpers.video_recorder import VideoRecorder
 from agents import orchestrator
-from agents.demo_dataset import DemoDataset
+from helpers.dataset import DemoDataset
 from agents.ddpg_agent import DDPGAgent
-from agents.my_agent import MyAgent
 
 
 def train(args):
     """Train an agent"""
 
-    # Seedify
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
-
     # Get the current process rank
     comm = MPI.COMM_WORLD
     rank = comm.Get_rank()
     world_size = comm.Get_size()
-
-    worker_seed = args.seed + (1000000 * (rank + 1))
-    eval_seed = args.seed + 1000000
 
     torch.set_num_threads(1)
 
@@ -46,31 +35,34 @@ def train(args):
     if args.cuda and torch.cuda.is_available():
         torch.backends.cudnn.benchmark = False
         torch.backends.cudnn.deterministic = True
+        device = torch.device("cuda:0")
         setup_mpi_gpus()
-    device = torch.device("cuda:0" if args.cuda else "cpu")
+    else:
+        device = torch.device("cpu")
     logger.info("device in use: {}".format(device))
+
+    # Seedify
+    torch.manual_seed(args.seed)
+    torch.cuda.manual_seed_all(args.seed)
+    np.random.seed(args.seed)
+    random.seed(args.seed)
+    worker_seed = args.seed + (1000000 * (rank + 1))
+    eval_seed = args.seed + 1000000
 
     # Create environment
     env = make_env(args.env_id, worker_seed)
 
     expert_dataset = None
-    if args.add_demos_to_mem or args.algo == 'my':
+    if args.algo == 'sam' or args.add_demos_to_mem:
         # Create the expert demonstrations dataset from expert trajectories
-        expert_dataset = DemoDataset(expert_arxiv=args.expert_path, size=args.num_demos,
-                                     train_fraction=None, randomize=True, full=True)
+        expert_dataset = DemoDataset(expert_path=args.expert_path,
+                                     num_demos=args.num_demos)
 
-    # Create an agent wrapper
-    if args.algo == 'ddpg':
-        def agent_wrapper():
-            return DDPGAgent(env=env, device=device, hps=args)
-
-    elif args.algo == 'my':
-        def agent_wrapper():
-            return MyAgent(env=env, device=device, hps=args,
-                           expert_dataset=expert_dataset)
-
-    else:
-        raise NotImplementedError("algorithm not covered")
+    def agent_wrapper():
+        return DDPGAgent(env=env,
+                         device=device,
+                         hps=args,
+                         expert_dataset=expert_dataset)
 
     # Create an evaluation environment not to mess up with training rollouts
     eval_env = None
@@ -86,8 +78,6 @@ def train(args):
                        agent_wrapper=agent_wrapper,
                        experiment_name=experiment_name,
                        ckpt_dir=osp.join(args.checkpoint_dir, experiment_name),
-                       enable_visdom=args.enable_visdom,
-                       visdom_dir=osp.join(args.visdom_dir, experiment_name),
                        save_frequency=args.save_frequency,
                        pn_adapt_frequency=args.pn_adapt_frequency,
                        rollout_len=args.rollout_len,
@@ -98,10 +88,10 @@ def train(args):
                        actor_update_delay=args.actor_update_delay,
                        d_update_ratio=args.d_update_ratio,
                        render=args.render,
+                       record=args.record,
                        expert_dataset=expert_dataset,
                        add_demos_to_mem=args.add_demos_to_mem,
-                       prefill=args.prefill,
-                       max_iters=int(args.num_iters))
+                       num_timesteps=int(args.num_timesteps))
 
     # Close environment
     env.close()
@@ -115,40 +105,25 @@ def train(args):
 def evaluate(args):
     """Evaluate an agent"""
 
-    # Seedify
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
-
     # Initialize and configure experiment
     experiment = ExperimentInitializer(args)
     experiment.configure_logging()
 
+    # Seedify
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    random.seed(args.seed)
+
     # Create environment
     env = make_env(args.env_id, args.seed)
 
-    if args.record:
-        # Create experiment name
-        experiment_name = experiment.get_long_name()
-        save_dir = osp.join(args.video_dir, experiment_name)
-        os.makedirs(save_dir, exist_ok=True)
-        # Wrap the environment again to record videos
-        env = VideoRecorder(env=env,
-                            save_dir=save_dir,
-                            record_video_trigger=lambda x: x % x == 0,  # record at the very start
-                            video_length=args.video_len,
-                            prefix="video_{}".format(args.env_id))
-
     # Create an agent wrapper
-    if args.algo == 'ddpg':
-        def agent_wrapper():
-            return DDPGAgent(env=env, device='cpu', hps=args)
-
-    elif args.algo == 'my':
-        def agent_wrapper():
-            return MyAgent(env=env, device='cpu', hps=args)
-    else:
-        raise NotImplementedError("algorithm not covered")
+    def agent_wrapper():
+        return DDPGAgent(env=env,
+                         device='cpu',
+                         hps=args,
+                         expert_dataset=None)
 
     # Evaluate agent trained via DDPG
     orchestrator.evaluate(env=env,

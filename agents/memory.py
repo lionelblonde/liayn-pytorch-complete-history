@@ -59,15 +59,15 @@ class RingBuffer(object):
 
 class ReplayBuffer(object):
 
-    def __init__(self, limit, ob_shape, ac_shape):
-        self.limit = limit
+    def __init__(self, capacity, ob_shape, ac_shape):
+        self.capacity = capacity
         self.ob_shape = ob_shape
         self.ac_shape = ac_shape
         self.num_demos = 0
         self.atom_names = ['obs0', 'acs', 'rews', 'dones1', 'obs1']
         self.atom_shapes = [self.ob_shape, self.ac_shape, (1,), (1,), self.ob_shape]
         # Create one `RingBuffer` object for every atom in a transition
-        self.ring_buffers = {atom_name: RingBuffer(self.limit, atom_shape)
+        self.ring_buffers = {atom_name: RingBuffer(self.capacity, atom_shape)
                              for atom_name, atom_shape in zipsame(self.atom_names,
                                                                   self.atom_shapes)}
 
@@ -100,8 +100,8 @@ class ReplayBuffer(object):
         # Extract the indices of the 'width' most recent entries
         idxs = np.ones(width) * self.latest_entry_idx
         idxs -= np.arange(start=width - 1, stop=-1, step=-1)
-        idxs += self.limit
-        idxs %= self.limit
+        idxs += self.capacity
+        idxs %= self.capacity
         idxs = idxs.astype(int)
         assert len(idxs) == width
         # Subsample from the isolated indices
@@ -162,6 +162,8 @@ class ReplayBuffer(object):
 
         # Wrap every value w/ `array_min2d`
         lookahead_batch = {k: array_min2d(v) for k, v in lookahead_batch.items()}
+        # Add the indexes of the samples as well
+        lookahead_batch['idxs'] = idxs
         return lookahead_batch
 
     def lookahead_sample(self, batch_size, n, gamma):
@@ -197,9 +199,13 @@ class ReplayBuffer(object):
         assert self.num_demos == self.num_entries
         logger.info("  num entries in memory after addition: {}".format(self.num_entries))
 
+    def update_rewards(self, idxs, rewards):
+        for idx, reward in zip(idxs, rewards):
+            self.ring_buffers['rews'].data[idx] = reward
+
     def __repr__(self):
-        fmt = "ReplayBuffer(limit={}, ob_shape={}, ac_shape={})"
-        return fmt.format(self.limit, self.ob_shape, self.ac_shape)
+        fmt = "ReplayBuffer(capacity={}, ob_shape={}, ac_shape={})"
+        return fmt.format(self.capacity, self.ob_shape, self.ac_shape)
 
     @property
     def latest_entry_idx(self):
@@ -218,21 +224,21 @@ class PrioritizedReplayBuffer(ReplayBuffer):
     Reference: https://arxiv.org/pdf/1511.05952.pdf
     """
 
-    def __init__(self, limit, ob_shape, ac_shape, alpha, beta, demos_eps=0.1,
+    def __init__(self, capacity, ob_shape, ac_shape, alpha, beta, demos_eps=0.1,
                  ranked=False, max_priority=1.0):
         """`alpha` determines how much prioritization is used
         0: none, equivalent to uniform sampling
         1: full prioritization
         `beta` (defined in `__init__`) represents to what degree importance weights are used.
         """
-        super(PrioritizedReplayBuffer, self).__init__(limit, ob_shape, ac_shape)
+        super(PrioritizedReplayBuffer, self).__init__(capacity, ob_shape, ac_shape)
         assert 0. <= alpha <= 1.
         assert beta > 0, "beta must be positive"
         self.alpha = alpha
         self.beta = beta
         self.max_priority = max_priority
-        # Calculate the segment tree capacity suited to the user-specified limit
-        self.st_cap = segment_tree_capacity(limit)
+        # Calculate the segment tree capacity suited to the user-specified capacity
+        self.st_cap = segment_tree_capacity(capacity)
         # Create segment tree objects as data collection structure for priorities.
         # It provides an efficient way of calculating a cumulative sum of priorities
         self.sum_st = SumSegmentTree(self.st_cap)  # with `operator.add` operation
@@ -384,9 +390,9 @@ class PrioritizedReplayBuffer(ReplayBuffer):
             return idxs, priorities
 
     def __repr__(self):
-        fmt = "PrioritizedReplayBuffer(limit={}, ob_shape={}, ac_shape={}, alpha={}, beta={}, "
+        fmt = "PrioritizedReplayBuffer(capacity={}, ob_shape={}, ac_shape={}, alpha={}, beta={}, "
         fmt += "demos_eps={}, ranked={}, max_priority={})"
-        return fmt.format(self.limit, self.ob_shape, self.ac_shape, self.alpha, self.beta,
+        return fmt.format(self.capacity, self.ob_shape, self.ac_shape, self.alpha, self.beta,
                           self.demos_eps, self.ranked, self.max_priority)
 
 
@@ -395,13 +401,13 @@ class UnrealReplayBuffer(PrioritizedReplayBuffer):
     Reference: https://arxiv.org/pdf/1611.05397.pdf
     """
 
-    def __init__(self, limit, ob_shape, ac_shape, max_priority=1.0):
+    def __init__(self, capacity, ob_shape, ac_shape, max_priority=1.0):
         """Reuse of the 'PrioritizedReplayBuffer' constructor w/:
             - `alpha` arbitrarily set to 1. (unused)
             - `beta` arbitrarily set to 1. (unused)
             - `ranked` set to True (necessary to have access to the ranks)
         """
-        super(UnrealReplayBuffer, self).__init__(limit, ob_shape, ac_shape,
+        super(UnrealReplayBuffer, self).__init__(capacity, ob_shape, ac_shape,
                                                  1., 1, True, max_priority)
         # Create two extra `SumSegmentTree` objects: one for 'bad' transitions, one for 'good' ones
         self.b_sum_st = SumSegmentTree(self.st_cap)  # with `operator.add` operation
@@ -488,16 +494,16 @@ class UnrealReplayBuffer(PrioritizedReplayBuffer):
             print("total num entries: {}".format(self.num_entries))
 
     def __repr__(self):
-        fmt = "UnrealReplayBuffer(limit={}, ob_shape={}, ac_shape={}, max_priority={})"
-        return fmt.format(self.limit, self.ob_shape, self.ac_shape, self.max_priority)
+        fmt = "UnrealReplayBuffer(capacity={}, ob_shape={}, ac_shape={}, max_priority={})"
+        return fmt.format(self.capacity, self.ob_shape, self.ac_shape, self.max_priority)
 
 
-def segment_tree_capacity(limit):
+def segment_tree_capacity(capacity):
     """Using a Segment Tree data structure imposes capacity being a power of 2.
-    This function finds the highest power of 2 below the user-specified limit.
+    This function finds the highest power of 2 below the user-specified capacity.
     """
     st_cap = 1
-    while st_cap < limit:
+    while st_cap < capacity:
         # if the current tree capacity is not past the user-specified one, continue
         st_cap *= 2
     return st_cap

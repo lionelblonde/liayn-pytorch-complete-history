@@ -3,10 +3,8 @@ import sys
 import os.path as osp
 import tempfile
 import json
-import time
 import datetime
 from collections import OrderedDict
-from contextlib import contextmanager
 
 
 DEBUG = 10

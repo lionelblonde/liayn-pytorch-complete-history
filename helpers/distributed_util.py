@@ -8,10 +8,6 @@ import torch
 COMM = MPI.COMM_WORLD
 
 
-def barrier(comm=COMM):
-    comm.Barrier()
-
-
 def mpi_mean_like(x, comm=COMM):
     """Computes element-wise mean across workers.
     The output array has the same shape as the input array.
@@ -88,12 +84,10 @@ def mpi_moments(x, comm=COMM, axis=0, keepdims=False):
     return mean, std, count
 
 
-def mpi_var(x):
-    return mpi_moments(x)[1] ** 2
-
-
 def average_gradients(model, device):
-    for param in model.parameters():
+    for name, param in model.named_parameters():
+        if param.grad is None:
+            continue
         # Place the gradients on cpu
         grads = param.grad.cpu().data.numpy()
         # Average the gradients across workers
@@ -177,16 +171,12 @@ class RunMoms(object):
 
     def update(self, x):
         """Update running statistics using the new batch's statistics"""
-
         # Compute the statistics of the batch
         if self.use_mpi:
             batch_mean, batch_std, batch_count = mpi_moments(x, axis=0, comm=self.comm)
         else:
-            batch_mean = np.mean(x, axis=0)
-            batch_std = np.std(x, axis=0)
-            batch_count = x.shape[0]
+            batch_mean, batch_std, batch_count = np.mean(x, axis=0), np.std(x, axis=0), x.shape[0]
         batch_var = np.square(batch_std)
-
         # Update moments
         self.update_moms(batch_mean, batch_var, batch_count)
 

@@ -1,20 +1,18 @@
 import time
-import copy
+from copy import deepcopy
 import os
 from collections import namedtuple, deque, OrderedDict
-import yaml
 
+import wandb
 import numpy as np
-import visdom
 
 from helpers import logger
 from helpers.distributed_util import sync_check, mpi_mean_reduce
 from agents.memory import RingBuffer
-from helpers.console_util import (timed_cm_wrapper, pretty_iter,
-                                  pretty_elapsed, columnize)
+from helpers.console_util import timed_cm_wrapper, log_iter_info
 
 
-def rollout_generator(env, agent, rollout_len, prefill=0):
+def rollout_generator(env, agent, rollout_len):
 
     pixels = len(env.observation_space.shape) >= 3
 
@@ -25,25 +23,19 @@ def rollout_generator(env, agent, rollout_len, prefill=0):
     done = True
     env_rew = 0.0
     ob = env.reset()
+
     if pixels:
         ob = np.array(ob)
 
     obs = RingBuffer(rollout_len, shape=agent.ob_shape)
     acs = RingBuffer(rollout_len, shape=agent.ac_shape)
-    qs = RingBuffer(rollout_len, shape=(1,), dtype='float32')
-    if hasattr(agent, 'discriminator'):
+    if hasattr(agent, 'disc'):
         syn_rews = RingBuffer(rollout_len, shape=(1,), dtype='float32')
     env_rews = RingBuffer(rollout_len, shape=(1,), dtype='float32')
     dones = RingBuffer(rollout_len, shape=(1,), dtype='int32')
 
     while True:
-        ac, q_pred = agent.predict(ob, apply_noise=True)
-        # if t < prefill:
-        #     logger.info("populating the replay buffer with uniform policy")
-        #     # Override predicted action with actions which are sampled
-        #     # from a uniform random distribution over valid actions
-        #     ac = env.action_space.sample()
-        #     # LEAVE IT HERE NOT TO FORGET >>>>>>>>>>>>>>>>>>>>>>> NON-DETERMINISTIC
+        ac = agent.predict(ob, apply_noise=True)
 
         # NaN-proof and clip
         ac = np.nan_to_num(ac)
@@ -58,17 +50,15 @@ def rollout_generator(env, agent, rollout_len, prefill=0):
 
             out = {"obs": obs_,
                    "acs": acs.data.reshape(-1, *agent.ac_shape),
-                   "qs": qs.data.reshape(-1, 1),
                    "env_rews": env_rews.data.reshape(-1, 1),
                    "dones": dones.data.reshape(-1, 1)}
-            if hasattr(agent, 'discriminator'):
+            if hasattr(agent, 'disc'):
                 out.update({"syn_rews": syn_rews.data.reshape(-1, 1)})
 
             yield out
 
         obs.append(ob)
         acs.append(ac)
-        qs.append(q_pred)
         dones.append(done)
 
         # Interact with env(s)
@@ -76,70 +66,102 @@ def rollout_generator(env, agent, rollout_len, prefill=0):
 
         env_rews.append(env_rew)
 
-        if hasattr(agent, 'discriminator'):
-            syn_rew = np.asscalar(agent.discriminator.get_reward(ob, ac).cpu().numpy().flatten())
+        if hasattr(agent, 'disc'):
+            syn_rew = np.asscalar(agent.disc.get_reward(ob, ac).cpu().numpy().flatten())
             syn_rews.append(syn_rew)
 
         # Store transition(s) in the replay buffer
-        if hasattr(agent, 'discriminator'):
+        if hasattr(agent, 'disc'):
             agent.store_transition(ob, ac, syn_rew, new_ob, done)
         else:
             agent.store_transition(ob, ac, env_rew, new_ob, done)
 
-        ob = copy.copy(new_ob)
+        ob = deepcopy(new_ob)
         if pixels:
             ob = np.array(ob)
 
         if done:
             agent.reset_noise()
-            ob = env.reset()
+            ob = np.array(env.reset())
 
         t += 1
 
 
-def ep_generator(env, agent, render):
+def ep_generator(env, agent, render, record):
     """Generator that spits out a trajectory collected during a single episode
     `append` operation is also significantly faster on lists than numpy arrays,
     they will be converted to numpy arrays once complete and ready to be yielded.
     """
 
-    ob = env.reset()
+    kwargs = {'mode': 'rgb_array'}
+
+    def _render():
+        return env.render(**kwargs)
+
+    ob = np.array(env.reset())
+
+    if record:
+        ob_orig = _render()
+
     cur_ep_len = 0
     cur_ep_env_ret = 0
     obs = []
+    if record:
+        obs_render = []
     acs = []
-    qs = []
     env_rews = []
 
     while True:
-        ac, q = agent.predict(ob, apply_noise=False)
+        ac = agent.predict(ob, apply_noise=False)
+
+        # NaN-proof and clip
+        ac = np.nan_to_num(ac)
+        ac = np.clip(ac, env.action_space.low, env.action_space.high)
+
         obs.append(ob)
+        if record:
+            obs_render.append(ob_orig)
         acs.append(ac)
-        qs.append(q)
         new_ob, env_rew, done, _ = env.step(ac)
+
         if render:
             env.render()
+
+        if record:
+            ob_orig = _render()
+
         env_rews.append(env_rew)
         cur_ep_len += 1
         cur_ep_env_ret += env_rew
-        ob = copy.copy(new_ob)
+        ob = np.array(deepcopy(new_ob))
         if done:
             obs = np.array(obs)
+            if record:
+                obs_render = np.array(obs_render)
             acs = np.array(acs)
             env_rews = np.array(env_rews)
-            yield {"obs": obs,
+            out = {"obs": obs,
                    "acs": acs,
-                   "qs": qs,
                    "env_rews": env_rews,
                    "ep_len": cur_ep_len,
                    "ep_env_ret": cur_ep_env_ret}
+            if record:
+                out.update({"obs_render": obs_render})
+
+            yield out
+
             cur_ep_len = 0
             cur_ep_env_ret = 0
             obs = []
+            if record:
+                obs_render = []
             acs = []
             env_rews = []
             agent.reset_noise()
-            ob = env.reset()
+            ob = np.array(env.reset())
+
+            if record:
+                ob_orig = _render()
 
 
 def evaluate(env,
@@ -187,8 +209,6 @@ def learn(args,
           agent_wrapper,
           experiment_name,
           ckpt_dir,
-          enable_visdom,
-          visdom_dir,
           save_frequency,
           pn_adapt_frequency,
           rollout_len,
@@ -199,12 +219,12 @@ def learn(args,
           actor_update_delay,
           d_update_ratio,
           render,
+          record,
           expert_dataset,
           add_demos_to_mem,
-          prefill,
-          max_iters):
+          num_timesteps):
 
-    assert not training_steps_per_iter % actor_update_delay, "must be a multiple"
+    assert training_steps_per_iter % actor_update_delay == 0, "must be a multiple"
 
     # Create an agent
     agent = agent_wrapper()
@@ -216,24 +236,19 @@ def learn(args,
     # Create context manager that records the time taken by encapsulated ops
     timed = timed_cm_wrapper(logger)
 
-    # Create rollout generator for training the agent
-    roll_gen = rollout_generator(env, agent, rollout_len, prefill)
-    if eval_env is not None:
-        assert rank == 0, "non-zero rank mpi worker forbidden here"
-        # Create episode generator for evaluating the agent
-        eval_ep_gen = ep_generator(eval_env, agent, render)
-
+    num_iters = num_timesteps // rollout_len
     iters_so_far = 0
+    timesteps_so_far = 0
     tstart = time.time()
 
     # Define rolling buffers for experiental data collection
     maxlen = 100
-    keys = ['ac', 'q', 'actor_gradnorms', 'actor_losses', 'critic_gradnorms', 'critic_losses']
+    keys = ['ac', 'actr_gradnorms', 'actr_losses', 'crit_gradnorms', 'crit_losses']
     if eval_env is not None:
         assert rank == 0, "non-zero rank mpi worker forbidden here"
-        keys.extend(['eval_ac', 'eval_q', 'eval_len', 'eval_env_ret'])
-    if agent.hps.enable_clipped_double:
-        keys.extend(['twin_critic_gradnorms', 'twin_critic_losses'])
+        keys.extend(['eval_len', 'eval_env_ret'])
+    if agent.hps.clipped_double:
+        keys.extend(['twin_gradnorms', 'twin_losses'])
     if agent.param_noise is not None:
         keys.extend(['pn_dist', 'pn_cur_std'])
     Deques = namedtuple('Deques', keys)
@@ -243,59 +258,46 @@ def learn(args,
     if rank == 0:
         os.makedirs(ckpt_dir, exist_ok=True)
 
-    # Setup Visdom
-    if rank == 0 and enable_visdom:
+    # Setup wandb
+    if rank == 0:
+        wandb.init(project="DDPG-SAM",
+                   name=experiment_name,
+                   group='.'.join(experiment_name.split('.')[:-1]),
+                   config=args.__dict__)
 
-        # Setup the Visdom directory
-        os.makedirs(visdom_dir, exist_ok=True)
+    # Create rollout generator for training the agent
+    roll_gen = rollout_generator(env, agent, rollout_len)
+    if eval_env is not None:
+        assert rank == 0, "non-zero rank mpi worker forbidden here"
+        # Create episode generator for evaluating the agent
+        eval_ep_gen = ep_generator(eval_env, agent, render, record)
 
-        # Create visdom
-        viz = visdom.Visdom(env="job_{}_{}".format(int(time.time()), experiment_name),
-                            log_to_filename=os.path.join(visdom_dir, "vizlog.txt"))
-        assert viz.check_connection(timeout_seconds=4), "viz co not great"
+    while iters_so_far <= num_iters:
 
-        viz.text("World size: {}".format(world_size))
-        iter_win = viz.text("will be overridden soon")
-        mem_win = viz.text("will be overridden soon")
-        viz.text(yaml.dump(args.__dict__, default_flow_style=False))
-
-        keys = ['eval_len', 'eval_env_ret']
-        if agent.param_noise is not None:
-            keys.extend(['pn_dist', 'pn_cur_std'])
-
-        keys.extend(['actor_loss', 'critic_loss'])
-        if agent.hps.enable_clipped_double:
-            keys.extend(['twin_critic_loss'])
-
-        # Create (empty) visdom windows
-        VizWins = namedtuple('VizWins', keys)
-        vizwins = VizWins(**{k: viz.line(X=[0], Y=[np.nan]) for k in keys})
-        # HAXX: NaNs ignored by visdom
-
-    while iters_so_far <= max_iters:
-
-        pretty_iter(logger, iters_so_far)
-        pretty_elapsed(logger, tstart)
+        log_iter_info(logger, iters_so_far, num_iters, tstart)
 
         if iters_so_far % 20 == 0:
             # Check if the mpi workers are still synced
-            sync_check(agent.actor)
-            sync_check(agent.critic)
-            if hasattr(agent, 'discriminator'):
-                sync_check(agent.discriminator)
+            sync_check(agent.actr)
+            sync_check(agent.crit)
+            if agent.hps.clipped_double:
+                sync_check(agent.twin)
+            if hasattr(agent, 'disc'):
+                sync_check(agent.disc)
 
         if rank == 0 and iters_so_far % save_frequency == 0:
             # Save the model
             agent.save(ckpt_dir, iters_so_far)
-            logger.info("saving model:\n  @: {}".format(ckpt_dir))
+            logger.info("saving model @: {}".format(ckpt_dir))
 
         # Sample mini-batch in env w/ perturbed actor and store transitions
         with timed("interacting"):
             rollout = roll_gen.__next__()
+            logger.info("[INFO] {} ".format("timesteps".ljust(20, '.')) +
+                        "{}".format(timesteps_so_far + rollout_len))
 
         # Extend deques with collected experiential data
         deques.ac.extend(rollout['acs'])
-        deques.q.extend(rollout['qs'])
 
         with timed("training"):
             for training_step in range(training_steps_per_iter):
@@ -311,20 +313,52 @@ def learn(args,
 
                 # Train the actor-critic architecture
                 update_critic = True
-                if hasattr(agent, 'discriminator'):
+                if hasattr(agent, 'disc'):
                     update_critic = not bool(training_step % d_update_ratio)
                 update_actor = update_critic and not bool(training_step % actor_update_delay)
 
-                losses, gradnorms = agent.train(update_critic=update_critic,
-                                                update_actor=update_actor)
+                losses, gradnorms, lrnows = agent.train(update_critic=update_critic,
+                                                        update_actor=update_actor,
+                                                        iters_so_far=iters_so_far)
                 # Store the losses and gradients in their respective deques
-                deques.actor_gradnorms.append(gradnorms['actor'])
-                deques.actor_losses.append(losses['actor'])
-                deques.critic_gradnorms.append(gradnorms['critic'])
-                deques.critic_losses.append(losses['critic'])
-                if agent.hps.enable_clipped_double:
-                    deques.twin_critic_gradnorms.append(gradnorms['twin_critic'])
-                    deques.twin_critic_losses.append(losses['twin_critic'])
+                deques.actr_gradnorms.append(gradnorms['actr'])
+                deques.actr_losses.append(losses['actr'])
+                deques.crit_gradnorms.append(gradnorms['crit'])
+                deques.crit_losses.append(losses['crit'])
+                if agent.hps.clipped_double:
+                    deques.twin_gradnorms.append(gradnorms['twin'])
+                    deques.twin_losses.append(losses['twin'])
+
+            # Log statistics
+            stats = OrderedDict()
+            ac_np_mean = np.mean(deques.ac, axis=0)  # vector
+            stats.update({'ac': {'min': np.amin(ac_np_mean),
+                                 'max': np.amax(ac_np_mean),
+                                 'mean': np.mean(ac_np_mean),
+                                 'mpimean': mpi_mean_reduce(ac_np_mean)}})
+            stats.update({'actr': {'loss': np.mean(deques.actr_losses),
+                                   'gradnorm': np.mean(deques.actr_gradnorms),
+                                   'lrnow': lrnows['actr'][0]}})
+            stats.update({'crit': {'loss': np.mean(deques.crit_losses),
+                                   'gradnorm': np.mean(deques.crit_gradnorms),
+                                   'lrnow': lrnows['crit'][0]}})
+            if agent.hps.clipped_double:
+                stats.update({'twin': {'loss': np.mean(deques.twin_losses),
+                                       'gradnorm': np.mean(deques.twin_gradnorms),
+                                       'lrnow': lrnows['twin'][0]}})
+            if agent.param_noise is not None:
+                stats.update({'pn': {'pn_dist': np.mean(deques.pn_dist),
+                                     'pn_cur_std': np.mean(deques.pn_cur_std)}})
+
+            num_entries = deepcopy(agent.replay_buffer.num_entries)
+            stats.update({'memory': {'num_entries': str(num_entries),
+                                     'capacity': str(agent.hps.mem_size),
+                                     'load': "{:.2%}".format(num_entries /
+                                                             agent.hps.mem_size)}})
+            for k, v in stats.items():
+                assert isinstance(v, dict)
+                v_ = {a: "{:.5f}".format(b) if not isinstance(b, str) else b for a, b in v.items()}
+                logger.info("[INFO] {} {}".format(k.ljust(20, '.'), v_))
 
         if eval_env is not None:
             assert rank == 0, "non-zero rank mpi worker forbidden here"
@@ -333,124 +367,60 @@ def learn(args,
 
                 with timed("evaluating"):
 
-                    for eval_step in range(eval_steps_per_iter):
+                    # Use the running stats of the training environment to normalize
+                    if hasattr(eval_env, 'running_moments'):
+                        eval_env.running_moments = deepcopy(env.running_moments)
 
+                    for eval_step in range(eval_steps_per_iter):
                         # Sample an episode w/ non-perturbed actor w/o storing anything
                         eval_ep = eval_ep_gen.__next__()
-
                         # Aggregate data collected during the evaluation to the buffers
-                        deques.eval_ac.extend(eval_ep['acs'])
-                        deques.eval_q.extend(eval_ep['qs'])
                         deques.eval_len.append(eval_ep['ep_len'])
                         deques.eval_env_ret.append(eval_ep['ep_env_ret'])
 
-        # Log statistics
+                    # Log evaluation stats
+                    logger.record_tabular('ep_len', np.mean(deques.eval_len))
+                    logger.record_tabular('ep_env_ret', np.mean(deques.eval_env_ret))
+                    logger.info("[CSV] dumping eval stats in .csv file")
+                    logger.dump_tabular()
 
-        logger.info("logging misc training stats")
+                    if record:
+                        # Record the last episode in a video
+                        frames = np.split(eval_ep['obs_render'], 1, axis=-1)
+                        frames = np.concatenate(np.array(frames), axis=0)
+                        frames = np.array([np.squeeze(a, axis=0)
+                                           for a in np.split(frames, frames.shape[0], axis=0)])
+                        frames = np.transpose(frames, (0, 3, 1, 2))  # from nwhc to ncwh
 
-        stats = OrderedDict()
+                        wandb.log({'video': wandb.Video(frames.astype(np.uint8),
+                                                        fps=25,
+                                                        format='gif',
+                                                        caption="Evaluation (last episode)")},
+                                  step=timesteps_so_far)
 
-        # Add min, max and mean of the components of the average action
-        ac_np_mean = np.mean(deques.ac, axis=0)  # vector
-        stats.update({'min_ac_comp': np.amin(ac_np_mean)})
-        stats.update({'max_ac_comp': np.amax(ac_np_mean)})
-        stats.update({'mean_ac_comp': np.mean(ac_np_mean)})
-        stats.update({'mean_ac_comp_mpi': mpi_mean_reduce(ac_np_mean)})
-
-        # Add Q values mean and std
-        stats.update({'q_value': np.mean(deques.q)})
-        stats.update({'q_deviation': np.std(deques.q)})
-
-        # Add gradient norms
-        stats.update({'actor_gradnorm': np.mean(deques.actor_gradnorms)})
-        stats.update({'critic_gradnorm': np.mean(deques.critic_gradnorms)})
-
-        if agent.hps.enable_clipped_double:
-            stats.update({'twin_critic_gradnorm': np.mean(deques.critic_gradnorms)})
-
-        if agent.param_noise is not None:
-            stats.update({'pn_dist': np.mean(deques.pn_dist)})
-            stats.update({'pn_cur_std': np.mean(deques.pn_cur_std)})
-
-        # Add replay buffer num entries
-        stats.update({'mem_num_entries': agent.replay_buffer.num_entries})
-
-        # Log dictionary content
-        logger.info(columnize(['name', 'value'], stats.items(), [24, 16]))
-
-        if eval_env is not None:
-            assert rank == 0, "non-zero rank mpi worker forbidden here"
+        # Log stats in dashboard
+        if rank == 0:
 
             if iters_so_far % eval_frequency == 0:
-
-                # Use the logger object to log the eval stats (will appear in `progress{}.csv`)
-                logger.info("logging misc eval stats")
-                # Add min, max and mean of the components of the average action
-                ac_np_mean = np.mean(deques.eval_ac, axis=0)  # vector
-                logger.record_tabular('min_ac_comp', np.amin(ac_np_mean))
-                logger.record_tabular('max_ac_comp', np.amax(ac_np_mean))
-                logger.record_tabular('mean_ac_comp', np.mean(ac_np_mean))
-                # Add Q values mean and std
-                logger.record_tabular('q_value', np.mean(deques.eval_q))
-                logger.record_tabular('q_deviation', np.std(deques.eval_q))
-                # Add episodic stats
-                logger.record_tabular('ep_len', np.mean(deques.eval_len))
-                logger.record_tabular('ep_env_ret', np.mean(deques.eval_env_ret))
-                logger.dump_tabular()
-
-        # Mark the end of the iter in the logs
-        logger.info('')
+                wandb.log({'eval_len': np.mean(deques.eval_len),
+                           'eval_env_ret': np.mean(deques.eval_env_ret)},
+                          step=timesteps_so_far)
+            if agent.param_noise is not None:
+                wandb.log({'pn_dist': np.mean(deques.pn_dist),
+                           'pn_cur_std': np.mean(deques.pn_cur_std)},
+                          step=timesteps_so_far)
+            wandb.log({'actr_loss': np.mean(deques.actr_losses),
+                       'actr_gradnorm': np.mean(deques.actr_gradnorms),
+                       'actr_lrnow': np.array(lrnows['actr']),
+                       'crit_loss': np.mean(deques.crit_losses),
+                       'crit_gradnorm': np.mean(deques.crit_gradnorms),
+                       'crit_lrnow': np.array(lrnows['crit'])},
+                      step=timesteps_so_far)
+            if agent.hps.clipped_double:
+                wandb.log({'twin_loss': np.mean(deques.twin_losses),
+                           'twin_gradnorm': np.mean(deques.twin_gradnorms),
+                           'twin_lrnow': np.array(lrnows['twin'])},
+                          step=timesteps_so_far)
 
         iters_so_far += 1
-
-        if rank == 0 and enable_visdom:
-
-            viz.text("Current iter: {}".format(iters_so_far), win=iter_win, append=False)
-            filled_ratio = agent.replay_buffer.num_entries / (1. * args.mem_size)  # HAXX
-            viz.text("Replay buffer: {} (filled ratio: {})".format(agent.replay_buffer.num_entries,
-                                                                   filled_ratio),
-                     win=mem_win,
-                     append=False)
-
-            if iters_so_far % eval_frequency == 0:
-                viz.line(X=[iters_so_far],
-                         Y=[np.mean(deques.eval_len)],
-                         win=vizwins.eval_len,
-                         update='append',
-                         opts=dict(title='Eval Episode Length'))
-                viz.line(X=[iters_so_far],
-                         Y=[np.mean(deques.eval_env_ret)],
-                         win=vizwins.eval_env_ret,
-                         update='append',
-                         opts=dict(title='Eval Episodic Return'))
-
-            if agent.param_noise is not None:
-                viz.line(X=[iters_so_far],
-                         Y=[np.mean(deques.pn_dist)],
-                         win=vizwins.pn_dist,
-                         update='append',
-                         opts=dict(title='Distance in action space (param noise)'))
-                viz.line(X=[iters_so_far],
-                         Y=[np.mean(deques.pn_cur_std)],
-                         win=vizwins.pn_cur_std,
-                         update='append',
-                         opts=dict(title='Parameter-Noise Current Std Dev'))
-
-            viz.line(X=[iters_so_far],
-                     Y=[np.mean(deques.actor_losses)],
-                     win=vizwins.actor_loss,
-                     update='append',
-                     opts=dict(title="Actor Loss"))
-
-            viz.line(X=[iters_so_far],
-                     Y=[np.mean(deques.critic_losses)],
-                     win=vizwins.critic_loss,
-                     update='append',
-                     opts=dict(title="Critic Loss"))
-
-            if agent.hps.enable_clipped_double:
-                viz.line(X=[iters_so_far],
-                         Y=[np.mean(deques.twin_critic_losses)],
-                         win=vizwins.twin_critic_loss,
-                         update='append',
-                         opts=dict(title="Twin Critic Loss"))
+        timesteps_so_far += rollout_len
