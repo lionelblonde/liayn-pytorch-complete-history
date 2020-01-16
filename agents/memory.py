@@ -4,13 +4,8 @@ from math import floor
 import numpy as np
 
 from helpers.math_util import discount
-from helpers import logger
 from helpers.misc_util import zipsame
 from helpers.segment_tree import SumSegmentTree, MinSegmentTree
-
-
-# Global variable for debugging purposes
-debug = False
 
 
 class RingBuffer(object):
@@ -33,25 +28,17 @@ class RingBuffer(object):
     def get_batch(self, idxs):
         return self.data[(self.start + idxs) % self.maxlen]
 
-    def append(self, v, offset=0):
-        """`offset` is used to keep the demos forever in the buffer (never flushed out by FIFO)"""
-        global debug
+    def append(self, v):
         if self.length < self.maxlen:
             # We have space, simply increase the length
             self.length += 1
-            self.data[offset + (self.start + self.length - 1)
-                      % (self.maxlen - offset)] = v
-            if debug:
-                print("written index: {}".format(offset + (self.start + self.length - 1)
-                                                 % (self.maxlen - offset)))
+            self.data[(self.start + self.length - 1) % self.maxlen] = v
+
         elif self.length == self.maxlen:
             # No space, "remove" the first item
-            self.start = (self.start + 1) % (self.maxlen - offset)
-            self.data[offset + (self.start + self.length - offset - 1)
-                      % (self.maxlen - offset)] = v
-            if debug:
-                print("written index: {}".format(offset + (self.start + self.length - offset - 1)
-                                                 % (self.maxlen - offset)))
+            self.start = (self.start + 1) % self.maxlen
+            self.data[(self.start + self.length - 1) % self.maxlen] = v
+
         else:
             # This should never happen
             raise RuntimeError()
@@ -59,36 +46,22 @@ class RingBuffer(object):
 
 class ReplayBuffer(object):
 
-    def __init__(self, capacity, ob_shape, ac_shape):
+    def __init__(self, capacity, shapes):
         self.capacity = capacity
-        self.ob_shape = ob_shape
-        self.ac_shape = ac_shape
+        self.shapes = shapes
         self.num_demos = 0
-        self.atom_names = ['obs0', 'acs', 'rews', 'dones1', 'obs1']
-        self.atom_shapes = [self.ob_shape, self.ac_shape, (1,), (1,), self.ob_shape]
-        # Create one `RingBuffer` object for every atom in a transition
-        self.ring_buffers = {atom_name: RingBuffer(self.capacity, atom_shape)
-                             for atom_name, atom_shape in zipsame(self.atom_names,
-                                                                  self.atom_shapes)}
+        self.ring_buffers = {n: RingBuffer(self.capacity, s) for n, s in self.shapes.items()}
 
     def batchify(self, idxs):
         """Collect a batch from indices"""
-        global debug
-        transitions = {atom_name: array_min2d(self.ring_buffers[atom_name].get_batch(idxs))
-                       for atom_name in self.atom_names}
-        # Add the indices corresponding to the collected transitions to the dict
-        transitions['idxs'] = idxs
-        if debug:
-            for k, v in transitions.items():
-                print("[transitions batchified]    key: {} |    value: {}".format(k, v))
+        transitions = {n: array_min2d(self.ring_buffers[n].get_batch(idxs))
+                       for n in self.ring_buffers.keys()}
+        transitions['idxs'] = idxs  # add idxs too
         return transitions
 
     def sample(self, batch_size):
-        """Sample transitions uniformly from the replay buffer (as in vanilla DQN)
-        openai/baselines draws such that we always have a proceeding element, but w/o explanation
-        """
+        """Sample transitions uniformly from the replay buffer"""
         idxs = np.random.randint(low=0, high=self.num_entries, size=batch_size)
-        # Collect the transitions associated w/ the sampled indices from the replay buffer
         transitions = self.batchify(idxs)
         return transitions
 
@@ -106,23 +79,19 @@ class ReplayBuffer(object):
         assert len(idxs) == width
         # Subsample from the isolated indices
         idxs = np.random.choice(idxs, size=batch_size)
-        # Collect the transitions associated w/ the sampled indices from the replay buffer
+        # Collect the transitions from the replay buffer
         transitions = self.batchify(idxs)
         return transitions
 
     def lookahead(self, transitions, n, gamma):
         """Perform n-step TD lookahead estimations starting from every transition"""
-        global debug
-
+        assert 0 <= gamma <= 1
         # Initiate the batch of transition data necessary to perform n-step TD backups
-        lookahead_batch = {atom_name: [] for atom_name in self.atom_names}
+        lookahead_batch = {n: [] for n in self.ring_buffers.keys()}
         # Add extra key
         lookahead_batch['td_len'] = []
-
-        # Export the indices that lead to the sampled batch
-        idxs = transitions['idxs']
         # Iterate over the indices to deploy the n-step backup for each
-        for idx in idxs:
+        for idx in transitions['idxs']:
             # Create indexes of transitions in lookahead of lengths max `n` following sampled one
             lookahead_end_idx = min(idx + n, self.num_entries) - 1
             lookahead_idxs = np.array(range(idx, lookahead_end_idx + 1))
@@ -138,7 +107,6 @@ class ReplayBuffer(object):
             lookahead_rews = lookahead_transitions['rews'][:td_len]
             # Compute discounted cumulative reward
             lookahead_discounted_sum_n_rews = discount(lookahead_rews, gamma)[0]
-
             # Populate the batch for this n-step TD backup
             lookahead_batch['obs0'].append(lookahead_transitions['obs0'][0])
             lookahead_batch['obs1'].append(lookahead_transitions['obs1'][td_len - 1])
@@ -146,24 +114,11 @@ class ReplayBuffer(object):
             lookahead_batch['rews'].append(lookahead_discounted_sum_n_rews)
             lookahead_batch['dones1'].append(lookahead_is_trimmed)
             lookahead_batch['td_len'].append(td_len)
-
-            if debug:
-                print("--[start debug message]--")
-                print("index in lookahead: {}".format(idx))
-                print("td end index: {}".format(lookahead_end_idx))
-                print("td indices: {}".format(lookahead_idxs))
-                print("dones: {}".format(dones))
-                print("ep end index: {}".format(ep_end_idx))
-                print("is td trimmed?: {}".format(lookahead_is_trimmed))
-                print("td len: {}".format(td_len))
-                print("td rews: {}".format(lookahead_rews))
-                print("td disc sum rews: {}".format(lookahead_discounted_sum_n_rews))
-                print("--[end debug message]--")
-
-        # Wrap every value w/ `array_min2d`
+        lookahead_batch['idxs'] = transitions['idxs']
+        if 'fps' in transitions:
+            lookahead_batch['fps'] = transitions['fps']
+        # Wrap every value with `array_min2d`
         lookahead_batch = {k: array_min2d(v) for k, v in lookahead_batch.items()}
-        # Add the indexes of the samples as well
-        lookahead_batch['idxs'] = idxs
         return lookahead_batch
 
     def lookahead_sample(self, batch_size, n, gamma):
@@ -171,41 +126,18 @@ class ReplayBuffer(object):
         This function is for n-step TD backups, where n > 1
         """
         # Sample a batch of transitions
-        transitions = self.sample(batch_size=batch_size)
-        # Expand each transition w/ a n-step TD lookahead
-        lookahead_batch = self.lookahead(transitions=transitions, n=n, gamma=gamma)
-        return lookahead_batch
+        transitions = self.sample(batch_size)
+        # Expand each transition with a n-step TD lookahead
+        return self.lookahead(transitions, n, gamma)
 
-    def append(self, obs0, acs, rews, obs1, dones1, is_demo=False):
+    def append(self, transition):
         """Add transition to the replay buffer"""
-        offset = 0 if is_demo else self.num_demos
-        self.ring_buffers['obs0'].append(obs0, offset)
-        self.ring_buffers['acs'].append(acs, offset)
-        self.ring_buffers['rews'].append(rews, offset)
-        self.ring_buffers['obs1'].append(obs1, offset)
-        self.ring_buffers['dones1'].append(dones1, offset)
-
-    def add_demo_transitions_to_mem(self, dset):
-        """Add transitions from expert demonstration trajectories to memory"""
-        # Ensure the replay buffer is empty as demos need to be first
-        assert self.num_entries == 0 and self.num_demos == 0
-        logger.info("adding demonstrations to memory")
-        # Zip transition atoms
-        transitions = zipsame(dset.obs0, dset.acs, dset.env_rews, dset.obs1, dset.dones1)
-        # Note: careful w/ the order, it should correspond to the order in `append` signature
-        for transition in transitions:
-            self.append(*transition, is_demo=True)
-            self.num_demos += 1
-        assert self.num_demos == self.num_entries
-        logger.info("  num entries in memory after addition: {}".format(self.num_entries))
-
-    def update_rewards(self, idxs, rewards):
-        for idx, reward in zip(idxs, rewards):
-            self.ring_buffers['rews'].data[idx] = reward
+        assert self.ring_buffers.keys() == transition.keys(), "keys must coincide"
+        for k in self.ring_buffers.keys():
+            self.ring_buffers[k].append(transition[k])
 
     def __repr__(self):
-        fmt = "ReplayBuffer(capacity={}, ob_shape={}, ac_shape={})"
-        return fmt.format(self.capacity, self.ob_shape, self.ac_shape)
+        return "ReplayBuffer(capacity={})".format(self.capacity)
 
     @property
     def latest_entry_idx(self):
@@ -224,14 +156,15 @@ class PrioritizedReplayBuffer(ReplayBuffer):
     Reference: https://arxiv.org/pdf/1511.05952.pdf
     """
 
-    def __init__(self, capacity, ob_shape, ac_shape, alpha, beta, demos_eps=0.1,
+    def __init__(self, capacity, shapes,
+                 alpha, beta, demos_eps=0.1,
                  ranked=False, max_priority=1.0):
         """`alpha` determines how much prioritization is used
         0: none, equivalent to uniform sampling
         1: full prioritization
         `beta` (defined in `__init__`) represents to what degree importance weights are used.
         """
-        super(PrioritizedReplayBuffer, self).__init__(capacity, ob_shape, ac_shape)
+        super(PrioritizedReplayBuffer, self).__init__(capacity, shapes)
         assert 0. <= alpha <= 1.
         assert beta > 0, "beta must be positive"
         self.alpha = alpha
@@ -353,7 +286,6 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         assigned to the transition at index indices[i].
         Note: not in use in the vanilla setting, but here if needed in extensions.
         """
-        global debug
         if self.ranked:
             # Override the priorities to be 1 / (rank(priority) + 1)
             # Add new index, priority pairs to the list
@@ -367,10 +299,6 @@ class PrioritizedReplayBuffer(ReplayBuffer):
             # Override the indices and priorities
             idxs = list(_idxs)
             priorities = [1. / (rank + 1) for rank in ranks]  # start ranks at 1
-            if debug:
-                # Verify that the priorities have been properly overridden
-                for idx, priority in zipsame(idxs, priorities):
-                    print("index: {}    | priority: {}".format(idx, priority))
 
         assert len(idxs) == len(priorities), "the two arrays must be the same length"
         for idx, priority in zipsame(idxs, priorities):
@@ -390,9 +318,9 @@ class PrioritizedReplayBuffer(ReplayBuffer):
             return idxs, priorities
 
     def __repr__(self):
-        fmt = "PrioritizedReplayBuffer(capacity={}, ob_shape={}, ac_shape={}, alpha={}, beta={}, "
+        fmt = "PrioritizedReplayBuffer(capacity={}, alpha={}, beta={}, "
         fmt += "demos_eps={}, ranked={}, max_priority={})"
-        return fmt.format(self.capacity, self.ob_shape, self.ac_shape, self.alpha, self.beta,
+        return fmt.format(self.capacity, self.alpha, self.beta,
                           self.demos_eps, self.ranked, self.max_priority)
 
 
@@ -401,13 +329,13 @@ class UnrealReplayBuffer(PrioritizedReplayBuffer):
     Reference: https://arxiv.org/pdf/1611.05397.pdf
     """
 
-    def __init__(self, capacity, ob_shape, ac_shape, max_priority=1.0):
+    def __init__(self, capacity, shapes, max_priority=1.0):
         """Reuse of the 'PrioritizedReplayBuffer' constructor w/:
             - `alpha` arbitrarily set to 1. (unused)
             - `beta` arbitrarily set to 1. (unused)
             - `ranked` set to True (necessary to have access to the ranks)
         """
-        super(UnrealReplayBuffer, self).__init__(capacity, ob_shape, ac_shape,
+        super(UnrealReplayBuffer, self).__init__(capacity, shapes,
                                                  1., 1, True, max_priority)
         # Create two extra `SumSegmentTree` objects: one for 'bad' transitions, one for 'good' ones
         self.b_sum_st = SumSegmentTree(self.st_cap)  # with `operator.add` operation
@@ -485,17 +413,10 @@ class UnrealReplayBuffer(PrioritizedReplayBuffer):
                 # Fill the good and bad sum segment trees w/ the obtained value
                 self.b_sum_st[idx] = 1 - is_g
                 self.g_sum_st[idx] = is_g
-        if debug:
-            # Verify updates
-            # Compute the cardinalities of virtual sub-buffers
-            b_num_entries = self.b_sum_st.sum(end=self.num_entries)
-            g_num_entries = self.g_sum_st.sum(end=self.num_entries)
-            print("[num entries]    b: {}    | g: {}".format(b_num_entries, g_num_entries))
-            print("total num entries: {}".format(self.num_entries))
 
     def __repr__(self):
-        fmt = "UnrealReplayBuffer(capacity={}, ob_shape={}, ac_shape={}, max_priority={})"
-        return fmt.format(self.capacity, self.ob_shape, self.ac_shape, self.max_priority)
+        fmt = "UnrealReplayBuffer(capacity={}, max_priority={})"
+        return fmt.format(self.capacity, self.max_priority)
 
 
 def segment_tree_capacity(capacity):

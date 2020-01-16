@@ -203,22 +203,34 @@ class DDPGAgent(object):
     def setup_replay_buffer(self):
         """Setup experiental memory unit"""
         logger.info(">>>> setting up replay buffer")
+        # Create the metadata
+        self.shapes = {"obs0": self.ob_shape,
+                       "acs": self.ac_shape,
+                       "rews": (1,),
+                       "dones1": (1,),
+                       "obs1": self.ob_shape}
+        if self.hps.fingerprint:
+            self.shapes.update({"fps": (1,)})
+        # Create the buffer
         if self.hps.prioritized_replay:
             if self.hps.unreal:  # Unreal prioritized experience replay
-                self.replay_buffer = UnrealReplayBuffer(self.hps.mem_size,
-                                                        self.ob_shape,
-                                                        self.ac_shape)
+                self.replay_buffer = UnrealReplayBuffer(
+                    self.hps.mem_size,
+                    self.shapes,
+                )
             else:  # Vanilla prioritized experience replay
-                self.replay_buffer = PrioritizedReplayBuffer(self.hps.mem_size,
-                                                             self.ob_shape,
-                                                             self.ac_shape,
-                                                             alpha=self.hps.alpha,
-                                                             beta=self.hps.beta,
-                                                             ranked=self.hps.ranked)
+                self.replay_buffer = PrioritizedReplayBuffer(
+                    self.hps.mem_size,
+                    self.shapes,
+                    alpha=self.hps.alpha,
+                    beta=self.hps.beta,
+                    ranked=self.hps.ranked,
+                )
         else:  # Vanilla experience replay
-            self.replay_buffer = ReplayBuffer(self.hps.mem_size,
-                                              self.ob_shape,
-                                              self.ac_shape)
+            self.replay_buffer = ReplayBuffer(
+                self.hps.mem_size,
+                self.shapes,
+            )
         # Summarize replay buffer creation (relies on `__repr__` method)
         logger.info("[INFO] {} configured".format(self.replay_buffer))
 
@@ -259,22 +271,19 @@ class DDPGAgent(object):
 
         return ac
 
-    def store_transition(self, ob0, ac, rew, ob1, done1):
-        """Store a experiental transition in the replay buffer"""
-        # Scale the reward
-        rew *= self.hps.reward_scale
-        # Store the transition in the replay buffer
-        self.replay_buffer.append(ob0, ac, rew, ob1, done1)
-
     def train(self, update_critic, update_actor, iters_so_far):
         """Train the agent"""
         # Get a batch of transitions from the replay buffer
         if self.hps.n_step_returns:
-            batch = self.replay_buffer.lookahead_sample(self.hps.batch_size,
-                                                        n=self.hps.lookahead,
-                                                        gamma=self.hps.gamma)
+            batch = self.replay_buffer.lookahead_sample(
+                self.hps.batch_size,
+                self.hps.lookahead,
+                self.hps.gamma,
+            )
         else:
-            batch = self.replay_buffer.sample(self.hps.batch_size)
+            batch = self.replay_buffer.sample(
+                self.hps.batch_size,
+            )
 
         if not self.hps.pixels:
             # Standardize and clip observations
@@ -300,6 +309,17 @@ class DDPGAgent(object):
             next_action = (self.targ_actr.act(next_state) + n_).clamp(-self.max_ac, self.max_ac)
         else:
             next_action = self.targ_actr.act(next_state)
+
+        # Assemble online critic and target critic inputs
+        online_crit_ins = [state, action]
+        target_crit_ins = [next_state, next_action]
+        online_crit_w_actr_ins = [state, self.actr.act(state)]
+        if self.hps.fingerprint:
+            fingerprints = torch.FloatTensor(batch['fps']).to(self.device)
+            # print(fingerprints)
+            online_crit_ins.append(fingerprints)
+            target_crit_ins.append(fingerprints)
+            online_crit_w_actr_ins.append(fingerprints)
 
         if hasattr(self, 'disc'):
             # Create data loaders
@@ -345,16 +365,16 @@ class DDPGAgent(object):
             targ_z = targ_z.view(-1, self.hps.c51_num_atoms, 1)
 
             # Critic loss
-            kls = -(targ_z.detach() * torch.log(z + 1e-8)).sum(dim=1)
+            ce_losses = -(targ_z.detach() * torch.log(z + 1e-8)).sum(dim=1)
 
             if self.hps.prioritized_replay:
                 # Update priorities
-                new_priorities = np.abs(kls.sum(dim=1).detach().cpu().numpy()) + 1e-6
+                new_priorities = np.abs(ce_losses.sum(dim=1).detach().cpu().numpy()) + 1e-6
                 self.replay_buffer.update_priorities(batch['idxs'], new_priorities)
                 # Adjust with importance weights
-                kls *= iws
+                ce_losses *= iws
 
-            crit_loss = kls.mean()
+            crit_loss = ce_losses.mean()
 
             # Actor loss
             actr_loss = -self.crit.Z(state, self.actr.act(state))
@@ -414,10 +434,10 @@ class DDPGAgent(object):
             # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> IQN-like.
 
             # Compute Z estimate
-            z, tau = self.crit.Z(state, action, self.hps.num_tau)
+            z, tau = self.crit.Z(self.hps.num_tau, state, action)
 
             # Compute target Z estimate
-            z_prime, _ = self.targ_crit.Z(next_state, next_action, self.hps.num_tau_prime)
+            z_prime, _ = self.targ_crit.Z(self.hps.num_tau_prime, next_state, next_action)
             # Reshape rewards to be of shape [batch_size x num_tau_prime, 1]
             reward_reps = reward.repeat(self.hps.num_tau_prime, 1)
             # Reshape product of gamma and mask to be of shape [batch_size x num_tau_prime, 1]
@@ -463,22 +483,22 @@ class DDPGAgent(object):
             crit_loss = crit_loss.mean()
 
             # Actor loss
-            actr_loss = -self.crit.Z(state, self.actr.act(state), self.hps.num_tau_tilde)[0].mean()
+            actr_loss = -self.crit.Z(self.hps.num_tau_tilde, state, self.actr.act(state))[0].mean()
 
         else:
 
             # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> VANILLA
 
             # Compute Q estimate
-            q = self.denorm_rets(self.crit.Q(state, action))
+            q = self.denorm_rets(self.crit.Q(*online_crit_ins))
             if self.hps.clipped_double:
-                twin_q = self.denorm_rets(self.twin.Q(state, action))
+                twin_q = self.denorm_rets(self.twin.Q(*online_crit_ins))
 
             # Compute target Q estimate
-            q_prime = self.targ_crit.Q(next_state, next_action)
+            q_prime = self.targ_crit.Q(*target_crit_ins)
             if self.hps.clipped_double:
                 # Define Q' as the minimum Q value between TD3's twin Q's
-                twin_q_prime = self.targ_twin.Q(next_state, next_action)
+                twin_q_prime = self.targ_twin.Q(*target_crit_ins)
                 q_prime = torch.min(q_prime, twin_q_prime)
             targ_q = (reward +
                       (self.hps.gamma ** td_len) * (1. - done) *
@@ -528,34 +548,28 @@ class DDPGAgent(object):
                 twin_loss = twin_huber_td_errors.mean()
 
             # Actor loss
-            actr_loss = -self.crit.Q(state, self.actr.act(state)).mean()
+            actr_loss = -self.crit.Q(*online_crit_w_actr_ins).mean()
 
         # ######################################################################
 
         if self.hps.reward_control:
             # Reward control
-            actr_loss += 0.1 * (reward - self.actr.rc(state)).pow(2).mean()
-            args = [state, action]
-            if self.hps.use_iqn:
-                args.append(self.hps.num_tau)
-            crit_loss += 0.1 * (reward - self.crit.rc(*args)).pow(2).mean()
-            if self.hps.clipped_double:
-                twin_loss += 0.1 * (reward - self.twin.rc(*args)).pow(2).mean()
+            actr_loss += 0.2 * (reward - self.actr.rc(state)).pow(2).mean()
 
         # Compute gradients
         self.actr_opt.zero_grad()
         actr_loss.backward()
         average_gradients(self.actr, self.device)
-        actr_gradnorm = U.clip_grad_norm_(self.actr.parameters(), self.hps.clip_norm)
+        actr_gradn = U.clip_grad_norm_(self.actr.parameters(), self.hps.clip_norm)
         self.crit_opt.zero_grad()
         crit_loss.backward()
         average_gradients(self.crit, self.device)
-        crit_gradnorm = U.clip_grad_norm_(self.crit.parameters(), self.hps.clip_norm)
+        crit_gradn = U.clip_grad_norm_(self.crit.parameters(), self.hps.clip_norm)
         if self.hps.clipped_double:
             self.twin_opt.zero_grad()
             twin_loss.backward()
             average_gradients(self.twin, self.device)
-            twin_gradnorm = U.clip_grad_norm_(self.twin.parameters(), self.hps.clip_norm)
+            twin_gradn = U.clip_grad_norm_(self.twin.parameters(), self.hps.clip_norm)
 
         # Perform model updates
         if update_critic:
@@ -582,18 +596,18 @@ class DDPGAgent(object):
         # Aggregate the elements to return
         losses = {'actr': actr_loss.clone().cpu().data.numpy(),
                   'crit': crit_loss.clone().cpu().data.numpy()}
-        gradnorms = {'actr': actr_gradnorm,
-                     'crit': crit_gradnorm}
+        gradns = {'actr': actr_gradn,
+                  'crit': crit_gradn}
         if self.hps.clipped_double:
             losses.update({'twin': twin_loss.clone().cpu().data.numpy()})
-            gradnorms.update({'twin': twin_gradnorm})
+            gradns.update({'twin': twin_gradn})
 
         lrnows = {'actr': self.actr_sched.get_lr(),
                   'crit': self.crit_sched.get_lr()}
         if self.hps.clipped_double:
             lrnows.update({'twin': self.twin_sched.get_lr()})
 
-        return losses, gradnorms, lrnows
+        return losses, gradns, lrnows
 
     def update_disc(self, chunk, e_chunk):
         # Create tensors from the inputs
@@ -637,13 +651,6 @@ class DDPGAgent(object):
         average_gradients(self.disc, self.device)
         U.clip_grad_norm_(self.disc.parameters(), self.hps.clip_norm)
         self.disc_opt.step()
-
-        if self.hps.overwrite:
-            assert hasattr(self, 'disc')
-            # Overwrite discriminator reward in buffer with current network predition
-            idxs = chunk['idxs'].cpu().numpy().astype(np.int8)
-            new_rewards = self.disc.get_reward(p_state, p_action)
-            self.replay_buffer.update_rewards(idxs, new_rewards)
 
     def update_target_net(self, iters_so_far):
         """Update the target networks"""

@@ -1,86 +1,70 @@
 import time
 from copy import deepcopy
 import os
-from collections import namedtuple, deque, OrderedDict
+from collections import defaultdict, OrderedDict
 
 import wandb
 import numpy as np
 
 from helpers import logger
 from helpers.distributed_util import sync_check, mpi_mean_reduce
-from agents.memory import RingBuffer
 from helpers.console_util import timed_cm_wrapper, log_iter_info
 
 
 def rollout_generator(env, agent, rollout_len):
 
     pixels = len(env.observation_space.shape) >= 3
-
-    # Reset noise processes
-    agent.reset_noise()
-
     t = 0
     done = True
     env_rew = 0.0
-    ob = env.reset()
+    rollout = defaultdict(list)
 
-    if pixels:
-        ob = np.array(ob)
-
-    obs = RingBuffer(rollout_len, shape=agent.ob_shape)
-    acs = RingBuffer(rollout_len, shape=agent.ac_shape)
-    if hasattr(agent, 'disc'):
-        syn_rews = RingBuffer(rollout_len, shape=(1,), dtype='float32')
-    env_rews = RingBuffer(rollout_len, shape=(1,), dtype='float32')
-    dones = RingBuffer(rollout_len, shape=(1,), dtype='int32')
+    # Reset agent's noise processes and env
+    agent.reset_noise()
+    ob = np.array(env.reset())
 
     while True:
-        ac = agent.predict(ob, apply_noise=True)
 
+        # Predict action
+        ac = agent.predict(ob, apply_noise=True)
         # NaN-proof and clip
         ac = np.nan_to_num(ac)
         ac = np.clip(ac, env.action_space.low, env.action_space.high)
 
         if t > 0 and t % rollout_len == 0:
-
-            obs_ = obs.data.reshape(-1, *agent.ob_shape)
-
             if not pixels:
-                agent.rms_obs.update(obs_)
+                # Update running stats
+                agent.rms_obs.update(np.array(rollout['obs']).reshape(-1, *agent.ob_shape))
+            # Yield
+            yield {"acs": np.array(rollout['acs']).reshape(-1, *agent.ac_shape)}
+            # When going back in, clear the rollout
+            rollout.clear()
 
-            out = {"obs": obs_,
-                   "acs": acs.data.reshape(-1, *agent.ac_shape),
-                   "env_rews": env_rews.data.reshape(-1, 1),
-                   "dones": dones.data.reshape(-1, 1)}
-            if hasattr(agent, 'disc'):
-                out.update({"syn_rews": syn_rews.data.reshape(-1, 1)})
-
-            yield out
-
-        obs.append(ob)
-        acs.append(ac)
-        dones.append(done)
+        rollout['obs'].append(ob)
+        rollout['acs'].append(ac)
 
         # Interact with env(s)
         new_ob, env_rew, done, _ = env.step(ac)
 
-        env_rews.append(env_rew)
-
-        if hasattr(agent, 'disc'):
-            syn_rew = np.asscalar(agent.disc.get_reward(ob, ac).cpu().numpy().flatten())
-            syn_rews.append(syn_rew)
-
         # Store transition(s) in the replay buffer
-        if hasattr(agent, 'disc'):
-            agent.store_transition(ob, ac, syn_rew, new_ob, done)
-        else:
-            agent.store_transition(ob, ac, env_rew, new_ob, done)
+        rew = (np.asscalar(agent.disc.get_reward(ob, ac).cpu().numpy().flatten())
+               if hasattr(agent, 'disc') else
+               env_rew)  # Careful here
+        transition = {"obs0": ob,
+                      "acs": ac,
+                      "rews": rew,
+                      "obs1": new_ob,
+                      "dones1": done}
+        if agent.hps.fingerprint:
+            iters_so_far = t // rollout_len
+            transition.update({"fps": iters_so_far})
+        agent.replay_buffer.append(transition)
 
-        ob = deepcopy(new_ob)
-        if pixels:
-            ob = np.array(ob)
+        # Set current state with the next
+        ob = np.array(deepcopy(new_ob))
 
         if done:
+            # Reset agent's noise processes and env
             agent.reset_noise()
             ob = np.array(env.reset())
 
@@ -221,7 +205,6 @@ def learn(args,
           render,
           record,
           expert_dataset,
-          add_demos_to_mem,
           num_timesteps):
 
     assert training_steps_per_iter % actor_update_delay == 0, "must be a multiple"
@@ -229,30 +212,17 @@ def learn(args,
     # Create an agent
     agent = agent_wrapper()
 
-    if add_demos_to_mem:
-        # Add demonstrations to memory
-        agent.replay_buffer.add_demo_transitions_to_mem(expert_dataset)
-
     # Create context manager that records the time taken by encapsulated ops
     timed = timed_cm_wrapper(logger)
 
+    # Start clocks
     num_iters = num_timesteps // rollout_len
     iters_so_far = 0
     timesteps_so_far = 0
     tstart = time.time()
 
-    # Define rolling buffers for experiental data collection
-    maxlen = 100
-    keys = ['ac', 'actr_gradnorms', 'actr_losses', 'crit_gradnorms', 'crit_losses']
-    if eval_env is not None:
-        assert rank == 0, "non-zero rank mpi worker forbidden here"
-        keys.extend(['eval_len', 'eval_env_ret'])
-    if agent.hps.clipped_double:
-        keys.extend(['twin_gradnorms', 'twin_losses'])
-    if agent.param_noise is not None:
-        keys.extend(['pn_dist', 'pn_cur_std'])
-    Deques = namedtuple('Deques', keys)
-    deques = Deques(**{k: deque(maxlen=maxlen) for k in keys})
+    # Create dictionary to collect stats
+    d = defaultdict(list)
 
     # Set up model save directory
     if rank == 0:
@@ -290,14 +260,12 @@ def learn(args,
             agent.save(ckpt_dir, iters_so_far)
             logger.info("saving model @: {}".format(ckpt_dir))
 
-        # Sample mini-batch in env w/ perturbed actor and store transitions
+        # Sample mini-batch in env with perturbed actor and store transitions
         with timed("interacting"):
             rollout = roll_gen.__next__()
             logger.info("[INFO] {} ".format("timesteps".ljust(20, '.')) +
                         "{}".format(timesteps_so_far + rollout_len))
-
-        # Extend deques with collected experiential data
-        deques.ac.extend(rollout['acs'])
+        d['ac'].extend(rollout['acs'])
 
         with timed("training"):
             for training_step in range(training_steps_per_iter):
@@ -307,48 +275,46 @@ def learn(args,
                         # Adapt parameter noise
                         agent.adapt_param_noise()
                         # Store the action-space dist between perturbed and non-perturbed actors
-                        deques.pn_dist.append(agent.pn_dist)
+                        d['pn_dist'].append(agent.pn_dist)
                         # Store the new std resulting from the adaption
-                        deques.pn_cur_std.append(agent.param_noise.cur_std)
+                        d['pn_cur_std'].append(agent.param_noise.cur_std)
 
                 # Train the actor-critic architecture
                 update_critic = True
                 if hasattr(agent, 'disc'):
                     update_critic = not bool(training_step % d_update_ratio)
                 update_actor = update_critic and not bool(training_step % actor_update_delay)
-
-                losses, gradnorms, lrnows = agent.train(update_critic=update_critic,
-                                                        update_actor=update_actor,
-                                                        iters_so_far=iters_so_far)
-                # Store the losses and gradients in their respective deques
-                deques.actr_gradnorms.append(gradnorms['actr'])
-                deques.actr_losses.append(losses['actr'])
-                deques.crit_gradnorms.append(gradnorms['crit'])
-                deques.crit_losses.append(losses['crit'])
+                losses, gradns, lrnows = agent.train(update_critic=update_critic,
+                                                     update_actor=update_actor,
+                                                     iters_so_far=iters_so_far)
+                d['actr_gradns'].append(gradns['actr'])
+                d['actr_losses'].append(losses['actr'])
+                d['crit_gradns'].append(gradns['crit'])
+                d['crit_losses'].append(losses['crit'])
                 if agent.hps.clipped_double:
-                    deques.twin_gradnorms.append(gradnorms['twin'])
-                    deques.twin_losses.append(losses['twin'])
+                    d['twin_gradns'].append(gradns['twin'])
+                    d['twin_losses'].append(losses['twin'])
 
             # Log statistics
             stats = OrderedDict()
-            ac_np_mean = np.mean(deques.ac, axis=0)  # vector
+            ac_np_mean = np.mean(d['ac'], axis=0)  # vector
             stats.update({'ac': {'min': np.amin(ac_np_mean),
                                  'max': np.amax(ac_np_mean),
                                  'mean': np.mean(ac_np_mean),
                                  'mpimean': mpi_mean_reduce(ac_np_mean)}})
-            stats.update({'actr': {'loss': np.mean(deques.actr_losses),
-                                   'gradnorm': np.mean(deques.actr_gradnorms),
+            stats.update({'actr': {'loss': np.mean(d['actr_losses']),
+                                   'gradn': np.mean(d['actr_gradns']),
                                    'lrnow': lrnows['actr'][0]}})
-            stats.update({'crit': {'loss': np.mean(deques.crit_losses),
-                                   'gradnorm': np.mean(deques.crit_gradnorms),
+            stats.update({'crit': {'loss': np.mean(d['crit_losses']),
+                                   'gradn': np.mean(d['crit_gradns']),
                                    'lrnow': lrnows['crit'][0]}})
             if agent.hps.clipped_double:
-                stats.update({'twin': {'loss': np.mean(deques.twin_losses),
-                                       'gradnorm': np.mean(deques.twin_gradnorms),
+                stats.update({'twin': {'loss': np.mean(d['twin_losses']),
+                                       'gradn': np.mean(d['twin_gradns']),
                                        'lrnow': lrnows['twin'][0]}})
             if agent.param_noise is not None:
-                stats.update({'pn': {'pn_dist': np.mean(deques.pn_dist),
-                                     'pn_cur_std': np.mean(deques.pn_cur_std)}})
+                stats.update({'pn': {'pn_dist': np.mean(d['pn_dist']),
+                                     'pn_cur_std': np.mean(d['pn_cur_std'])}})
 
             num_entries = deepcopy(agent.replay_buffer.num_entries)
             stats.update({'memory': {'num_entries': str(num_entries),
@@ -375,12 +341,12 @@ def learn(args,
                         # Sample an episode w/ non-perturbed actor w/o storing anything
                         eval_ep = eval_ep_gen.__next__()
                         # Aggregate data collected during the evaluation to the buffers
-                        deques.eval_len.append(eval_ep['ep_len'])
-                        deques.eval_env_ret.append(eval_ep['ep_env_ret'])
+                        d['eval_len'].append(eval_ep['ep_len'])
+                        d['eval_env_ret'].append(eval_ep['ep_env_ret'])
 
                     # Log evaluation stats
-                    logger.record_tabular('ep_len', np.mean(deques.eval_len))
-                    logger.record_tabular('ep_env_ret', np.mean(deques.eval_env_ret))
+                    logger.record_tabular('ep_len', np.mean(d['eval_len']))
+                    logger.record_tabular('ep_env_ret', np.mean(d['eval_env_ret']))
                     logger.info("[CSV] dumping eval stats in .csv file")
                     logger.dump_tabular()
 
@@ -402,25 +368,28 @@ def learn(args,
         if rank == 0:
 
             if iters_so_far % eval_frequency == 0:
-                wandb.log({'eval_len': np.mean(deques.eval_len),
-                           'eval_env_ret': np.mean(deques.eval_env_ret)},
+                wandb.log({'eval_len': np.mean(d['eval_len)']),
+                           'eval_env_ret': np.mean(d['eval_env_ret'])},
                           step=timesteps_so_far)
             if agent.param_noise is not None:
-                wandb.log({'pn_dist': np.mean(deques.pn_dist),
-                           'pn_cur_std': np.mean(deques.pn_cur_std)},
+                wandb.log({'pn_dist': np.mean(d['pn_dist']),
+                           'pn_cur_std': np.mean(d['pn_cur_std'])},
                           step=timesteps_so_far)
-            wandb.log({'actr_loss': np.mean(deques.actr_losses),
-                       'actr_gradnorm': np.mean(deques.actr_gradnorms),
+            wandb.log({'actr_loss': np.mean(d['actr_losses']),
+                       'actr_gradn': np.mean(d['actr_gradns']),
                        'actr_lrnow': np.array(lrnows['actr']),
-                       'crit_loss': np.mean(deques.crit_losses),
-                       'crit_gradnorm': np.mean(deques.crit_gradnorms),
+                       'crit_loss': np.mean(d['crit_losses']),
+                       'crit_gradn': np.mean(d['crit_gradns']),
                        'crit_lrnow': np.array(lrnows['crit'])},
                       step=timesteps_so_far)
             if agent.hps.clipped_double:
-                wandb.log({'twin_loss': np.mean(deques.twin_losses),
-                           'twin_gradnorm': np.mean(deques.twin_gradnorms),
+                wandb.log({'twin_loss': np.mean(d['twin_losses']),
+                           'twin_gradn': np.mean(d['twin_gradns']),
                            'twin_lrnow': np.array(lrnows['twin'])},
                           step=timesteps_so_far)
 
+        # Increment counters
         iters_so_far += 1
         timesteps_so_far += rollout_len
+        # Clear the iteration's running stats
+        d.clear()

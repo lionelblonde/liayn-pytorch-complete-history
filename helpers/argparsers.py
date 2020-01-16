@@ -46,7 +46,6 @@ def argparser(description="DDPG Experiment"):
     parser.add_argument('--batch_size', help='minibatch size', type=int, default=128)
     parser.add_argument('--gamma', help='discount factor', type=float, default=0.995)
     parser.add_argument('--mem_size', type=int, default=int(1e6))
-    parser.add_argument('--reward_scale', type=float, default=1.)
     parser.add_argument('--noise_type', help='choices: adaptive-param_xx, normal_xx, ou_xx, none',
                         type=str, default='adaptive-param_0.2, ou_0.1, normal_0.1')
     parser.add_argument('--pn_adapt_frequency', type=float, default=50)
@@ -54,7 +53,6 @@ def argparser(description="DDPG Experiment"):
     parser.add_argument('--targ_up_freq', type=int, default=100, help='hard target nets update')
     boolean_flag(parser, 'n_step_returns', default=True)
     parser.add_argument('--lookahead', help='num lookahead steps', type=int, default=10)
-    boolean_flag(parser, 'add_demos_to_mem', default=False)
     boolean_flag(parser, 'reward_control', help='reward control auxiliary task', default=False)
     boolean_flag(parser, 'popart', default=False)
 
@@ -96,8 +94,8 @@ def argparser(description="DDPG Experiment"):
                         help='number of discriminator update per generator update')
     parser.add_argument('--num_demos', help='number of expert demo trajs for imitation',
                         type=int, default=None)
-    boolean_flag(parser, 'overwrite', help='update the reward in buffer', default=False)
     boolean_flag(parser, 'grad_pen', help='whether to use gradient penalty', default=False)
+    boolean_flag(parser, 'fingerprint', help='whether to use fingerprinting', default=False)
 
     # Evaluation
     parser.add_argument('--model_path', type=str, default=None)

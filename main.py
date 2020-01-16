@@ -53,7 +53,7 @@ def train(args):
     env = make_env(args.env_id, worker_seed)
 
     expert_dataset = None
-    if args.algo == 'sam' or args.add_demos_to_mem:
+    if args.algo == 'sam':
         # Create the expert demonstrations dataset from expert trajectories
         expert_dataset = DemoDataset(expert_path=args.expert_path,
                                      num_demos=args.num_demos)
@@ -90,7 +90,6 @@ def train(args):
                        render=args.render,
                        record=args.record,
                        expert_dataset=expert_dataset,
-                       add_demos_to_mem=args.add_demos_to_mem,
                        num_timesteps=int(args.num_timesteps))
 
     # Close environment

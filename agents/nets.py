@@ -119,62 +119,31 @@ class VanillaCritic(nn.Module):
         ob_dim = env.observation_space.shape[0]
         ac_dim = env.action_space.shape[0]
         self.hps = hps
-        # Assemble fully-connected encoder
-        self.encoder = nn.Sequential(OrderedDict([
-            ('fc_block', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(ob_dim + ac_dim, HID_SIZE)),
+        self.q_trunk = nn.Sequential(OrderedDict([
+            ('fc_block_1', nn.Sequential(OrderedDict([
+                ('fc', nn.Linear(ob_dim + ac_dim + int(self.hps.fingerprint), HID_SIZE)),
                 ('ln', nn.LayerNorm(HID_SIZE)),
                 ('nl', nn.ReLU(inplace=True)),
             ]))),
-        ]))
-        # Assemble fully-connected decoder
-        self.q_decoder = nn.Sequential(OrderedDict([
-            ('fc_block', nn.Sequential(OrderedDict([
+            ('fc_block_2', nn.Sequential(OrderedDict([
                 ('fc', nn.Linear(HID_SIZE, HID_SIZE)),
                 ('ln', nn.LayerNorm(HID_SIZE)),
                 ('nl', nn.ReLU(inplace=True)),
             ]))),
         ]))
-        self.q_skip_co = nn.Sequential()
         self.q_head = nn.Linear(HID_SIZE, 1)
-        if self.hps.reward_control:
-            # > Reward final decoder
-            self.r_decoder = nn.Sequential(OrderedDict([
-                ('fc_block_1', nn.Sequential(OrderedDict([
-                    ('fc', nn.Linear(HID_SIZE, HID_SIZE)),
-                    ('ln', nn.LayerNorm(HID_SIZE)),
-                    ('nl', nn.ReLU(inplace=True)),
-                ]))),
-            ]))
-            self.r_skip_co = nn.Sequential()
-            self.r_head = nn.Linear(HID_SIZE, 1)
         # Perform initialization
-        self.encoder.apply(init(nonlin='relu', param=None))
-        self.q_decoder.apply(init(nonlin='relu', param=None))
+        self.q_trunk.apply(init(nonlin='relu', param=None))
         self.q_head.apply(init(weight_scale=0.01, constant_bias=0.0))
-        if self.hps.reward_control:
-            self.r_decoder.apply(init(nonlin='relu', param=None))
-            self.r_head.apply(init(nonlin='linear', param=None))
 
-    def Q(self, ob, ac):
-        out = self.forward(ob, ac)
-        return out[0]  # q
+    def Q(self, *args):
+        return self.forward(*args)
 
-    def rc(self, ob, ac):
-        if self.hps.reward_control:
-            out = self.forward(ob, ac)
-            return out[1]  # reward control
-        else:
-            raise ValueError("should not be called")
-
-    def forward(self, ob, ac):
-        x = self.encoder(torch.cat([ob, ac], dim=-1))
-        q = self.q_head(self.q_decoder(x) + self.q_skip_co(x))
-        out = [q]
-        if self.hps.reward_control:
-            reward = self.r_head(self.r_decoder(x) + self.r_skip_co(x))
-            out.append(reward)
-        return out
+    def forward(self, *args):
+        x = torch.cat(args, dim=-1)
+        x = self.q_trunk(x)
+        x = self.q_head(x)
+        return x
 
     @property
     def out_params(self):
@@ -195,65 +164,34 @@ class C51QRCritic(nn.Module):
         assert sum([hps.use_c51, hps.use_qr]) == 1 and not hps.use_iqn
         num_z_heads = hps.c51_num_atoms if hps.use_c51 else hps.num_tau
         self.hps = hps
-        # Assemble fully-connected encoder
         self.encoder = nn.Sequential(OrderedDict([
-            ('fc_block', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(ob_dim + ac_dim, HID_SIZE)),
+            ('fc_block_1', nn.Sequential(OrderedDict([
+                ('fc', nn.Linear(ob_dim + ac_dim + int(self.hps.fingerprint), HID_SIZE)),
                 ('ln', nn.LayerNorm(HID_SIZE)),
                 ('nl', nn.ReLU(inplace=True)),
             ]))),
-        ]))
-        # Assemble fully-connected decoder
-        self.z_decoder = nn.Sequential(OrderedDict([
-            ('fc_block', nn.Sequential(OrderedDict([
+            ('fc_block_2', nn.Sequential(OrderedDict([
                 ('fc', nn.Linear(HID_SIZE, HID_SIZE)),
                 ('ln', nn.LayerNorm(HID_SIZE)),
                 ('nl', nn.ReLU(inplace=True)),
             ]))),
         ]))
-        self.z_skip_co = nn.Sequential()
         self.z_heads = nn.Linear(HID_SIZE, num_z_heads)
-        if self.hps.reward_control:
-            # > Reward final decoder
-            self.r_decoder = nn.Sequential(OrderedDict([
-                ('fc_block_1', nn.Sequential(OrderedDict([
-                    ('fc', nn.Linear(HID_SIZE, HID_SIZE)),
-                    ('ln', nn.LayerNorm(HID_SIZE)),
-                    ('nl', nn.ReLU(inplace=True)),
-                ]))),
-            ]))
-            self.r_skip_co = nn.Sequential()
-            self.r_head = nn.Linear(HID_SIZE, 1)
         # Perform initialization
-        self.encoder.apply(init(nonlin='relu', param=None))
-        self.z_decoder.apply(init(nonlin='relu', param=None))
+        self.z_trunk.apply(init(nonlin='relu', param=None))
         self.z_heads.apply(init(weight_scale=0.01, constant_bias=0.0))
-        if self.hps.reward_control:
-            self.r_decoder.apply(init(nonlin='relu', param=None))
-            self.r_head.apply(init(nonlin='linear', param=None))
 
-    def Z(self, ob, ac):
-        out = self.forward(ob, ac)
-        return out[0]  # z
+    def Z(self, *args):
+        return self.forward(*args)
 
-    def rc(self, ob, ac):
-        if self.hps.reward_control:
-            out = self.forward(ob, ac)
-            return out[1]  # reward control
-        else:
-            raise ValueError("should not be called")
-
-    def forward(self, ob, ac):
-        x = self.encoder(torch.cat([ob, ac], dim=-1))
-        z = self.z_heads(self.z_decoder(x) + self.z_skip_co(x))
+    def forward(self, *args):
+        x = torch.cat(args, dim=-1)
+        x = self.z_trunk(x)
+        z = self.z_heads(x)
         if self.hps.use_c51:
             # Return a categorical distribution
             z = F.log_softmax(z, dim=1).exp()
-        out = [z]
-        if self.hps.reward_control:
-            reward = self.r_head(self.r_decoder(x) + self.r_skip_co(x))
-            out.append(reward)
-        return out
+        return z
 
 
 class IQNCritic(nn.Module):
@@ -266,44 +204,26 @@ class IQNCritic(nn.Module):
         ob_dim = env.observation_space.shape[0]
         ac_dim = env.action_space.shape[0]
         self.hps = hps
-        # > Psi encoder
-        # Assemble fully-connected encoder
-        self.psi_encoder = nn.Sequential(OrderedDict([
-            ('fc_block', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(ob_dim + ac_dim, HID_SIZE)),
+        self.psi = nn.Sequential(OrderedDict([
+            ('fc_block_1', nn.Sequential(OrderedDict([
+                ('fc', nn.Linear(ob_dim + ac_dim + int(self.hps.fingerprint), HID_SIZE)),
                 ('ln', nn.LayerNorm(HID_SIZE)),
                 ('nl', nn.ReLU(inplace=True)),
             ]))),
-        ]))
-        # Assemble fully-connected decoder
-        self.psi_decoder = nn.Sequential(OrderedDict([
-            ('fc_block', nn.Sequential(OrderedDict([
+            ('fc_block_2', nn.Sequential(OrderedDict([
                 ('fc', nn.Linear(HID_SIZE, HID_SIZE)),
                 ('ln', nn.LayerNorm(HID_SIZE)),
                 ('nl', nn.ReLU(inplace=True)),
             ]))),
         ]))
-        if self.hps.reward_control:
-            # > Reward final decoder
-            self.r_decoder = nn.Sequential(OrderedDict([
-                ('fc_block_1', nn.Sequential(OrderedDict([
-                    ('fc', nn.Linear(HID_SIZE, HID_SIZE)),
-                    ('ln', nn.LayerNorm(HID_SIZE)),
-                    ('nl', nn.ReLU(inplace=True)),
-                ]))),
-            ]))
-            self.r_skip_co = nn.Sequential()
-            self.r_head = nn.Linear(HID_SIZE, 1)
-        # > Phi encoder
-        self.phi_encoder = nn.Sequential(OrderedDict([
+        self.phi = nn.Sequential(OrderedDict([
             ('fc_block', nn.Sequential(OrderedDict([
                 ('fc', nn.Linear(self.hps.quantile_emb_dim, HID_SIZE)),
                 ('ln', nn.LayerNorm(HID_SIZE)),
                 ('nl', nn.ReLU(inplace=True)),
             ]))),
         ]))
-        # > Hadamard encoder
-        self.had_encoder = nn.Sequential(OrderedDict([
+        self.hadamard = nn.Sequential(OrderedDict([
             ('fc_block', nn.Sequential(OrderedDict([
                 ('fc', nn.Linear(HID_SIZE, HID_SIZE)),
                 ('ln', nn.LayerNorm(HID_SIZE)),
@@ -312,65 +232,41 @@ class IQNCritic(nn.Module):
         ]))
         self.z_head = nn.Linear(HID_SIZE, 1)
         # Perform initialization
-        self.psi_encoder.apply(init(nonlin='relu', param=None))
-        self.psi_decoder.apply(init(nonlin='relu', param=None))
-        self.phi_encoder.apply(init(nonlin='relu', param=None))
-        self.had_encoder.apply(init(nonlin='relu', param=None))
+        self.psi.apply(init(nonlin='relu', param=None))
+        self.phi.apply(init(nonlin='relu', param=None))
+        self.hadamard.apply(init(nonlin='relu', param=None))
         self.z_head.apply(init(weight_scale=0.01, constant_bias=0.0))
-        if self.hps.reward_control:
-            self.r_decoder.apply(init(nonlin='relu', param=None))
-            self.r_head.apply(init(nonlin='linear', param=None))
 
-    def psi_emb(self, ob, ac):
-        x = torch.cat([ob, ac], dim=-1)
-        x = self.psi_encoder(x)
-        x = self.psi_decoder(x)
-        return x
+    def Z(self, num_quantiles, *args):
+        return self.forward(num_quantiles, *args)
 
-    def phi_emb(self, num_quantiles):
-        """Equation 4 in IQN paper"""
+    def forward(self, num_quantiles, *args):
+        # Psi embedding
+        psi = self.psi(torch.cat(args, dim=-1))
+        psi = psi.repeat(num_quantiles, 1)
+        # Tau embedding, equation 4 in IQN paper
+        # Create tau and populate with unit uniform noise
         tau = torch.FloatTensor(self.hps.batch_size * num_quantiles, 1)
         tau.uniform_(0., 1.)
         # Expand the quantiles, e.g. [tau1, tau2, tau3] tiled with [1, dim]
         # becomes [[tau1, tau2, tau3], [tau1, tau2, tau3], ...]
-        x = tau.repeat(1, self.hps.quantile_emb_dim)
+        emb = tau.repeat(1, self.hps.quantile_emb_dim)
+        # Craft the embedding used in the IQN paper
         indices = torch.arange(1, self.hps.quantile_emb_dim + 1, dtype=torch.float32).to(tau)
         pi = math.pi * torch.ones(self.hps.quantile_emb_dim, dtype=torch.float32).to(tau)
         assert indices.shape == pi.shape
-        x *= torch.mul(indices, pi)
-        x = torch.cos(x)
-        # Wrap with unique layer
-        x = self.phi_encoder(x)
-        return x, tau
-
-    def Z(self, ob, ac, num_quantiles):
-        out = self.forward(ob, ac, num_quantiles)
-        return out[0:2]  # z, tau
-
-    def rc(self, ob, ac, num_quantiles):
-        if self.hps.reward_control:
-            out = self.forward(ob, ac, num_quantiles)
-            return out[2]  # reward control
-        else:
-            raise ValueError("should not be called")
-
-    def forward(self, ob, ac, num_quantiles):
-        # Psi embedding
-        psi_emb = self.psi_encoder(torch.cat([ob, ac], dim=-1))
-        psi = self.psi_decoder(psi_emb)
-        psi = psi.repeat(num_quantiles, 1)
-        # Embed tau
-        phi, tau = self.phi_emb(num_quantiles)
+        emb *= torch.mul(indices, pi)
+        emb = torch.cos(emb)
+        # Pass through the phi net
+        phi = self.phi(emb)
+        # Verify that the shapes of the embeddings are compatible
         assert psi.shape == phi.shape, "{}, {}".format(psi.shape, phi.shape)
-        # Multiply the embedding element-wise
-        had = self.had_encoder(psi * (1.0 + phi))
+        # Multiply the embedding element-wise (hadamard product)
+        had = psi * (1.0 + phi)
+        had = self.hadamard(had)
         z = F.relu(self.z_head(had))
         z = z.view(-1, num_quantiles, 1)
-        out = [z, tau]
-        if self.hps.reward_control:
-            reward = self.r_head(self.r_decoder(psi_emb) + self.r_skip_co(psi_emb))
-            out.append(reward)
-        return out
+        return z, tau
 
 
 class Discriminator(nn.Module):
@@ -382,8 +278,8 @@ class Discriminator(nn.Module):
         self.hps = hps
         # Define the input dimension, depending on whether actions are used too.
         in_dim = self.ob_dim if self.hps.state_only else self.ob_dim + self.ac_dim
-        # Assemble the discriminator decoder
-        self.decoder = nn.Sequential(OrderedDict([
+
+        self.score_trunk = nn.Sequential(OrderedDict([
             ('fc_block_1', nn.Sequential(OrderedDict([
                 ('fc', U.spectral_norm(nn.Linear(in_dim, HID_SIZE))),
                 ('nl', nn.ReLU(inplace=True)),
@@ -395,7 +291,7 @@ class Discriminator(nn.Module):
         ]))
         self.score_head = nn.Linear(HID_SIZE, 1)
         # Perform initialization
-        self.decoder.apply(init(nonlin='leaky_relu', param=0.1))
+        self.score_trunk.apply(init(nonlin='leaky_relu', param=0.1))
         self.score_head.apply(init(nonlin='linear', param=None))
 
     def grad_pen(self, p_ob, p_ac, e_ob, e_ac):
@@ -461,4 +357,6 @@ class Discriminator(nn.Module):
 
     def forward(self, ob, ac):
         x = ob if self.hps.state_only else torch.cat([ob, ac], dim=-1)
-        return self.score_head(self.decoder(x))
+        x = self.score_trunk(x)
+        score = self.score_head(x)
+        return score

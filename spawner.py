@@ -30,9 +30,8 @@ TYPE = 'sweep' if args.sweep else 'fixed'
 BOOL_ARGS = ['cuda', 'pixels', 'reward_control', 'popart',
              'render', 'record', 'with_scheduler',
              'prioritized_replay', 'ranked', 'unreal',
-             'n_step_returns', 'add_demos_to_mem',
-             'clipped_double', 'targ_actor_smoothing',
-             'state_only', 'minimax_only', 'overwrite', 'grad_pen',
+             'n_step_returns', 'clipped_double', 'targ_actor_smoothing',
+             'state_only', 'minimax_only', 'grad_pen', 'fingerprint',
              'use_c51', 'use_qr', 'use_iqn']
 
 # Create the list of environments from the indicated benchmark
@@ -122,7 +121,6 @@ def get_hps(sweep):
             'batch_size': np.random.choice([32, 64, 128]),
             'gamma': np.random.choice([0.99, 0.995]),
             'mem_size': np.random.choice([10000, 50000, 100000]),
-            'reward_scale': CONFIG['parameters'].get('reward_scale', 1.),
             'noise_type': np.random.choice(['"adaptive-param_0.2, normal_0.2"',
                                             '"adaptive-param_0.2, ou_0.2"',
                                             '"normal_0.2"',
@@ -132,7 +130,6 @@ def get_hps(sweep):
             'targ_up_freq': np.random.choice([10, 1000]),
             'n_step_returns': CONFIG['parameters'].get('n_step_returns', False),
             'lookahead': np.random.choice([5, 10, 20, 40, 60]),
-            'add_demos_to_mem': CONFIG['parameters'].get('add_demos_to_mem', False),
             'reward_control': CONFIG['parameters'].get('reward_control', False),
             'popart': CONFIG['parameters'].get('popart', False),
 
@@ -169,8 +166,8 @@ def get_hps(sweep):
             'ent_reg_scale': CONFIG['parameters'].get('ent_reg_scale', 0.),
             'd_update_ratio': CONFIG['parameters'].get('d_update_ratio', 2),
             'num_demos': CONFIG['parameters'].get('num_demos', 0),
-            'overwrite': CONFIG['parameters'].get('overwrite', False),
             'grad_pen': CONFIG['parameters'].get('grad_pen', False),
+            'fingerprint': CONFIG['parameters'].get('fingerprint', False),
         }
     else:
         # No search, fixed map
@@ -205,14 +202,12 @@ def get_hps(sweep):
             'batch_size': CONFIG['parameters'].get('batch_size', 128),
             'gamma': CONFIG['parameters'].get('gamma', 0.99),
             'mem_size': CONFIG['parameters'].get('mem_size', 50000),
-            'reward_scale': CONFIG['parameters'].get('reward_scale', 1.),
             'noise_type': CONFIG['parameters']['noise_type'],
             'pn_adapt_frequency': CONFIG['parameters'].get('pn_adapt_frequency', 50),
             'polyak': CONFIG['parameters'].get('polyak', 0.005),
             'targ_up_freq': CONFIG['parameters'].get('targ_up_freq', 100),
             'n_step_returns': CONFIG['parameters'].get('n_step_returns', False),
             'lookahead': CONFIG['parameters'].get('lookahead', 60),
-            'add_demos_to_mem': CONFIG['parameters'].get('add_demos_to_mem', False),
             'reward_control': CONFIG['parameters'].get('reward_control', False),
             'popart': CONFIG['parameters'].get('popart', False),
 
@@ -249,8 +244,8 @@ def get_hps(sweep):
             'ent_reg_scale': CONFIG['parameters'].get('ent_reg_scale', 0.),
             'd_update_ratio': CONFIG['parameters'].get('d_update_ratio', 2),
             'num_demos': CONFIG['parameters'].get('num_demos', 0),
-            'overwrite': CONFIG['parameters'].get('overwrite', False),
             'grad_pen': CONFIG['parameters'].get('grad_pen', False),
+            'fingerprint': CONFIG['parameters'].get('fingerprint', False),
         }
 
     # Duplicate for each environment
@@ -299,7 +294,8 @@ def create_job_str(name, command):
         bash_script_str += ('#SBATCH --job-name={}\n'
                             '#SBATCH --partition={}\n'
                             '#SBATCH --ntasks={}\n'
-                            '#SBATCH --cpus-per-task=1\n'
+                            '#SBATCH --ntasks-per-node={}\n'
+                            '#SBATCH --cpus-per-task=2\n'
                             '#SBATCH --time={}\n'
                             '#SBATCH --mem=32000\n')
         if CONFIG['parameters']['cuda']:
@@ -308,11 +304,12 @@ def create_job_str(name, command):
                                 '#SBATCH --constraint="{}"\n'.format(contraint))
         bash_script_str += ('\n')
         # Load modules
+        bash_script_str += ('module load GCC/7.3.0-2.30 OpenMPI/3.1.1\n')
         if CONFIG['parameters']['cuda']:
             bash_script_str += ('module load CUDA\n')
         bash_script_str += ('\n')
         # Launch command
-        bash_script_str += ('mpirun {}')
+        bash_script_str += ('srun {}')
 
         bash_script_str = bash_script_str.format(name,
                                                  CONFIG['resources']['partition'],
@@ -325,7 +322,7 @@ def create_job_str(name, command):
         bash_script_str += ('#SBATCH --job-name={}\n'
                             '#SBATCH --partition={}\n'
                             '#SBATCH --ntasks={}\n'
-                            '#SBATCH --cpus-per-task=1\n'
+                            '#SBATCH --cpus-per-task=2\n'
                             '#SBATCH --time={}\n'
                             '#SBATCH --constraint=gpu\n\n')
         # Load modules
