@@ -96,6 +96,7 @@ def argparser(description="DDPG Experiment"):
                         type=int, default=None)
     boolean_flag(parser, 'grad_pen', help='whether to use gradient penalty', default=False)
     boolean_flag(parser, 'fingerprint', help='whether to use fingerprinting', default=False)
+    boolean_flag(parser, 'rnd', help='whether to use rnd', default=False)
 
     # Evaluation
     parser.add_argument('--model_path', type=str, default=None)

@@ -16,6 +16,7 @@ from agents.memory import ReplayBuffer, PrioritizedReplayBuffer, UnrealReplayBuf
 from agents.nets import Actor, VanillaCritic, C51QRCritic, IQNCritic, Discriminator
 from agents.param_noise import AdaptiveParamNoise
 from agents.ac_noise import NormalAcNoise, OUAcNoise
+from agents.rnd import RND
 
 
 class DDPGAgent(object):
@@ -104,6 +105,10 @@ class DDPGAgent(object):
 
         # Set up replay buffer
         self.setup_replay_buffer()
+
+        if self.hps.rnd:
+            # Set up random network distillation
+            self.rnd = RND(in_size=1, device=self.device)
 
         # Set up the optimizers
         self.actr_opt = torch.optim.Adam(self.actr.parameters(),
@@ -236,10 +241,17 @@ class DDPGAgent(object):
 
     def normalize_clip_ob(self, ob):
         # Normalize with running mean and running std
-        ob = ((ob - self.rms_obs.mean) /
-              (np.sqrt(self.rms_obs.var) + 1e-8))
+        if torch.is_tensor(ob):
+            ob = ((ob - torch.FloatTensor(self.rms_obs.mean)) /
+                  (torch.FloatTensor(np.sqrt(self.rms_obs.var)) + 1e-8))
+        else:
+            ob = ((ob - self.rms_obs.mean) /
+                  (np.sqrt(self.rms_obs.var) + 1e-8))
         # Clip
-        ob = np.clip(ob, -5.0, 5.0)
+        if torch.is_tensor(ob):
+            ob = torch.clamp(ob, -5.0, 5.0)
+        else:
+            ob = np.clip(ob, -5.0, 5.0)
         return ob
 
     def predict(self, ob, apply_noise):
@@ -271,8 +283,9 @@ class DDPGAgent(object):
 
         return ac
 
-    def train(self, update_critic, update_actor, iters_so_far):
+    def train(self, update_critic, update_actor, rollout, iters_so_far):
         """Train the agent"""
+
         # Get a batch of transitions from the replay buffer
         if self.hps.n_step_returns:
             batch = self.replay_buffer.lookahead_sample(
@@ -289,6 +302,11 @@ class DDPGAgent(object):
             # Standardize and clip observations
             batch['obs0'] = self.normalize_clip_ob(batch['obs0'])
             batch['obs1'] = self.normalize_clip_ob(batch['obs1'])
+
+        if self.hps.rnd:
+            # Update RND network
+            for minibatch in np.split(rollout['rews'], 4):  # XXX
+                self.rnd.train(minibatch)
 
         # Create tensors from the inputs
         state = torch.FloatTensor(batch['obs0']).to(self.device)
@@ -554,7 +572,7 @@ class DDPGAgent(object):
 
         if self.hps.reward_control:
             # Reward control
-            actr_loss += 0.2 * (reward - self.actr.rc(state)).pow(2).mean()
+            actr_loss += 0.1 * (reward - self.actr.rc(state)).pow(2).mean()
 
         # Compute gradients
         self.actr_opt.zero_grad()
@@ -611,8 +629,11 @@ class DDPGAgent(object):
 
     def update_disc(self, chunk, e_chunk):
         # Create tensors from the inputs
-        p_state = torch.FloatTensor(chunk['obs0']).to(self.device)
+        p_state = torch.FloatTensor(chunk['obs0']).to(self.device)  # already normalized
         p_action = torch.FloatTensor(chunk['acs']).to(self.device)
+        if not self.hps.pixels:
+            # Standardize and clip observations
+            e_chunk['obs0'] = self.normalize_clip_ob(e_chunk['obs0'])
         e_state = torch.FloatTensor(e_chunk['obs0']).to(self.device)
         e_action = torch.FloatTensor(e_chunk['acs']).to(self.device)
         # Compute scores

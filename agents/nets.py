@@ -9,9 +9,6 @@ from torch import autograd
 from torch.autograd import Variable
 
 
-HID_SIZE = 256
-
-
 # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> Core.
 
 def init(nonlin=None, param=None,
@@ -49,32 +46,32 @@ class Actor(nn.Module):
         # Assemble fully-connected encoder
         self.encoder = nn.Sequential(OrderedDict([
             ('fc_block', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(ob_dim, HID_SIZE)),
-                ('ln', nn.LayerNorm(HID_SIZE)),
+                ('fc', nn.Linear(ob_dim, 256)),
+                ('ln', nn.LayerNorm(256)),
                 ('nl', nn.ReLU(inplace=True)),
             ]))),
         ]))
         # Assemble fully-connected decoder
         self.a_decoder = nn.Sequential(OrderedDict([
             ('fc_block', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(HID_SIZE, HID_SIZE)),
-                ('ln', nn.LayerNorm(HID_SIZE)),
+                ('fc', nn.Linear(256, 256)),
+                ('ln', nn.LayerNorm(256)),
                 ('nl', nn.ReLU(inplace=True)),
             ]))),
         ]))
         self.a_skip_co = nn.Sequential()
-        self.a_head = nn.Linear(HID_SIZE, ac_dim)
+        self.a_head = nn.Linear(256, ac_dim)
         if self.hps.reward_control:
             # > Reward final decoder
             self.r_decoder = nn.Sequential(OrderedDict([
                 ('fc_block_1', nn.Sequential(OrderedDict([
-                    ('fc', nn.Linear(HID_SIZE, HID_SIZE)),
-                    ('ln', nn.LayerNorm(HID_SIZE)),
+                    ('fc', nn.Linear(256, 256)),
+                    ('ln', nn.LayerNorm(256)),
                     ('nl', nn.ReLU(inplace=True)),
                 ]))),
             ]))
             self.r_skip_co = nn.Sequential()
-            self.r_head = nn.Linear(HID_SIZE, 1)
+            self.r_head = nn.Linear(256, 1)
         # Perform initialization
         self.encoder.apply(init(nonlin='relu', param=None))
         self.a_decoder.apply(init(nonlin='relu', param=None))
@@ -121,17 +118,17 @@ class VanillaCritic(nn.Module):
         self.hps = hps
         self.q_trunk = nn.Sequential(OrderedDict([
             ('fc_block_1', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(ob_dim + ac_dim + int(self.hps.fingerprint), HID_SIZE)),
-                ('ln', nn.LayerNorm(HID_SIZE)),
+                ('fc', nn.Linear(ob_dim + ac_dim + int(self.hps.fingerprint), 256)),
+                ('ln', nn.LayerNorm(256)),
                 ('nl', nn.ReLU(inplace=True)),
             ]))),
             ('fc_block_2', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(HID_SIZE, HID_SIZE)),
-                ('ln', nn.LayerNorm(HID_SIZE)),
+                ('fc', nn.Linear(256, 256)),
+                ('ln', nn.LayerNorm(256)),
                 ('nl', nn.ReLU(inplace=True)),
             ]))),
         ]))
-        self.q_head = nn.Linear(HID_SIZE, 1)
+        self.q_head = nn.Linear(256, 1)
         # Perform initialization
         self.q_trunk.apply(init(nonlin='relu', param=None))
         self.q_head.apply(init(weight_scale=0.01, constant_bias=0.0))
@@ -164,19 +161,19 @@ class C51QRCritic(nn.Module):
         assert sum([hps.use_c51, hps.use_qr]) == 1 and not hps.use_iqn
         num_z_heads = hps.c51_num_atoms if hps.use_c51 else hps.num_tau
         self.hps = hps
-        self.encoder = nn.Sequential(OrderedDict([
+        self.z_trunk = nn.Sequential(OrderedDict([
             ('fc_block_1', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(ob_dim + ac_dim + int(self.hps.fingerprint), HID_SIZE)),
-                ('ln', nn.LayerNorm(HID_SIZE)),
+                ('fc', nn.Linear(ob_dim + ac_dim + int(self.hps.fingerprint), 256)),
+                ('ln', nn.LayerNorm(256)),
                 ('nl', nn.ReLU(inplace=True)),
             ]))),
             ('fc_block_2', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(HID_SIZE, HID_SIZE)),
-                ('ln', nn.LayerNorm(HID_SIZE)),
+                ('fc', nn.Linear(256, 256)),
+                ('ln', nn.LayerNorm(256)),
                 ('nl', nn.ReLU(inplace=True)),
             ]))),
         ]))
-        self.z_heads = nn.Linear(HID_SIZE, num_z_heads)
+        self.z_heads = nn.Linear(256, num_z_heads)
         # Perform initialization
         self.z_trunk.apply(init(nonlin='relu', param=None))
         self.z_heads.apply(init(weight_scale=0.01, constant_bias=0.0))
@@ -206,31 +203,31 @@ class IQNCritic(nn.Module):
         self.hps = hps
         self.psi = nn.Sequential(OrderedDict([
             ('fc_block_1', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(ob_dim + ac_dim + int(self.hps.fingerprint), HID_SIZE)),
-                ('ln', nn.LayerNorm(HID_SIZE)),
+                ('fc', nn.Linear(ob_dim + ac_dim + int(self.hps.fingerprint), 256)),
+                ('ln', nn.LayerNorm(256)),
                 ('nl', nn.ReLU(inplace=True)),
             ]))),
             ('fc_block_2', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(HID_SIZE, HID_SIZE)),
-                ('ln', nn.LayerNorm(HID_SIZE)),
+                ('fc', nn.Linear(256, 256)),
+                ('ln', nn.LayerNorm(256)),
                 ('nl', nn.ReLU(inplace=True)),
             ]))),
         ]))
         self.phi = nn.Sequential(OrderedDict([
             ('fc_block', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(self.hps.quantile_emb_dim, HID_SIZE)),
-                ('ln', nn.LayerNorm(HID_SIZE)),
+                ('fc', nn.Linear(self.hps.quantile_emb_dim, 256)),
+                ('ln', nn.LayerNorm(256)),
                 ('nl', nn.ReLU(inplace=True)),
             ]))),
         ]))
         self.hadamard = nn.Sequential(OrderedDict([
             ('fc_block', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(HID_SIZE, HID_SIZE)),
-                ('ln', nn.LayerNorm(HID_SIZE)),
+                ('fc', nn.Linear(256, 256)),
+                ('ln', nn.LayerNorm(256)),
                 ('nl', nn.ReLU(inplace=True)),
             ]))),
         ]))
-        self.z_head = nn.Linear(HID_SIZE, 1)
+        self.z_head = nn.Linear(256, 1)
         # Perform initialization
         self.psi.apply(init(nonlin='relu', param=None))
         self.phi.apply(init(nonlin='relu', param=None))
@@ -276,22 +273,23 @@ class Discriminator(nn.Module):
         self.ob_dim = env.observation_space.shape[0]
         self.ac_dim = env.action_space.shape[0]
         self.hps = hps
+        self.leak = 0.1
         # Define the input dimension, depending on whether actions are used too.
         in_dim = self.ob_dim if self.hps.state_only else self.ob_dim + self.ac_dim
 
         self.score_trunk = nn.Sequential(OrderedDict([
             ('fc_block_1', nn.Sequential(OrderedDict([
-                ('fc', U.spectral_norm(nn.Linear(in_dim, HID_SIZE))),
-                ('nl', nn.ReLU(inplace=True)),
+                ('fc', U.spectral_norm(nn.Linear(in_dim, 256))),
+                ('nl', nn.LeakyReLU(negative_slope=self.leak, inplace=True)),
             ]))),
             ('fc_block_2', nn.Sequential(OrderedDict([
-                ('fc', U.spectral_norm(nn.Linear(HID_SIZE, HID_SIZE))),
-                ('nl', nn.ReLU(inplace=True)),
+                ('fc', U.spectral_norm(nn.Linear(256, 256))),
+                ('nl', nn.LeakyReLU(negative_slope=self.leak, inplace=True)),
             ]))),
         ]))
-        self.score_head = nn.Linear(HID_SIZE, 1)
+        self.score_head = nn.Linear(256, 1)
         # Perform initialization
-        self.score_trunk.apply(init(nonlin='leaky_relu', param=0.1))
+        self.score_trunk.apply(init(nonlin='leaky_relu', param=self.leak))
         self.score_head.apply(init(nonlin='linear', param=None))
 
     def grad_pen(self, p_ob, p_ac, e_ob, e_ac):

@@ -31,15 +31,14 @@ BOOL_ARGS = ['cuda', 'pixels', 'reward_control', 'popart',
              'render', 'record', 'with_scheduler',
              'prioritized_replay', 'ranked', 'unreal',
              'n_step_returns', 'clipped_double', 'targ_actor_smoothing',
-             'state_only', 'minimax_only', 'grad_pen', 'fingerprint',
+             'state_only', 'minimax_only', 'grad_pen', 'fingerprint', 'rnd',
              'use_c51', 'use_qr', 'use_iqn']
 
 # Create the list of environments from the indicated benchmark
 BENCH = CONFIG['parameters']['benchmark']
 DIFFICULTY = CONFIG['parameters']['difficulty']
-assert DIFFICULTY in ['easy', 'normal', 'hard']
 if BENCH == 'mujoco':
-    map_ = {'easy': ['Hopper'],  # debug, sanity check
+    map_ = {'easy': ['InvertedPendulum'],  # debug, sanity check
             'normal': ['InvertedPendulum',
                        'Hopper',
                        'Walker2d'],
@@ -47,18 +46,43 @@ if BENCH == 'mujoco':
                      'Hopper',
                      'Walker2d',
                      'HalfCheetah',
-                     'Ant'],  # paper-grade
+                     'Ant'],
+            'all': ['InvertedPendulum',
+                    'InvertedDoublePendulum',
+                    'Reacher',
+                    'Hopper',
+                    'Walker2d',
+                    'HalfCheetah',
+                    'Ant'],
             }
     ENVS = map_[DIFFICULTY]
-    ENVS = ["{}-v2".format(name) for name in ENVS]
+    ENVS = ["{}-v2".format(n) for n in ENVS]
 else:
     raise NotImplementedError("benchmark not covered by the spawner.")
 
-# If needed, create the list of demonstrations needed
+# If needed, create the list of demonstrations
 NEED_DEMOS = CONFIG['parameters']['need_demos']
 if NEED_DEMOS:
     demo_dir = os.environ['DEMO_DIR']
     DEMOS = {k: osp.join(demo_dir, k) for k in ENVS}
+
+
+def add_c51_supp(hpmaps):
+    assert isinstance(hpmaps, list), "must be a list"
+    # Create the list of c51 supports
+    SUPPS = {'InvertedPendulum': [0., 1000.],
+             'InvertedDoublePendulum': [0., 9000.],
+             'Reacher': [-200, 0.],
+             'Hopper': [0, 1000],
+             'Walker2d': [0, 3000],
+             'HalfCheetah': [0, 3000],
+             'Ant': [0, 3000]}
+    SUPPS = {"{}-v2".format(n): s for n, s in SUPPS.items()}
+    # Add the c51 support to the maps if needed
+    for hpmap in hpmaps:
+        if hpmap['use_c51']:
+            hpmap.update({'c51_vmin': min(SUPPS[hpmap['env_id']]),
+                          'c51_vmax': max(SUPPS[hpmap['env_id']])})
 
 
 def copy_and_add_seed(hpmap, seed):
@@ -152,8 +176,6 @@ def get_hps(sweep):
             'use_qr': CONFIG['parameters'].get('use_qr', False),
             'use_iqn': CONFIG['parameters'].get('use_iqn', False),
             'c51_num_atoms': CONFIG['parameters'].get('c51_num_atoms', 51),
-            'c51_vmin': CONFIG['parameters'].get('c51_vmin', 0.),
-            'c51_vmax': CONFIG['parameters'].get('c51_vmax', 1000.),
             'quantile_emb_dim': np.random.choice([32, 64]),
             'num_tau': np.random.choice([16, 32]),
             'num_tau_prime': np.random.choice([16, 32]),
@@ -168,6 +190,7 @@ def get_hps(sweep):
             'num_demos': CONFIG['parameters'].get('num_demos', 0),
             'grad_pen': CONFIG['parameters'].get('grad_pen', False),
             'fingerprint': CONFIG['parameters'].get('fingerprint', False),
+            'rnd': CONFIG['parameters'].get('rnd', False),
         }
     else:
         # No search, fixed map
@@ -230,8 +253,6 @@ def get_hps(sweep):
             'use_qr': CONFIG['parameters'].get('use_qr', False),
             'use_iqn': CONFIG['parameters'].get('use_iqn', False),
             'c51_num_atoms': CONFIG['parameters'].get('c51_num_atoms', 51),
-            'c51_vmin': CONFIG['parameters'].get('c51_vmin', 0.),
-            'c51_vmax': CONFIG['parameters'].get('c51_vmax', 1000.),
             'quantile_emb_dim': CONFIG['parameters'].get('quantile_emb_dim', 32),
             'num_tau': CONFIG['parameters'].get('num_tau', 16),
             'num_tau_prime': CONFIG['parameters'].get('num_tau_prime', 16),
@@ -246,6 +267,7 @@ def get_hps(sweep):
             'num_demos': CONFIG['parameters'].get('num_demos', 0),
             'grad_pen': CONFIG['parameters'].get('grad_pen', False),
             'fingerprint': CONFIG['parameters'].get('fingerprint', False),
+            'rnd': CONFIG['parameters'].get('rnd', False),
         }
 
     # Duplicate for each environment
@@ -256,6 +278,9 @@ def get_hps(sweep):
     hpmapz = [copy_and_add_seed(hpmap_, seed)
               for hpmap_ in hpmaps
               for seed in range(NUM_SEEDS)]
+
+    # Add C51 support
+    add_c51_supp(hpmapz)
 
     # Verify that the correct number of configs have been created
     assert len(hpmapz) == NUM_SEEDS * len(ENVS)
@@ -294,10 +319,11 @@ def create_job_str(name, command):
         bash_script_str += ('#SBATCH --job-name={}\n'
                             '#SBATCH --partition={}\n'
                             '#SBATCH --ntasks={}\n'
-                            '#SBATCH --ntasks-per-node={}\n'
-                            '#SBATCH --cpus-per-task=2\n'
+                            '#SBATCH --cpus-per-task=1\n'
                             '#SBATCH --time={}\n'
-                            '#SBATCH --mem=32000\n')
+                            '#SBATCH --mem=32000\n'
+                            '#SBATCH --output=./out/run_%j.out\n'
+                            '#SBATCH --constraint="V3|V4|V5|V6|V7"\n')
         if CONFIG['parameters']['cuda']:
             contraint = "COMPUTE_CAPABILITY_6_0|COMPUTE_CAPABILITY_6_1"
             bash_script_str += ('#SBATCH --gres=gpu:1\n'

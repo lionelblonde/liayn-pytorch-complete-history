@@ -1,5 +1,6 @@
 import random
 from math import floor
+from collections import defaultdict
 
 import numpy as np
 
@@ -49,7 +50,6 @@ class ReplayBuffer(object):
     def __init__(self, capacity, shapes):
         self.capacity = capacity
         self.shapes = shapes
-        self.num_demos = 0
         self.ring_buffers = {n: RingBuffer(self.capacity, s) for n, s in self.shapes.items()}
 
     def batchify(self, idxs):
@@ -86,10 +86,10 @@ class ReplayBuffer(object):
     def lookahead(self, transitions, n, gamma):
         """Perform n-step TD lookahead estimations starting from every transition"""
         assert 0 <= gamma <= 1
+
         # Initiate the batch of transition data necessary to perform n-step TD backups
-        lookahead_batch = {n: [] for n in self.ring_buffers.keys()}
-        # Add extra key
-        lookahead_batch['td_len'] = []
+        lookahead_batch = defaultdict(list)
+
         # Iterate over the indices to deploy the n-step backup for each
         for idx in transitions['idxs']:
             # Create indexes of transitions in lookahead of lengths max `n` following sampled one
@@ -114,9 +114,11 @@ class ReplayBuffer(object):
             lookahead_batch['rews'].append(lookahead_discounted_sum_n_rews)
             lookahead_batch['dones1'].append(lookahead_is_trimmed)
             lookahead_batch['td_len'].append(td_len)
+
         lookahead_batch['idxs'] = transitions['idxs']
         if 'fps' in transitions:
             lookahead_batch['fps'] = transitions['fps']
+
         # Wrap every value with `array_min2d`
         lookahead_batch = {k: array_min2d(v) for k, v in lookahead_batch.items()}
         return lookahead_batch
@@ -157,8 +159,7 @@ class PrioritizedReplayBuffer(ReplayBuffer):
     """
 
     def __init__(self, capacity, shapes,
-                 alpha, beta, demos_eps=0.1,
-                 ranked=False, max_priority=1.0):
+                 alpha, beta, ranked=False, max_priority=1.0):
         """`alpha` determines how much prioritization is used
         0: none, equivalent to uniform sampling
         1: full prioritization
@@ -181,8 +182,6 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         if self.ranked:
             # Create a dict that will contain all the (index, priority) pairs
             self.i_p = {}
-        # Define the priority bonus assigned to demos stored in the replay buffer (if stored)
-        self.demos_eps = demos_eps
 
     def _sample_w_priorities(self, batch_size):
         """Sample in proportion to priorities, implemented w/ segment tree.
@@ -304,9 +303,6 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         for idx, priority in zipsame(idxs, priorities):
             assert priority > 0, "priorities must be positive"
             assert 0 <= idx < self.num_entries, "no element in buffer associated w/ index"
-            if idx < self.num_demos:
-                # Add a priority bonus when replaying a demo
-                priority += self.demos_eps
             self.sum_st[idx] = priority ** self.alpha
             self.min_st[idx] = priority ** self.alpha
             # Update max priority currently in the buffer
@@ -319,9 +315,9 @@ class PrioritizedReplayBuffer(ReplayBuffer):
 
     def __repr__(self):
         fmt = "PrioritizedReplayBuffer(capacity={}, alpha={}, beta={}, "
-        fmt += "demos_eps={}, ranked={}, max_priority={})"
+        fmt += "ranked={}, max_priority={})"
         return fmt.format(self.capacity, self.alpha, self.beta,
-                          self.demos_eps, self.ranked, self.max_priority)
+                          self.ranked, self.max_priority)
 
 
 class UnrealReplayBuffer(PrioritizedReplayBuffer):
@@ -401,18 +397,13 @@ class UnrealReplayBuffer(PrioritizedReplayBuffer):
             # Decide whether the transition to be added is good or bad
             # Get the rank from the priority
             # Note: UnrealReplayBuffer inherits from PER w/ 'ranked' set to True
-            if idx < self.num_demos:
-                # When the transition is from the demos, always set it as 'good' regardless
-                self.b_sum_st[idx] = 0
-                self.g_sum_st[idx] = 1
-            else:
-                rank = (1. / priority) - 1
-                thres = floor(.5 * self.num_entries)
-                is_g = rank < thres
-                is_g *= 1  # HAXX: multiply by 1 to cast the bool into an int
-                # Fill the good and bad sum segment trees w/ the obtained value
-                self.b_sum_st[idx] = 1 - is_g
-                self.g_sum_st[idx] = is_g
+            rank = (1. / priority) - 1
+            thres = floor(.5 * self.num_entries)
+            is_g = rank < thres
+            is_g *= 1  # HAXX: multiply by 1 to cast the bool into an int
+            # Fill the good and bad sum segment trees w/ the obtained value
+            self.b_sum_st[idx] = 1 - is_g
+            self.g_sum_st[idx] = is_g
 
     def __repr__(self):
         fmt = "UnrealReplayBuffer(capacity={}, max_priority={})"

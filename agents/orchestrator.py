@@ -3,6 +3,7 @@ from copy import deepcopy
 import os
 from collections import defaultdict, OrderedDict
 
+from mpi4py import MPI
 import wandb
 import numpy as np
 
@@ -13,11 +14,25 @@ from helpers.console_util import timed_cm_wrapper, log_iter_info
 
 def rollout_generator(env, agent, rollout_len):
 
-    pixels = len(env.observation_space.shape) >= 3
     t = 0
     done = True
     env_rew = 0.0
     rollout = defaultdict(list)
+
+    if agent.hps.rnd or not agent.hps.pixels:
+        # Run with uniform actions and without training
+        ref = defaultdict(list)  # reference batch
+        ob = np.array(env.reset())
+        for _ in range(1024):
+            ac = env.action_space.sample()  # uniformly
+            ref['obs'].append(ob)
+            ref['acs'].append(ac)
+            ob, _, done, _ = env.step(ac)
+            if done:
+                ob = np.array(env.reset())
+    if not agent.hps.pixels:
+        # Update running stats
+        agent.rms_obs.update(ref['obs'])
 
     # Reset agent's noise processes and env
     agent.reset_noise()
@@ -25,6 +40,9 @@ def rollout_generator(env, agent, rollout_len):
 
     while True:
 
+        if not agent.hps.pixels:
+            # Normalize observation
+            ob = agent.normalize_clip_ob(ob)
         # Predict action
         ac = agent.predict(ob, apply_noise=True)
         # NaN-proof and clip
@@ -32,16 +50,22 @@ def rollout_generator(env, agent, rollout_len):
         ac = np.clip(ac, env.action_space.low, env.action_space.high)
 
         if t > 0 and t % rollout_len == 0:
-            if not pixels:
+            out = {"acs": np.array(rollout["acs"]).reshape(-1, *agent.ac_shape)}
+            if not agent.hps.pixels:
                 # Update running stats
-                agent.rms_obs.update(np.array(rollout['obs']).reshape(-1, *agent.ob_shape))
+                obs = np.array(rollout["obs"]).reshape(-1, *agent.ob_shape)
+                agent.rms_obs.update(obs)
+            if agent.hps.rnd:
+                # Compute reward and novelty on the reference batch
+                rews = agent.disc.get_reward(np.array(ref['obs']),
+                                             np.array(ref['acs']))
+                novs = agent.rnd.get_novelty(rews)
+                out.update({"rews": rews,
+                            "novs": novs * 1e9})  # arbitrary scaling for visualization
             # Yield
-            yield {"acs": np.array(rollout['acs']).reshape(-1, *agent.ac_shape)}
+            yield out
             # When going back in, clear the rollout
             rollout.clear()
-
-        rollout['obs'].append(ob)
-        rollout['acs'].append(ac)
 
         # Interact with env(s)
         new_ob, env_rew, done, _ = env.step(ac)
@@ -59,6 +83,11 @@ def rollout_generator(env, agent, rollout_len):
             iters_so_far = t // rollout_len
             transition.update({"fps": iters_so_far})
         agent.replay_buffer.append(transition)
+
+        # Populate rollout
+        if not agent.hps.pixels:
+            rollout["obs"].append(ob)
+        rollout["acs"].append(ac)
 
         # Set current state with the next
         ob = np.array(deepcopy(new_ob))
@@ -96,8 +125,11 @@ def ep_generator(env, agent, render, record):
     env_rews = []
 
     while True:
-        ac = agent.predict(ob, apply_noise=False)
 
+        # Normalize observation
+        ob = agent.normalize_clip_ob(ob)
+        # Predict action
+        ac = agent.predict(ob, apply_noise=False)
         # NaN-proof and clip
         ac = np.nan_to_num(ac)
         ac = np.clip(ac, env.action_space.low, env.action_space.high)
@@ -265,7 +297,6 @@ def learn(args,
             rollout = roll_gen.__next__()
             logger.info("[INFO] {} ".format("timesteps".ljust(20, '.')) +
                         "{}".format(timesteps_so_far + rollout_len))
-        d['ac'].extend(rollout['acs'])
 
         with timed("training"):
             for training_step in range(training_steps_per_iter):
@@ -286,6 +317,7 @@ def learn(args,
                 update_actor = update_critic and not bool(training_step % actor_update_delay)
                 losses, gradns, lrnows = agent.train(update_critic=update_critic,
                                                      update_actor=update_actor,
+                                                     rollout=rollout,
                                                      iters_so_far=iters_so_far)
                 d['actr_gradns'].append(gradns['actr'])
                 d['actr_losses'].append(losses['actr'])
@@ -297,7 +329,7 @@ def learn(args,
 
             # Log statistics
             stats = OrderedDict()
-            ac_np_mean = np.mean(d['ac'], axis=0)  # vector
+            ac_np_mean = np.mean(rollout['acs'], axis=0)  # vector
             stats.update({'ac': {'min': np.amin(ac_np_mean),
                                  'max': np.amax(ac_np_mean),
                                  'mean': np.mean(ac_np_mean),
@@ -367,8 +399,13 @@ def learn(args,
         # Log stats in dashboard
         if rank == 0:
 
+            wandb.log({"num_workers": np.array(MPI.COMM_WORLD.Get_size())},
+                      step=timesteps_so_far)
+            if agent.hps.rnd:
+                wandb.log({'novelty': np.mean(rollout['novs'])},
+                          step=timesteps_so_far)
             if iters_so_far % eval_frequency == 0:
-                wandb.log({'eval_len': np.mean(d['eval_len)']),
+                wandb.log({'eval_len': np.mean(d['eval_len']),
                            'eval_env_ret': np.mean(d['eval_env_ret'])},
                           step=timesteps_so_far)
             if agent.param_noise is not None:
