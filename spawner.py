@@ -27,11 +27,11 @@ CONDA = CONFIG['resources']['conda_env']
 # Define experiment type
 TYPE = 'sweep' if args.sweep else 'fixed'
 # Write out the boolean arguments (using the 'boolean_flag' function)
-BOOL_ARGS = ['cuda', 'pixels', 'reward_control', 'popart',
+BOOL_ARGS = ['cuda', 'pixels', 'reward_control', 'popart', 'historical_patching',
              'render', 'record', 'with_scheduler',
              'prioritized_replay', 'ranked', 'unreal',
              'n_step_returns', 'clipped_double', 'targ_actor_smoothing',
-             'state_only', 'minimax_only', 'grad_pen', 'fingerprint', 'rnd',
+             'state_only', 'minimax_only', 'grad_pen', 'rnd',
              'use_c51', 'use_qr', 'use_iqn']
 
 # Create the list of environments from the indicated benchmark
@@ -67,34 +67,14 @@ if NEED_DEMOS:
     DEMOS = {k: osp.join(demo_dir, k) for k in ENVS}
 
 
-def add_c51_supp(hpmaps):
-    assert isinstance(hpmaps, list), "must be a list"
-    # Create the list of c51 supports
-    SUPPS = {'InvertedPendulum': [0., 1000.],
-             'InvertedDoublePendulum': [0., 9000.],
-             'Reacher': [-200, 0.],
-             'Hopper': [0, 1000],
-             'Walker2d': [0, 3000],
-             'HalfCheetah': [0, 3000],
-             'Ant': [0, 3000]}
-    SUPPS = {"{}-v2".format(n): s for n, s in SUPPS.items()}
-    # Add the c51 support to the maps if needed
-    for hpmap in hpmaps:
-        if hpmap['use_c51']:
-            hpmap.update({'c51_vmin': min(SUPPS[hpmap['env_id']]),
-                          'c51_vmax': max(SUPPS[hpmap['env_id']])})
-
-
 def copy_and_add_seed(hpmap, seed):
     hpmap_ = deepcopy(hpmap)
     # Add the seed and edit the job uuid to only differ by the seed
     hpmap_.update({'seed': seed})
     # Enrich the uuid with extra information
-    hpmap_.update({'uuid': "{}.{}.{}.{}.seed{}".format(hpmap['task'],
-                                                       hpmap['algo'],
-                                                       hpmap['uuid'],
-                                                       hpmap['env_id'],
-                                                       str(seed).zfill(2))})
+    hpmap_.update({'uuid': "{}.{}.seed{}".format(hpmap['uuid'],
+                                                 hpmap['env_id'],
+                                                 str(seed).zfill(2))})
     return hpmap_
 
 
@@ -124,7 +104,6 @@ def get_hps(sweep):
             'render': False,
             'record': CONFIG['logging'].get('record', False),
             'task': CONFIG['parameters']['task'],
-            'algo': CONFIG['parameters']['algo'],
 
             # Training
             'save_frequency': CONFIG['parameters'].get('save_frequency', 400),
@@ -141,7 +120,7 @@ def get_hps(sweep):
             'wd_scale': float(np.random.choice([1e-4, 3e-4, 1e-3])),
 
             # Algorithm
-            'rollout_len': np.random.choice([1, 2, 5]),
+            'rollout_len': np.random.choice([2, 5]),
             'batch_size': np.random.choice([32, 64, 128]),
             'gamma': np.random.choice([0.99, 0.995]),
             'mem_size': np.random.choice([10000, 50000, 100000]),
@@ -176,6 +155,8 @@ def get_hps(sweep):
             'use_qr': CONFIG['parameters'].get('use_qr', False),
             'use_iqn': CONFIG['parameters'].get('use_iqn', False),
             'c51_num_atoms': CONFIG['parameters'].get('c51_num_atoms', 51),
+            'c51_vmin': CONFIG['parameters'].get('c51_vmin', 0.),
+            'c51_vmax': CONFIG['parameters'].get('c51_vmax', 100.),
             'quantile_emb_dim': np.random.choice([32, 64]),
             'num_tau': np.random.choice([16, 32]),
             'num_tau_prime': np.random.choice([16, 32]),
@@ -189,8 +170,8 @@ def get_hps(sweep):
             'd_update_ratio': CONFIG['parameters'].get('d_update_ratio', 2),
             'num_demos': CONFIG['parameters'].get('num_demos', 0),
             'grad_pen': CONFIG['parameters'].get('grad_pen', False),
-            'fingerprint': CONFIG['parameters'].get('fingerprint', False),
             'rnd': CONFIG['parameters'].get('rnd', False),
+            'historical_patching': CONFIG['parameters'].get('historical_patching', False),
         }
     else:
         # No search, fixed map
@@ -204,7 +185,6 @@ def get_hps(sweep):
             'render': False,
             'record': CONFIG['logging'].get('record', False),
             'task': CONFIG['parameters']['task'],
-            'algo': CONFIG['parameters']['algo'],
 
             # Training
             'save_frequency': CONFIG['parameters'].get('save_frequency', 400),
@@ -221,7 +201,7 @@ def get_hps(sweep):
             'wd_scale': float(CONFIG['parameters'].get('wd_scale', 3e-4)),
 
             # Algorithm
-            'rollout_len': CONFIG['parameters'].get('rollout_len', 5),
+            'rollout_len': CONFIG['parameters'].get('rollout_len', 2),
             'batch_size': CONFIG['parameters'].get('batch_size', 128),
             'gamma': CONFIG['parameters'].get('gamma', 0.99),
             'mem_size': CONFIG['parameters'].get('mem_size', 50000),
@@ -253,6 +233,8 @@ def get_hps(sweep):
             'use_qr': CONFIG['parameters'].get('use_qr', False),
             'use_iqn': CONFIG['parameters'].get('use_iqn', False),
             'c51_num_atoms': CONFIG['parameters'].get('c51_num_atoms', 51),
+            'c51_vmin': CONFIG['parameters'].get('c51_vmin', 0.),
+            'c51_vmax': CONFIG['parameters'].get('c51_vmax', 100.),
             'quantile_emb_dim': CONFIG['parameters'].get('quantile_emb_dim', 32),
             'num_tau': CONFIG['parameters'].get('num_tau', 16),
             'num_tau_prime': CONFIG['parameters'].get('num_tau_prime', 16),
@@ -266,8 +248,8 @@ def get_hps(sweep):
             'd_update_ratio': CONFIG['parameters'].get('d_update_ratio', 2),
             'num_demos': CONFIG['parameters'].get('num_demos', 0),
             'grad_pen': CONFIG['parameters'].get('grad_pen', False),
-            'fingerprint': CONFIG['parameters'].get('fingerprint', False),
             'rnd': CONFIG['parameters'].get('rnd', False),
+            'historical_patching': CONFIG['parameters'].get('historical_patching', False),
         }
 
     # Duplicate for each environment
@@ -278,9 +260,6 @@ def get_hps(sweep):
     hpmapz = [copy_and_add_seed(hpmap_, seed)
               for hpmap_ in hpmaps
               for seed in range(NUM_SEEDS)]
-
-    # Add C51 support
-    add_c51_supp(hpmapz)
 
     # Verify that the correct number of configs have been created
     assert len(hpmapz) == NUM_SEEDS * len(ENVS)
@@ -400,7 +379,7 @@ def run(args):
         # Terminate in case of duplicate experiment (extremely unlikely though)
         raise ValueError("bad luck, there are dupes -> Try again (:")
     # Create the job maps
-    names = ["{}{}_{}".format(TYPE, str(i).zfill(3), hpmap['uuid'])
+    names = ["{}.{}".format(TYPE, hpmap['uuid'])
              for i, hpmap in enumerate(hpmaps)]
     # Finally get all the required job strings
     jobs = [create_job_str(name, command) for name, command in zipsame(names, commands)]
@@ -409,7 +388,7 @@ def run(args):
     for i, (name, job) in enumerate(zipsame(names, jobs)):
         logger.info(">>>>>>>>>>>>>>>>>>>> Job #{} ready to submit. Config below.".format(i))
         logger.info(job + "\n")
-        dir_ = name.split('.')[2]
+        dir_ = name.split('.')[1]
         os.makedirs("spawn/{}".format(dir_), exist_ok=True)
         job_name = "spawn/{}/{}.sh".format(dir_, name)
         with open(job_name, 'w') as f:
@@ -422,8 +401,8 @@ def run(args):
     logger.info(">>>>>>>>>>>>>>>>>>>> {} jobs were spawned.".format(len(jobs)))
 
     if CLUSTER == 'local':
-        dir_ = hpmaps[0]['uuid'].split('.')[2]  # arbitrarilly picked index 0
-        session_name = "{}_{}seeds_{}".format(TYPE, str(NUM_SEEDS).zfill(2), dir_)
+        dir_ = hpmaps[0]['uuid'].split('.')[0]  # arbitrarilly picked index 0
+        session_name = "{}-{}seeds-{}".format(TYPE, str(NUM_SEEDS).zfill(2), dir_)
         yaml_content = {'session_name': session_name,
                         'environment': {'DEMO_DIR': os.environ['DEMO_DIR']},
                         'windows': []}

@@ -116,8 +116,6 @@ class ReplayBuffer(object):
             lookahead_batch['td_len'].append(td_len)
 
         lookahead_batch['idxs'] = transitions['idxs']
-        if 'fps' in transitions:
-            lookahead_batch['fps'] = transitions['fps']
 
         # Wrap every value with `array_min2d`
         lookahead_batch = {k: array_min2d(v) for k, v in lookahead_batch.items()}
@@ -137,6 +135,10 @@ class ReplayBuffer(object):
         assert self.ring_buffers.keys() == transition.keys(), "keys must coincide"
         for k in self.ring_buffers.keys():
             self.ring_buffers[k].append(transition[k])
+
+    def patch_rewards(self, idxs, rewards):
+        for idx, reward in zip(idxs, rewards):
+            self.ring_buffers['rews'].data[idx] = reward
 
     def __repr__(self):
         return "ReplayBuffer(capacity={})".format(self.capacity)
@@ -201,8 +203,7 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         to the height of said block. The height being the priority value, the higher the
         priority, the higher the prob of being selected.
         """
-        assert self.num_entries
-
+        assert self.num_entries > 1, "segment tree ends with capacity-1, must be >0"
         transition_idxs = []
         # Sum the priorities of the transitions currently in the buffer
         p_total = self.sum_st.sum(end=self.num_entries - 1)

@@ -1,15 +1,16 @@
 import time
 from copy import deepcopy
 import os
+import os.path as osp
 from collections import defaultdict, OrderedDict
 
-from mpi4py import MPI
 import wandb
 import numpy as np
 
 from helpers import logger
 from helpers.distributed_util import sync_check, mpi_mean_reduce
 from helpers.console_util import timed_cm_wrapper, log_iter_info
+from agents.agent import Agent
 
 
 def rollout_generator(env, agent, rollout_len):
@@ -20,19 +21,14 @@ def rollout_generator(env, agent, rollout_len):
     rollout = defaultdict(list)
 
     if agent.hps.rnd or not agent.hps.pixels:
-        # Run with uniform actions and without training
-        ref = defaultdict(list)  # reference batch
-        ob = np.array(env.reset())
-        for _ in range(1024):
-            ac = env.action_space.sample()  # uniformly
-            ref['obs'].append(ob)
-            ref['acs'].append(ac)
-            ob, _, done, _ = env.step(ac)
-            if done:
-                ob = np.array(env.reset())
-    if not agent.hps.pixels:
+        # Create reference batch
+        ref = agent.expert_dataset.data
         # Update running stats
-        agent.rms_obs.update(ref['obs'])
+        agent.rms_obs.update(ref['obs0'])
+        if agent.hps.rnd:
+            # Randomly select a subset, fixed throughout the run
+            ne = ref['obs0'].shape[0]
+            idx = np.random.randint(ne - 1, size=min(32, ne))
 
     # Reset agent's noise processes and env
     agent.reset_noise()
@@ -57,11 +53,10 @@ def rollout_generator(env, agent, rollout_len):
                 agent.rms_obs.update(obs)
             if agent.hps.rnd:
                 # Compute reward and novelty on the reference batch
-                rews = agent.disc.get_reward(np.array(ref['obs']),
-                                             np.array(ref['acs']))
-                novs = agent.rnd.get_novelty(rews)
+                rews = agent.get_reward(ref['obs0'][idx, ...], ref['acs'][idx, ...])
+                novs = np.asscalar(agent.rnd.get_novelty(rews).mean().cpu().numpy().flatten())
                 out.update({"rews": rews,
-                            "novs": novs * 1e9})  # arbitrary scaling for visualization
+                            "novs": novs})
             # Yield
             yield out
             # When going back in, clear the rollout
@@ -71,17 +66,13 @@ def rollout_generator(env, agent, rollout_len):
         new_ob, env_rew, done, _ = env.step(ac)
 
         # Store transition(s) in the replay buffer
-        rew = (np.asscalar(agent.disc.get_reward(ob, ac).cpu().numpy().flatten())
-               if hasattr(agent, 'disc') else
-               env_rew)  # Careful here
+        rew = np.asscalar(agent.get_reward(ob, ac).cpu().numpy().flatten())
+        terminate = 1 / (1 + np.exp(-rew)) < 0.1  # from "minimal adversary" paper
         transition = {"obs0": ob,
                       "acs": ac,
                       "rews": rew,
                       "obs1": new_ob,
                       "dones1": done}
-        if agent.hps.fingerprint:
-            iters_so_far = t // rollout_len
-            transition.update({"fps": iters_so_far})
         agent.replay_buffer.append(transition)
 
         # Populate rollout
@@ -92,7 +83,7 @@ def rollout_generator(env, agent, rollout_len):
         # Set current state with the next
         ob = np.array(deepcopy(new_ob))
 
-        if done:
+        if done or terminate:
             # Reset agent's noise processes and env
             agent.reset_noise()
             ob = np.array(env.reset())
@@ -180,30 +171,28 @@ def ep_generator(env, agent, render, record):
                 ob_orig = _render()
 
 
-def evaluate(env,
-             agent_wrapper,
-             num_trajs,
-             iter_num,
-             render,
-             model_path):
+def evaluate(args, device, env):
 
     # Rebuild the computational graph
     # Create an agent
-    agent = agent_wrapper()
+    agent = Agent(env=env,
+                  device=device,
+                  hps=args,
+                  expert_dataset=None)
     # Create episode generator
-    ep_gen = ep_generator(env, agent, render)
+    ep_gen = ep_generator(env, agent, args.render)
     # Initialize and load the previously learned weights into the freshly re-built graph
 
     # Load the model
-    agent.load(model_path, iter_num)
-    logger.info("model loaded from path:\n  {}".format(model_path))
+    agent.load(args.model_path, args.iter_num)
+    logger.info("model loaded from path:\n  {}".format(args.model_path))
 
     # Initialize the history data structures
     ep_lens = []
     ep_env_rets = []
     # Collect trajectories
-    for i in range(num_trajs):
-        logger.info("evaluating [{}/{}]".format(i + 1, num_trajs))
+    for i in range(args.num_trajs):
+        logger.info("evaluating [{}/{}]".format(i + 1, args.num_trajs))
         traj = ep_gen.__next__()
         ep_len, ep_env_ret = traj['ep_len'], traj['ep_env_ret']
         # Aggregate to the history data structures
@@ -220,35 +209,25 @@ def evaluate(env,
 def learn(args,
           rank,
           world_size,
+          device,
           env,
           eval_env,
-          agent_wrapper,
           experiment_name,
-          ckpt_dir,
-          save_frequency,
-          pn_adapt_frequency,
-          rollout_len,
-          batch_size,
-          training_steps_per_iter,
-          eval_steps_per_iter,
-          eval_frequency,
-          actor_update_delay,
-          d_update_ratio,
-          render,
-          record,
-          expert_dataset,
-          num_timesteps):
+          expert_dataset):
 
-    assert training_steps_per_iter % actor_update_delay == 0, "must be a multiple"
+    assert args.training_steps_per_iter % args.actor_update_delay == 0, "must be a multiple"
 
     # Create an agent
-    agent = agent_wrapper()
+    agent = Agent(env=env,
+                  device=device,
+                  hps=args,
+                  expert_dataset=expert_dataset)
 
     # Create context manager that records the time taken by encapsulated ops
     timed = timed_cm_wrapper(logger)
 
     # Start clocks
-    num_iters = num_timesteps // rollout_len
+    num_iters = int(args.num_timesteps) // args.rollout_len
     iters_so_far = 0
     timesteps_so_far = 0
     tstart = time.time()
@@ -258,21 +237,22 @@ def learn(args,
 
     # Set up model save directory
     if rank == 0:
+        ckpt_dir = osp.join(args.checkpoint_dir, experiment_name)
         os.makedirs(ckpt_dir, exist_ok=True)
 
     # Setup wandb
     if rank == 0:
-        wandb.init(project="DDPG-SAM",
+        wandb.init(project="StabOffPolIL",
                    name=experiment_name,
                    group='.'.join(experiment_name.split('.')[:-1]),
                    config=args.__dict__)
 
     # Create rollout generator for training the agent
-    roll_gen = rollout_generator(env, agent, rollout_len)
+    roll_gen = rollout_generator(env, agent, args.rollout_len)
     if eval_env is not None:
         assert rank == 0, "non-zero rank mpi worker forbidden here"
         # Create episode generator for evaluating the agent
-        eval_ep_gen = ep_generator(eval_env, agent, render, record)
+        eval_ep_gen = ep_generator(eval_env, agent, args.render, args.record)
 
     while iters_so_far <= num_iters:
 
@@ -284,10 +264,9 @@ def learn(args,
             sync_check(agent.crit)
             if agent.hps.clipped_double:
                 sync_check(agent.twin)
-            if hasattr(agent, 'disc'):
-                sync_check(agent.disc)
+            sync_check(agent.disc)
 
-        if rank == 0 and iters_so_far % save_frequency == 0:
+        if rank == 0 and iters_so_far % args.save_frequency == 0:
             # Save the model
             agent.save(ckpt_dir, iters_so_far)
             logger.info("saving model @: {}".format(ckpt_dir))
@@ -296,13 +275,13 @@ def learn(args,
         with timed("interacting"):
             rollout = roll_gen.__next__()
             logger.info("[INFO] {} ".format("timesteps".ljust(20, '.')) +
-                        "{}".format(timesteps_so_far + rollout_len))
+                        "{}".format(timesteps_so_far + args.rollout_len))
 
         with timed("training"):
-            for training_step in range(training_steps_per_iter):
+            for training_step in range(args.training_steps_per_iter):
 
                 if agent.param_noise is not None:
-                    if training_step % pn_adapt_frequency == 0:
+                    if training_step % args.pn_adapt_frequency == 0:
                         # Adapt parameter noise
                         agent.adapt_param_noise()
                         # Store the action-space dist between perturbed and non-perturbed actors
@@ -312,9 +291,8 @@ def learn(args,
 
                 # Train the actor-critic architecture
                 update_critic = True
-                if hasattr(agent, 'disc'):
-                    update_critic = not bool(training_step % d_update_ratio)
-                update_actor = update_critic and not bool(training_step % actor_update_delay)
+                update_critic = not bool(training_step % args.d_update_ratio)
+                update_actor = update_critic and not bool(training_step % args.actor_update_delay)
                 losses, gradns, lrnows = agent.train(update_critic=update_critic,
                                                      update_actor=update_actor,
                                                      rollout=rollout,
@@ -361,7 +339,7 @@ def learn(args,
         if eval_env is not None:
             assert rank == 0, "non-zero rank mpi worker forbidden here"
 
-            if iters_so_far % eval_frequency == 0:
+            if iters_so_far % args.eval_frequency == 0:
 
                 with timed("evaluating"):
 
@@ -369,7 +347,7 @@ def learn(args,
                     if hasattr(eval_env, 'running_moments'):
                         eval_env.running_moments = deepcopy(env.running_moments)
 
-                    for eval_step in range(eval_steps_per_iter):
+                    for eval_step in range(args.eval_steps_per_iter):
                         # Sample an episode w/ non-perturbed actor w/o storing anything
                         eval_ep = eval_ep_gen.__next__()
                         # Aggregate data collected during the evaluation to the buffers
@@ -382,7 +360,7 @@ def learn(args,
                     logger.info("[CSV] dumping eval stats in .csv file")
                     logger.dump_tabular()
 
-                    if record:
+                    if args.record:
                         # Record the last episode in a video
                         frames = np.split(eval_ep['obs_render'], 1, axis=-1)
                         frames = np.concatenate(np.array(frames), axis=0)
@@ -399,12 +377,12 @@ def learn(args,
         # Log stats in dashboard
         if rank == 0:
 
-            wandb.log({"num_workers": np.array(MPI.COMM_WORLD.Get_size())},
+            wandb.log({"num_workers": np.array(world_size)},
                       step=timesteps_so_far)
             if agent.hps.rnd:
-                wandb.log({'novelty': np.mean(rollout['novs'])},
+                wandb.log({'novelty': np.mean(rollout['novs']) * 1e8},  # for better visualization
                           step=timesteps_so_far)
-            if iters_so_far % eval_frequency == 0:
+            if iters_so_far % args.eval_frequency == 0:
                 wandb.log({'eval_len': np.mean(d['eval_len']),
                            'eval_env_ret': np.mean(d['eval_env_ret'])},
                           step=timesteps_so_far)
@@ -427,6 +405,6 @@ def learn(args,
 
         # Increment counters
         iters_so_far += 1
-        timesteps_so_far += rollout_len
+        timesteps_so_far += args.rollout_len
         # Clear the iteration's running stats
         d.clear()

@@ -29,21 +29,21 @@ def load_dict_h5py(fname):
 class Dataset(torch.utils.data.Dataset):
 
     def __init__(self, data):
-        self._data = data
+        self.data = data
 
     def __getitem__(self, i):
-        return {k: v[i, ...].astype(np.float32) for k, v in self._data.items()}
+        return {k: v[i, ...].astype(np.float32) for k, v in self.data.items()}
 
     def __len__(self):
-        return list(self._data.values())[0].shape[0]
+        return list(self.data.values())[0].shape[0]
 
 
 class DemoDataset(Dataset):
 
     def __init__(self, expert_path, num_demos):
         self.num_demos = num_demos
-        self._data = {}
-        self._stats = {}
+        self.data = {}
+        self.stats = {}
         logger.info(">>>> loading demos")
         # Go over the demos, sorted in alphabetical order
         for i, f in enumerate(sorted(glob.glob(osp.join(expert_path, "*.h5")))):
@@ -59,24 +59,24 @@ class DemoDataset(Dataset):
                 if i == 0:
                     # Create the key in non-existant yet
                     if k in STATS_KEYS:
-                        self._stats.update({k: []})
+                        self.stats.update({k: []})
                     else:
-                        self._data.update({k: []})
+                        self.data.update({k: []})
                 # Add the demo's content
                 if k in STATS_KEYS:
-                    self._stats[k].append(v)
+                    self.stats[k].append(v)
                 else:
-                    self._data[k].append(v)
+                    self.data[k].append(v)
 
         # Transform structures into arrays
-        for k, v in self._stats.items():
-            self._stats[k] = np.array(v)
-        for k, v in self._data.items():
-            self._data[k] = np.concatenate(v, axis=0)
+        for k, v in self.stats.items():
+            self.stats[k] = np.array(v)
+        for k, v in self.data.items():
+            self.data[k] = np.concatenate(v, axis=0)
 
         # Log demos' statistics
-        rets_, lens_ = (self._stats['ep_env_rets'],
-                        self._stats['ep_lens'])
+        rets_, lens_ = (self.stats['ep_env_rets'],
+                        self.stats['ep_lens'])
         logger.info("[INFO] got {} transitions, from {} eps".format(len(self), self.num_demos))
         logger.info("[INFO] episodic return: {}({})".format(np.mean(rets_), np.std(rets_)))
         logger.info("[INFO] episodic length: {}({})".format(np.mean(lens_), np.std(lens_)))

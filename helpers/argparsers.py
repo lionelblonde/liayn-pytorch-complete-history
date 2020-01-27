@@ -21,8 +21,7 @@ def argparser(description="DDPG Experiment"):
     parser.add_argument('--log_dir', type=str, default='data/logs')
     boolean_flag(parser, 'render', help='render the interaction traces', default=False)
     boolean_flag(parser, 'record', help='record the interaction traces', default=False)
-    parser.add_argument('--task', type=str, choices=['train', 'evaluate'], default=None)
-    parser.add_argument('--algo', type=str, choices=['ddpg', 'sam'], default=None)
+    parser.add_argument('--task', type=str, choices=['train', 'eval'], default=None)
 
     # Training
     parser.add_argument('--save_frequency', help='save model every xx iterations',
@@ -95,8 +94,8 @@ def argparser(description="DDPG Experiment"):
     parser.add_argument('--num_demos', help='number of expert demo trajs for imitation',
                         type=int, default=None)
     boolean_flag(parser, 'grad_pen', help='whether to use gradient penalty', default=False)
-    boolean_flag(parser, 'fingerprint', help='whether to use fingerprinting', default=False)
     boolean_flag(parser, 'rnd', help='whether to use rnd', default=False)
+    boolean_flag(parser, 'historical_patching', default=False)
 
     # Evaluation
     parser.add_argument('--model_path', type=str, default=None)

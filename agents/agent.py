@@ -13,13 +13,19 @@ from helpers.dataset import Dataset
 from helpers.math_util import huber_quant_reg_loss
 from helpers.distributed_util import average_gradients, sync_with_root, RunMoms
 from agents.memory import ReplayBuffer, PrioritizedReplayBuffer, UnrealReplayBuffer
-from agents.nets import Actor, VanillaCritic, C51QRCritic, IQNCritic, Discriminator
+from agents.nets import Actor
+from agents.nets import (
+    VanillaCritic, MinimalVanillaCritic,
+    C51QRCritic, MinimalC51QRCritic,
+    IQNCritic,
+    Discriminator, MinimalDiscriminator,
+)
 from agents.param_noise import AdaptiveParamNoise
 from agents.ac_noise import NormalAcNoise, OUAcNoise
 from agents.rnd import RND
 
 
-class DDPGAgent(object):
+class Agent(object):
 
     def __init__(self, env, device, hps, expert_dataset):
         self.env = env
@@ -32,10 +38,19 @@ class DDPGAgent(object):
 
         self.ob_dim = self.ob_shape[0]  # num dims
         self.ac_dim = self.ac_shape[0]  # num dims
-
         self.device = device
         self.hps = hps
         assert self.hps.lookahead > 1 or not self.hps.n_step_returns
+
+        # Define demo dataset
+        self.expert_dataset = expert_dataset
+        self.eval_mode = self.expert_dataset is None
+
+        self.hps.minimal = False
+        self.hps.rc_scale = 0.1
+        self.hps.one_sided_label_smoothing = True
+        self.hps.patch_drift = False
+        self.hps.rnd_drift = False
 
         # Define action clipping range
         assert all(self.ac_space.low == -self.ac_space.high)
@@ -46,7 +61,7 @@ class DDPGAgent(object):
         assert sum([self.hps.use_c51, self.hps.use_qr, self.hps.use_iqn]) <= 1
         if self.hps.use_c51:
             assert not self.hps.clipped_double
-            Critic = C51QRCritic
+            Critic = MinimalC51QRCritic if self.hps.minimal else C51QRCritic
             c51_supp_range = (self.hps.c51_vmin,
                               self.hps.c51_vmax,
                               self.hps.c51_num_atoms)
@@ -73,7 +88,7 @@ class DDPGAgent(object):
             assert not self.hps.clipped_double
             Critic = IQNCritic
         else:
-            Critic = VanillaCritic
+            Critic = MinimalVanillaCritic if self.hps.minimal else VanillaCritic
 
         # Parse the noise types
         self.param_noise, self.ac_noise = self.parse_noise_type(self.hps.noise_type)
@@ -134,11 +149,14 @@ class DDPGAgent(object):
         if self.hps.clipped_double:
             self.twin_sched = torch.optim.lr_scheduler.LambdaLR(self.twin_opt, _lr)
 
-        if expert_dataset is not None:
+        if not self.eval_mode:
             # Set up demonstrations dataset
-            self.e_dataloader = DataLoader(expert_dataset, self.hps.batch_size, shuffle=True)
+            self.e_dataloader = DataLoader(self.expert_dataset, self.hps.batch_size, shuffle=True)
             # Create discriminator
-            self.disc = Discriminator(self.env, self.hps).to(self.device)
+            if self.hps.minimal:
+                self.disc = MinimalDiscriminator(self.hps).to(self.device)
+            else:
+                self.disc = Discriminator(self.env, self.hps).to(self.device)
             sync_with_root(self.disc)
             # Create optimizer
             self.disc_opt = torch.optim.Adam(self.disc.parameters(),
@@ -148,7 +166,7 @@ class DDPGAgent(object):
         log_module_info(logger, 'crit', self.crit)
         if self.hps.clipped_double:
             log_module_info(logger, 'twin', self.crit)
-        if hasattr(self, 'disc'):
+        if not self.eval_mode:
             log_module_info(logger, 'disc', self.disc)
 
         if not self.hps.pixels:
@@ -214,8 +232,6 @@ class DDPGAgent(object):
                        "rews": (1,),
                        "dones1": (1,),
                        "obs1": self.ob_shape}
-        if self.hps.fingerprint:
-            self.shapes.update({"fps": (1,)})
         # Create the buffer
         if self.hps.prioritized_replay:
             if self.hps.unreal:  # Unreal prioritized experience replay
@@ -261,27 +277,30 @@ class DDPGAgent(object):
         # Create tensor from the state (`require_grad=False` by default)
         ob = ob[None] if self.hps.pixels else self.normalize_clip_ob(ob[None])
         ob = torch.FloatTensor(ob).to(self.device)
-
         if apply_noise and self.param_noise is not None:
             # Predict following a parameter-noise-perturbed actor
             ac = self.pnp_actr.act(ob)
         else:
             # Predict following the non-perturbed actor
             ac = self.actr.act(ob)
-
         # Place on cpu and collapse into one dimension
         ac = ac.cpu().detach().numpy().flatten()
-
         if apply_noise and self.ac_noise is not None:
             # Apply additive action noise once the action has been predicted,
             # in combination with parameter noise, or not.
             noise = self.ac_noise.generate()
             assert noise.shape == ac.shape
             ac += noise
-
         ac = ac.clip(-self.max_ac, self.max_ac)
-
         return ac
+
+    def get_reward(self, ob, ac):
+        if self.hps.minimal:
+            q_feat = self.crit.encode(ob, ac)  # already detached
+            reward = self.disc.get_reward(q_feat)  # already detached
+        else:
+            reward = self.disc.get_reward(ob, ac)
+        return reward
 
     def train(self, update_critic, update_actor, rollout, iters_so_far):
         """Train the agent"""
@@ -305,14 +324,23 @@ class DDPGAgent(object):
 
         if self.hps.rnd:
             # Update RND network
-            for minibatch in np.split(rollout['rews'], 4):  # XXX
-                self.rnd.train(minibatch)
+            self.rnd.train(rollout['rews'])
 
         # Create tensors from the inputs
         state = torch.FloatTensor(batch['obs0']).to(self.device)
         action = torch.FloatTensor(batch['acs']).to(self.device)
-        next_state = torch.FloatTensor(batch['obs1']).to(self.device)
         reward = torch.FloatTensor(batch['rews']).to(self.device)
+        if self.hps.historical_patching:
+            # Use patched reward instead of sampled one and patch all sampled memory entries
+            sampled_reward = reward.clone().detach()
+            reward = torch.min(sampled_reward, self.get_reward(state, action))
+            self.replay_buffer.patch_rewards(batch['idxs'], reward.clone().detach().cpu().numpy())
+        if self.hps.patch_drift:
+            assert self.hps.historical_patching
+            patch_drift = np.abs((sampled_reward - reward).squeeze().detach().cpu().numpy()) + 1e-6
+            if self.hps.rnd_drift:
+                rnd_drift = self.rnd.get_novelty(reward).detach().cpu().numpy() + 1e-6
+        next_state = torch.FloatTensor(batch['obs1']).to(self.device)
         done = torch.FloatTensor(batch['dones1'].astype('float32')).to(self.device)
         if self.hps.prioritized_replay:
             iws = torch.FloatTensor(batch['iws']).to(self.device)
@@ -332,25 +360,11 @@ class DDPGAgent(object):
         online_crit_ins = [state, action]
         target_crit_ins = [next_state, next_action]
         online_crit_w_actr_ins = [state, self.actr.act(state)]
-        if self.hps.fingerprint:
-            fingerprints = torch.FloatTensor(batch['fps']).to(self.device)
-            # print(fingerprints)
-            online_crit_ins.append(fingerprints)
-            target_crit_ins.append(fingerprints)
-            online_crit_w_actr_ins.append(fingerprints)
 
-        if hasattr(self, 'disc'):
-            # Create data loaders
-            dataset = Dataset(batch)
-            dataloader = DataLoader(dataset, self.hps.batch_size, shuffle=True)
-            # Iterable over 1 element, but cleaner that way
-            # Collect recent pairs uniformly from the experience replay buffer
-            recency = int(self.replay_buffer.capacity * 0.02)
-            assert recency >= self.hps.batch_size, "must have recency >= batch_size"
-            recent_batch = self.replay_buffer.sample_recent(self.hps.batch_size, recency)
-            recent_dataset = Dataset(recent_batch)
-            recent_dataloader = DataLoader(recent_dataset, self.hps.batch_size, shuffle=True)
-            # Iterable over 1 element, but cleaner that way
+        # Create data loader
+        # It is an iterable over 1 element, but using a dataloader is cleaner
+        p_dataset = Dataset(batch)
+        p_dataloader = DataLoader(p_dataset, self.hps.batch_size, shuffle=True)
 
         # Compute losses
 
@@ -388,6 +402,12 @@ class DDPGAgent(object):
             if self.hps.prioritized_replay:
                 # Update priorities
                 new_priorities = np.abs(ce_losses.sum(dim=1).detach().cpu().numpy()) + 1e-6
+                if self.hps.patch_drift:
+                    assert self.hps.historical_patching
+                    new_priorities += 2. * patch_drift
+                    if self.hps.rnd_drift:
+                        assert self.hps.rnd
+                        new_priorities += 1000. * rnd_drift
                 self.replay_buffer.update_priorities(batch['idxs'], new_priorities)
                 # Adjust with importance weights
                 ce_losses *= iws
@@ -433,6 +453,12 @@ class DDPGAgent(object):
                 # Update priorities
                 new_priorities = np.abs(td_errors.sum(dim=2).mean(dim=1).detach().cpu().numpy())
                 new_priorities += 1e-6
+                if self.hps.patch_drift:
+                    assert self.hps.historical_patching
+                    new_priorities += 2. * patch_drift
+                    if self.hps.rnd_drift:
+                        assert self.hps.rnd
+                        new_priorities += 1000. * rnd_drift
                 self.replay_buffer.update_priorities(batch['idxs'], new_priorities)
 
             # Sum over current quantile value (tau, N in paper) dimension, and
@@ -489,6 +515,12 @@ class DDPGAgent(object):
                 # Update priorities
                 new_priorities = np.abs(td_errors.sum(dim=2).mean(dim=1).detach().cpu().numpy())
                 new_priorities += 1e-6
+                if self.hps.patch_drift:
+                    assert self.hps.historical_patching
+                    new_priorities += 2. * patch_drift
+                    if self.hps.rnd_drift:
+                        assert self.hps.rnd
+                        new_priorities += 1000. * rnd_drift
                 self.replay_buffer.update_priorities(batch['idxs'], new_priorities)
 
             # Sum over current quantile value (tau, N in paper) dimension, and
@@ -525,7 +557,7 @@ class DDPGAgent(object):
             targ_q = self.norm_rets(targ_q)
 
             if self.hps.popart:
-                # Apply POP-ART, https://arxiv.org/pdf/1602.07714.pdf
+                # Apply Pop-Art, https://arxiv.org/pdf/1602.07714.pdf
                 # Save the pre-update running stats
                 old_mean = torch.FloatTensor(self.rms_ret.mean).to(self.device)
                 old_std = torch.FloatTensor(np.sqrt(self.rms_ret.var) + 1e-8).to(self.device)
@@ -559,6 +591,12 @@ class DDPGAgent(object):
                 if self.hps.clipped_double:
                     td_errors = torch.min(q - targ_q, twin_q - targ_q)
                 new_priorities = np.abs(td_errors.detach().cpu().numpy()) + 1e-6
+                if self.hps.patch_drift:
+                    assert self.hps.historical_patching
+                    new_priorities += 2. * patch_drift
+                    if self.hps.rnd_drift:
+                        assert self.hps.rnd
+                        new_priorities += 1000. * rnd_drift
                 self.replay_buffer.update_priorities(batch['idxs'], new_priorities)
 
             crit_loss = huber_td_errors.mean()
@@ -572,7 +610,7 @@ class DDPGAgent(object):
 
         if self.hps.reward_control:
             # Reward control
-            actr_loss += 0.1 * (reward - self.actr.rc(state)).pow(2).mean()
+            actr_loss += self.hps.rc_scale * (reward - self.actr.rc(state)).pow(2).mean()
 
         # Compute gradients
         self.actr_opt.zero_grad()
@@ -595,7 +633,7 @@ class DDPGAgent(object):
             self.crit_opt.step()
             self.crit_sched.step(iters_so_far)
             if self.hps.clipped_double:
-                # Upsate twin critic
+                # Update twin critic
                 self.twin_opt.step()
                 self.twin_sched.step(iters_so_far)
             if update_actor:
@@ -604,12 +642,10 @@ class DDPGAgent(object):
                 self.actr_sched.step(iters_so_far)
                 # Update target nets
                 self.update_target_net(iters_so_far)
-        if hasattr(self, 'disc'):
-            for _ in range(self.hps.d_update_ratio):
-                for chunk, e_chunk in zip(dataloader, self.e_dataloader):
-                    self.update_disc(chunk, e_chunk)
-                for chunk, e_chunk in zip(recent_dataloader, self.e_dataloader):
-                    self.update_disc(chunk, e_chunk)
+        # Update discriminator
+        for _ in range(self.hps.d_update_ratio):
+            for p_chunk, e_chunk in zip(p_dataloader, self.e_dataloader):
+                self.update_disc(p_chunk, e_chunk)
 
         # Aggregate the elements to return
         losses = {'actr': actr_loss.clone().cpu().data.numpy(),
@@ -627,18 +663,23 @@ class DDPGAgent(object):
 
         return losses, gradns, lrnows
 
-    def update_disc(self, chunk, e_chunk):
+    def update_disc(self, p_chunk, e_chunk):
+        """Update the discriminator network"""
         # Create tensors from the inputs
-        p_state = torch.FloatTensor(chunk['obs0']).to(self.device)  # already normalized
-        p_action = torch.FloatTensor(chunk['acs']).to(self.device)
+        p_state = torch.FloatTensor(p_chunk['obs0']).to(self.device)  # already normalized
+        p_action = torch.FloatTensor(p_chunk['acs']).to(self.device)
         if not self.hps.pixels:
             # Standardize and clip observations
             e_chunk['obs0'] = self.normalize_clip_ob(e_chunk['obs0'])
         e_state = torch.FloatTensor(e_chunk['obs0']).to(self.device)
         e_action = torch.FloatTensor(e_chunk['acs']).to(self.device)
         # Compute scores
-        p_scores = self.disc(p_state, p_action)
-        e_scores = self.disc(e_state, e_action)
+        if self.hps.minimal:
+            p_scores = self.disc.D(self.crit.encode(p_state, p_action))
+            e_scores = self.disc.D(self.crit.encode(e_state, e_action))
+        else:
+            p_scores = self.disc.D(p_state, p_action)
+            e_scores = self.disc.D(e_state, e_action)
         # Create entropy loss
         scores = torch.cat([p_scores, e_scores], dim=0)
         entropy = F.binary_cross_entropy_with_logits(input=scores,
@@ -647,14 +688,15 @@ class DDPGAgent(object):
         # Create labels
         fake_labels = torch.zeros_like(p_scores).to(self.device)
         real_labels = torch.ones_like(e_scores).to(self.device)
-        # Label smoothing, suggested in 'Improved Techniques for Training GANs',
-        # Salimans 2016, https://arxiv.org/abs/1606.03498
-        # The paper advises on the use of one-sided label smoothing, i.e.
-        # only smooth out the positive (real) targets side.
-        # Extra comment explanation: https://github.com/openai/improved-gan/blob/
-        # 9ff96a7e9e5ac4346796985ddbb9af3239c6eed1/imagenet/build_model.py#L88-L121
-        # Additional material: https://github.com/soumith/ganhacks/issues/10
-        real_labels.uniform_(0.7, 1.2)
+        if self.hps.one_sided_label_smoothing:
+            # Label smoothing, suggested in 'Improved Techniques for Training GANs',
+            # Salimans 2016, https://arxiv.org/abs/1606.03498
+            # The paper advises on the use of one-sided label smoothing, i.e.
+            # only smooth out the positive (real) targets side.
+            # Extra comment explanation: https://github.com/openai/improved-gan/blob/
+            # 9ff96a7e9e5ac4346796985ddbb9af3239c6eed1/imagenet/build_model.py#L88-L121
+            # Additional material: https://github.com/soumith/ganhacks/issues/10
+            real_labels.uniform_(0.7, 1.2)
         # Create binary classification (cross-entropy) losses
         p_loss = F.binary_cross_entropy_with_logits(input=p_scores, target=fake_labels)
         e_loss = F.binary_cross_entropy_with_logits(input=e_scores, target=real_labels)
@@ -663,7 +705,12 @@ class DDPGAgent(object):
 
         if self.hps.grad_pen:
             # Create gradient penalty loss (coefficient from the original paper)
-            grad_pen = 10. * self.disc.grad_pen(p_state, p_action, e_state, e_action)
+            if self.hps.minimal:
+                grad_pen_in = [self.crit.encode(p_state, p_action),
+                               self.crit.encode(e_state, e_action)]
+            else:
+                grad_pen_in = [p_state, p_action, e_state, e_action]
+            grad_pen = 10. * self.disc.grad_pen(*grad_pen_in)
             d_loss += grad_pen
 
         # Update parameters
@@ -762,7 +809,7 @@ class DDPGAgent(object):
                 scheduler=self.twin_sched.state_dict(),
             )
             torch.save(twin_bundle._asdict(), osp.join(path, "twin_iter{}.pth".format(iters)))
-        if hasattr(self, 'disc'):
+        if not self.eval_mode:
             disc_bundle = SaveBundle(
                 model=self.disc.state_dict(),
                 optimizer=self.disc_opt.state_dict(),
@@ -784,7 +831,7 @@ class DDPGAgent(object):
             self.twin.load_state_dict(twin_bundle['model'])
             self.twin_opt.load_state_dict(twin_bundle['optimizer'])
             self.twin_sched.load_state_dict(twin_bundle['scheduler'])
-        if hasattr(self, 'disc'):
+        if not self.eval_mode:
             disc_bundle = torch.load(osp.join(path, "disc_iter{}.pth".format(iters)))
             self.disc.load_state_dict(disc_bundle['model'])
             self.disc_opt.load_state_dict(disc_bundle['optimizer'])

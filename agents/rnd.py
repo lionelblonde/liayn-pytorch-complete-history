@@ -1,6 +1,5 @@
 from collections import OrderedDict
 
-import numpy as np
 import torch
 import torch.nn as nn
 
@@ -79,5 +78,4 @@ class RND(object):
     def get_novelty(self, x):
         with torch.no_grad():
             x = torch.FloatTensor(x).cpu()
-            return np.asscalar((self.pred_net(x) -
-                                self.targ_net(x)).pow(2).mean().cpu().numpy().flatten())
+            return (self.pred_net(x) - self.targ_net(x)).pow(2).mean(-1)

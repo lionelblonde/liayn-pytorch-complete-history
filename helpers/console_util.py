@@ -54,7 +54,7 @@ def log_module_info(logger, name, model):
     logger.info("[INFO] trainable params: {}.".format(_fmt(sum(num_params))))
 
 
-def timed_cm_wrapper(logger, color_message='magenta', color_elapsed_time='cyan'):
+def timed_cm_wrapper(logger, color_message='yellow', color_elapsed_time='cyan'):
     """Wraps a context manager that records the time taken by encapsulated ops"""
     @contextmanager
     def _timed(message):

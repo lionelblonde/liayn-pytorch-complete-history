@@ -89,8 +89,7 @@ class ExperimentInitializer:
             return self.uuid
         # Assemble the uuid
         name = self.uuid + '.'
-        name += "{}.{}.".format(self.args.task, self.args.algo)
-        if 'evaluate' in self.args.task:
+        if self.args.task == 'eval':
             name += "{}.".format(self.args.task)
             assert self.args.num_trajs != np.inf, "num trajs must be finite"
             name += "num_trajs_{}.".format(self.args.num_trajs)
