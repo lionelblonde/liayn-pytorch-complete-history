@@ -60,7 +60,6 @@ class Agent(object):
         # Define critic to use
         assert sum([self.hps.use_c51, self.hps.use_qr, self.hps.use_iqn]) <= 1
         if self.hps.use_c51:
-            assert not self.hps.clipped_double
             Critic = MinimalC51QRCritic if self.hps.minimal else C51QRCritic
             c51_supp_range = (self.hps.c51_vmin,
                               self.hps.c51_vmax,
@@ -327,13 +326,16 @@ class Agent(object):
             self.rnd.train(rollout['rews'])
 
         # Create tensors from the inputs
+        index = torch.FloatTensor(batch['idxs']).to(self.device)
         state = torch.FloatTensor(batch['obs0']).to(self.device)
         action = torch.FloatTensor(batch['acs']).to(self.device)
         reward = torch.FloatTensor(batch['rews']).to(self.device)
         if self.hps.historical_patching:
             # Use patched reward instead of sampled one and patch all sampled memory entries
             sampled_reward = reward.clone().detach()
-            reward = torch.min(sampled_reward, self.get_reward(state, action))
+            patched_reward = self.get_reward(state, action)
+            cond = (index.detach() <= self.replay_buffer.num_entries / 2).float().unsqueeze(-1)
+            reward = ((1 - cond) * sampled_reward) + (cond * patched_reward)
             self.replay_buffer.patch_rewards(batch['idxs'], reward.clone().detach().cpu().numpy())
         if self.hps.patch_drift:
             assert self.hps.historical_patching
@@ -356,11 +358,6 @@ class Agent(object):
         else:
             next_action = self.targ_actr.act(next_state)
 
-        # Assemble online critic and target critic inputs
-        online_crit_ins = [state, action]
-        target_crit_ins = [next_state, next_action]
-        online_crit_w_actr_ins = [state, self.actr.act(state)]
-
         # Create data loader
         # It is an iterable over 1 element, but using a dataloader is cleaner
         p_dataset = Dataset(batch)
@@ -375,9 +372,23 @@ class Agent(object):
             # Compute Z estimate
             z = self.crit.Z(state, action).unsqueeze(-1)
             z.data.clamp_(0.01, 0.99)
+            if self.hps.clipped_double:
+                twin_z = self.twin.Z(state, action).unsqueeze(-1)
+                twin_z.data.clamp_(0.01, 0.99)
             # Compute target Z estimate
             z_prime = self.targ_crit.Z(next_state, next_action)
+            if self.hps.clipped_double:
+                # Define Z' as the minimum Z value between TD3's twin Z's
+                twin_z_prime = self.targ_twin.Z(next_state, next_action)
+                delta = 1.0
+                ucb_a = z_prime.mean(1) + delta * z_prime.std(1)
+                ucb_b = twin_z_prime.mean(1) + delta * twin_z_prime.std(1)
+                ucbs = torch.cat([ucb_a.unsqueeze(-1),
+                                  ucb_b.unsqueeze(-1)], dim=1)
+                indices = torch.argmin(ucbs, dim=1).unsqueeze(-1).repeat(1, self.hps.c51_num_atoms)
+                z_prime = ((1 - indices) * z_prime) + (indices * twin_z_prime)  # hackish
             z_prime.data.clamp_(0.01, 0.99)
+
             gamma_mask = ((self.hps.gamma ** td_len) * (1 - done))
             Tz = reward + (gamma_mask * self.c51_supp.view(1, self.hps.c51_num_atoms))
             Tz = Tz.clamp(self.hps.c51_vmin, self.hps.c51_vmax)
@@ -398,6 +409,8 @@ class Agent(object):
 
             # Critic loss
             ce_losses = -(targ_z.detach() * torch.log(z + 1e-8)).sum(dim=1)
+            if self.hps.clipped_double:
+                twin_ce_losses = -(targ_z.detach() * torch.log(twin_z + 1e-8)).sum(dim=1)
 
             if self.hps.prioritized_replay:
                 # Update priorities
@@ -411,8 +424,12 @@ class Agent(object):
                 self.replay_buffer.update_priorities(batch['idxs'], new_priorities)
                 # Adjust with importance weights
                 ce_losses *= iws
+                if self.hps.clipped_double:
+                    twin_ce_losses *= iws
 
             crit_loss = ce_losses.mean()
+            if self.hps.clipped_double:
+                twin_loss = twin_ce_losses.mean()
 
             # Actor loss
             actr_loss = -self.crit.Z(state, self.actr.act(state))
@@ -540,15 +557,15 @@ class Agent(object):
             # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> VANILLA
 
             # Compute Q estimate
-            q = self.denorm_rets(self.crit.Q(*online_crit_ins))
+            q = self.denorm_rets(self.crit.Q(state, action))
             if self.hps.clipped_double:
-                twin_q = self.denorm_rets(self.twin.Q(*online_crit_ins))
+                twin_q = self.denorm_rets(self.twin.Q(state, action))
 
             # Compute target Q estimate
-            q_prime = self.targ_crit.Q(*target_crit_ins)
+            q_prime = self.targ_crit.Q(next_state, next_action)
             if self.hps.clipped_double:
                 # Define Q' as the minimum Q value between TD3's twin Q's
-                twin_q_prime = self.targ_twin.Q(*target_crit_ins)
+                twin_q_prime = self.targ_twin.Q(next_state, next_action)
                 q_prime = torch.min(q_prime, twin_q_prime)
             targ_q = (reward +
                       (self.hps.gamma ** td_len) * (1. - done) *
@@ -587,10 +604,7 @@ class Agent(object):
                 if self.hps.clipped_double:
                     twin_huber_td_errors *= iws
                 # Update priorities
-                td_errors = q - targ_q
-                if self.hps.clipped_double:
-                    td_errors = torch.min(q - targ_q, twin_q - targ_q)
-                new_priorities = np.abs(td_errors.detach().cpu().numpy()) + 1e-6
+                new_priorities = np.abs((q - targ_q).detach().cpu().numpy()) + 1e-6
                 if self.hps.patch_drift:
                     assert self.hps.historical_patching
                     new_priorities += 2. * patch_drift
@@ -604,13 +618,16 @@ class Agent(object):
                 twin_loss = twin_huber_td_errors.mean()
 
             # Actor loss
-            actr_loss = -self.crit.Q(*online_crit_w_actr_ins).mean()
+            actr_loss = -self.crit.Q(state, self.actr.act(state)).mean()
 
         # ######################################################################
 
         if self.hps.reward_control:
             # Reward control
-            actr_loss += self.hps.rc_scale * (reward - self.actr.rc(state)).pow(2).mean()
+            rc_loss = F.smooth_l1_loss(patched_reward if self.hps.historical_patching else reward,
+                                       self.actr.rc(state))
+            rc_loss *= self.hps.rc_scale
+            actr_loss += rc_loss
 
         # Compute gradients
         self.actr_opt.zero_grad()
