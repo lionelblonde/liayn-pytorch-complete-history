@@ -135,12 +135,12 @@ class MinimalDiscriminator(nn.Module):
         super(MinimalDiscriminator, self).__init__()
         self.hps = hps
         self.leak = 0.1
-        # self.score_trunk = nn.Sequential(OrderedDict([
-        #     ('fc_block_1', nn.Sequential(OrderedDict([
-        #         ('fc', U.spectral_norm(nn.Linear(256, 256))),
-        #         ('nl', nn.LeakyReLU(negative_slope=self.leak, inplace=True)),
-        #     ]))),
-        # ]))
+        self.score_trunk = nn.Sequential(OrderedDict([
+            ('fc_block_1', nn.Sequential(OrderedDict([
+                ('fc', U.spectral_norm(nn.Linear(256, 256))),
+                ('nl', nn.LeakyReLU(negative_slope=self.leak, inplace=True)),
+            ]))),
+        ]))
         self.score_head = nn.Linear(256, 1)
         # Perform initialization
         # self.score_trunk.apply(init(nonlin='leaky_relu', param=self.leak))
@@ -201,7 +201,7 @@ class MinimalDiscriminator(nn.Module):
         return self.forward(x)
 
     def forward(self, x):
-        # x = self.score_trunk(x)
+        x = self.score_trunk(x)
         score = self.score_head(x)
         return score
 
@@ -230,9 +230,8 @@ class Actor(nn.Module):
                 ('nl', nn.ReLU(inplace=True)),
             ]))),
         ]))
-        self.a_skip_co = nn.Sequential()
         self.a_head = nn.Linear(256, ac_dim)
-        if self.hps.reward_control:
+        if self.hps.s2r2:
             # > Reward final decoder
             self.r_decoder = nn.Sequential(OrderedDict([
                 ('fc_block_1', nn.Sequential(OrderedDict([
@@ -241,13 +240,12 @@ class Actor(nn.Module):
                     ('nl', nn.ReLU(inplace=True)),
                 ]))),
             ]))
-            self.r_skip_co = nn.Sequential()
             self.r_head = nn.Linear(256, 1)
         # Perform initialization
         self.encoder.apply(init(nonlin='relu', param=None))
         self.a_decoder.apply(init(nonlin='relu', param=None))
         self.a_head.apply(init(weight_scale=0.01, constant_bias=0.0))
-        if self.hps.reward_control:
+        if self.hps.s2r2:
             self.r_decoder.apply(init(nonlin='relu', param=None))
             self.r_head.apply(init(weight_scale=0.01, constant_bias=0.0))
 
@@ -255,19 +253,19 @@ class Actor(nn.Module):
         out = self.forward(ob)
         return out[0]  # ac
 
-    def rc(self, ob):
-        if self.hps.reward_control:
+    def s2r2(self, ob):
+        if self.hps.s2r2:
             out = self.forward(ob)
-            return out[1]  # reward control
+            return out[1]  # reward
         else:
             raise ValueError("should not be called")
 
     def forward(self, ob):
         x = self.encoder(ob)
-        ac = float(self.ac_max) * torch.tanh(self.a_head(self.a_decoder(x) + self.a_skip_co(x)))
+        ac = float(self.ac_max) * torch.tanh(self.a_head(self.a_decoder(x)))
         out = [ac]
-        if self.hps.reward_control:
-            reward = self.r_head(self.r_decoder(x) + self.r_skip_co(x))
+        if self.hps.s2r2:
+            reward = self.r_head(self.r_decoder(x))
             out.append(reward)
         return out
 

@@ -52,7 +52,7 @@ def argparser(description="DDPG Experiment"):
     parser.add_argument('--targ_up_freq', type=int, default=100, help='hard target nets update')
     boolean_flag(parser, 'n_step_returns', default=True)
     parser.add_argument('--lookahead', help='num lookahead steps', type=int, default=10)
-    boolean_flag(parser, 'reward_control', help='reward control auxiliary task', default=False)
+    boolean_flag(parser, 's2r2', help='reward control auxiliary task', default=False)
     boolean_flag(parser, 'popart', default=False)
 
     # TD3

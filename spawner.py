@@ -27,7 +27,7 @@ CONDA = CONFIG['resources']['conda_env']
 # Define experiment type
 TYPE = 'sweep' if args.sweep else 'fixed'
 # Write out the boolean arguments (using the 'boolean_flag' function)
-BOOL_ARGS = ['cuda', 'pixels', 'reward_control', 'popart', 'historical_patching',
+BOOL_ARGS = ['cuda', 'pixels', 's2r2', 'popart', 'historical_patching',
              'render', 'record', 'with_scheduler',
              'prioritized_replay', 'ranked', 'unreal',
              'n_step_returns', 'clipped_double', 'targ_actor_smoothing',
@@ -133,7 +133,7 @@ def get_hps(sweep):
             'targ_up_freq': np.random.choice([10, 1000]),
             'n_step_returns': CONFIG['parameters'].get('n_step_returns', False),
             'lookahead': np.random.choice([5, 10, 20, 40, 60]),
-            'reward_control': CONFIG['parameters'].get('reward_control', False),
+            's2r2': CONFIG['parameters'].get('s2r2', False),
             'popart': CONFIG['parameters'].get('popart', False),
 
             # TD3
@@ -211,7 +211,7 @@ def get_hps(sweep):
             'targ_up_freq': CONFIG['parameters'].get('targ_up_freq', 100),
             'n_step_returns': CONFIG['parameters'].get('n_step_returns', False),
             'lookahead': CONFIG['parameters'].get('lookahead', 60),
-            'reward_control': CONFIG['parameters'].get('reward_control', False),
+            's2r2': CONFIG['parameters'].get('s2r2', False),
             'popart': CONFIG['parameters'].get('popart', False),
 
             # TD3

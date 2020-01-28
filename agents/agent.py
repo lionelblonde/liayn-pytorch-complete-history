@@ -47,7 +47,7 @@ class Agent(object):
         self.eval_mode = self.expert_dataset is None
 
         self.hps.minimal = False
-        self.hps.rc_scale = 0.1
+        self.hps.s2r2_scale = 0.025
         self.hps.one_sided_label_smoothing = True
         self.hps.patch_drift = False
         self.hps.rnd_drift = False
@@ -60,6 +60,7 @@ class Agent(object):
         # Define critic to use
         assert sum([self.hps.use_c51, self.hps.use_qr, self.hps.use_iqn]) <= 1
         if self.hps.use_c51:
+            assert not self.hps.clipped_double
             Critic = MinimalC51QRCritic if self.hps.minimal else C51QRCritic
             c51_supp_range = (self.hps.c51_vmin,
                               self.hps.c51_vmax,
@@ -326,7 +327,6 @@ class Agent(object):
             self.rnd.train(rollout['rews'])
 
         # Create tensors from the inputs
-        index = torch.FloatTensor(batch['idxs']).to(self.device)
         state = torch.FloatTensor(batch['obs0']).to(self.device)
         action = torch.FloatTensor(batch['acs']).to(self.device)
         reward = torch.FloatTensor(batch['rews']).to(self.device)
@@ -334,9 +334,8 @@ class Agent(object):
             # Use patched reward instead of sampled one and patch all sampled memory entries
             sampled_reward = reward.clone().detach()
             patched_reward = self.get_reward(state, action)
-            cond = (index.detach() <= self.replay_buffer.num_entries / 2).float().unsqueeze(-1)
-            reward = ((1 - cond) * sampled_reward) + (cond * patched_reward)
-            self.replay_buffer.patch_rewards(batch['idxs'], reward.clone().detach().cpu().numpy())
+            reward = patched_reward.clone().detach()
+            self.replay_buffer.patch_rewards(batch['idxs'], reward.cpu().numpy())
         if self.hps.patch_drift:
             assert self.hps.historical_patching
             patch_drift = np.abs((sampled_reward - reward).squeeze().detach().cpu().numpy()) + 1e-6
@@ -372,21 +371,8 @@ class Agent(object):
             # Compute Z estimate
             z = self.crit.Z(state, action).unsqueeze(-1)
             z.data.clamp_(0.01, 0.99)
-            if self.hps.clipped_double:
-                twin_z = self.twin.Z(state, action).unsqueeze(-1)
-                twin_z.data.clamp_(0.01, 0.99)
             # Compute target Z estimate
             z_prime = self.targ_crit.Z(next_state, next_action)
-            if self.hps.clipped_double:
-                # Define Z' as the minimum Z value between TD3's twin Z's
-                twin_z_prime = self.targ_twin.Z(next_state, next_action)
-                delta = 1.0
-                ucb_a = z_prime.mean(1) + delta * z_prime.std(1)
-                ucb_b = twin_z_prime.mean(1) + delta * twin_z_prime.std(1)
-                ucbs = torch.cat([ucb_a.unsqueeze(-1),
-                                  ucb_b.unsqueeze(-1)], dim=1)
-                indices = torch.argmin(ucbs, dim=1).unsqueeze(-1).repeat(1, self.hps.c51_num_atoms)
-                z_prime = ((1 - indices) * z_prime) + (indices * twin_z_prime)  # hackish
             z_prime.data.clamp_(0.01, 0.99)
 
             gamma_mask = ((self.hps.gamma ** td_len) * (1 - done))
@@ -409,8 +395,6 @@ class Agent(object):
 
             # Critic loss
             ce_losses = -(targ_z.detach() * torch.log(z + 1e-8)).sum(dim=1)
-            if self.hps.clipped_double:
-                twin_ce_losses = -(targ_z.detach() * torch.log(twin_z + 1e-8)).sum(dim=1)
 
             if self.hps.prioritized_replay:
                 # Update priorities
@@ -424,12 +408,8 @@ class Agent(object):
                 self.replay_buffer.update_priorities(batch['idxs'], new_priorities)
                 # Adjust with importance weights
                 ce_losses *= iws
-                if self.hps.clipped_double:
-                    twin_ce_losses *= iws
 
             crit_loss = ce_losses.mean()
-            if self.hps.clipped_double:
-                twin_loss = twin_ce_losses.mean()
 
             # Actor loss
             actr_loss = -self.crit.Z(state, self.actr.act(state))
@@ -622,12 +602,12 @@ class Agent(object):
 
         # ######################################################################
 
-        if self.hps.reward_control:
-            # Reward control
-            rc_loss = F.smooth_l1_loss(patched_reward if self.hps.historical_patching else reward,
+        if self.hps.s2r2:
+            # Self-supervised reward regression
+            s2r2_loss = F.smooth_l1_loss(patched_reward if self.hps.historical_patching else reward,
                                        self.actr.rc(state))
-            rc_loss *= self.hps.rc_scale
-            actr_loss += rc_loss
+            s2r2_loss *= self.hps.s2r2_scale
+            actr_loss += s2r2_loss
 
         # Compute gradients
         self.actr_opt.zero_grad()
