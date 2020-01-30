@@ -1,4 +1,3 @@
-import math
 from collections import OrderedDict
 
 import torch
@@ -31,6 +30,11 @@ def init(nonlin=None, param=None,
                 nn.init.zeros_(m.bias)
 
     return _init
+
+
+def sigmoid(logits, temp=1.0):
+    logits = logits / (1. * temp)  # float
+    return 1. / (1. + torch.exp(-logits))
 
 
 # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> Networks.
@@ -143,7 +147,7 @@ class MinimalDiscriminator(nn.Module):
         ]))
         self.score_head = nn.Linear(256, 1)
         # Perform initialization
-        # self.score_trunk.apply(init(nonlin='leaky_relu', param=self.leak))
+        self.score_trunk.apply(init(nonlin='leaky_relu', param=self.leak))
         self.score_head.apply(init(weight_scale=0.01, constant_bias=0.0))
 
     def grad_pen(self, p_x, e_x):
@@ -206,6 +210,96 @@ class MinimalDiscriminator(nn.Module):
         return score
 
 
+class GatedRelabeler(nn.Module):
+
+    def __init__(self, env, hps):
+        super(GatedRelabeler, self).__init__()
+        ob_dim = env.observation_space.shape[0]
+        ac_dim = env.action_space.shape[0]
+        self.hps = hps
+        self.f_encoder = nn.Sequential(OrderedDict([
+            ('fc_block', nn.Sequential(OrderedDict([
+                ('fc', nn.Linear(1, 64)),
+                ('ln', nn.LayerNorm(64)),
+                ('nl', nn.ReLU(inplace=True)),
+            ]))),
+        ]))
+        self.s_encoder = nn.Sequential(OrderedDict([
+            ('fc_block_1', nn.Sequential(OrderedDict([
+                ('fc', nn.Linear(ob_dim, 64)),
+                ('ln', nn.LayerNorm(64)),
+                ('nl', nn.ReLU(inplace=True)),
+            ]))),
+        ]))
+        self.a_encoder = nn.Sequential(OrderedDict([
+            ('fc_block_1', nn.Sequential(OrderedDict([
+                ('fc', nn.Linear(ac_dim, 64)),
+                ('ln', nn.LayerNorm(64)),
+                ('nl', nn.ReLU(inplace=True)),
+            ]))),
+        ]))
+        self.g_trunk = nn.Sequential(OrderedDict([
+            ('fc_block_1', nn.Sequential(OrderedDict([
+                ('fc', nn.Linear(64, 64)),
+                ('ln', nn.LayerNorm(64)),
+                ('nl', nn.ReLU(inplace=True)),
+            ]))),
+        ]))
+        self.g_head = nn.Linear(64, 1)
+        # Perform initialization
+        self.s_encoder.apply(init(nonlin='relu', param=None))
+        self.a_encoder.apply(init(nonlin='relu', param=None))
+        self.f_encoder.apply(init(nonlin='relu', param=None))
+        self.g_trunk.apply(init(nonlin='relu', param=None))
+        self.g_head.apply(init(weight_scale=0.01, constant_bias=5.0))  # gate starts open
+
+    def G(self, ob, ac, f):
+        return self.forward(ob, ac, f)
+
+    def forward(self, ob, ac, f):
+        x = (self.f_encoder(f) +
+             self.s_encoder(ob) +
+             self.a_encoder(ac))
+        x = self.g_trunk(x)
+        gate = sigmoid(logits=self.g_head(x), temp=self.hps.gate_temp)
+        return gate
+
+
+class MinimalGatedRelabeler(nn.Module):
+
+    def __init__(self, hps):
+        super(MinimalGatedRelabeler, self).__init__()
+        self.hps = hps
+        self.f_encoder = nn.Sequential(OrderedDict([
+            ('fc_block', nn.Sequential(OrderedDict([
+                ('fc', nn.Linear(1, 256)),
+                ('ln', nn.LayerNorm(256)),
+                ('nl', nn.ReLU(inplace=True)),
+            ]))),
+        ]))
+        self.g_trunk = nn.Sequential(OrderedDict([
+            ('fc_block_1', nn.Sequential(OrderedDict([
+                ('fc', nn.Linear(256, 256)),
+                ('ln', nn.LayerNorm(256)),
+                ('nl', nn.ReLU(inplace=True)),
+            ]))),
+        ]))
+        self.g_head = nn.Linear(256, 1)
+        # Perform initialization
+        self.f_encoder.apply(init(nonlin='relu', param=None))
+        self.g_trunk.apply(init(nonlin='relu', param=None))
+        self.g_head.apply(init(weight_scale=0.01, constant_bias=5.0))  # gate starts open
+
+    def G(self, x, f):
+        return self.forward(x, f)
+
+    def forward(self, x, f):
+        x = self.f_encoder(f) + x
+        x = self.g_trunk(x)
+        gate = sigmoid(logits=self.g_head(x), temp=self.hps.gate_temp)
+        return gate
+
+
 class Actor(nn.Module):
 
     def __init__(self, env, hps):
@@ -214,15 +308,13 @@ class Actor(nn.Module):
         ac_dim = env.action_space.shape[0]
         self.ac_max = env.action_space.high[0]
         self.hps = hps
-        # Assemble fully-connected encoder
-        self.encoder = nn.Sequential(OrderedDict([
+        self.s_encoder = nn.Sequential(OrderedDict([
             ('fc_block', nn.Sequential(OrderedDict([
                 ('fc', nn.Linear(ob_dim, 256)),
                 ('ln', nn.LayerNorm(256)),
                 ('nl', nn.ReLU(inplace=True)),
             ]))),
         ]))
-        # Assemble fully-connected decoder
         self.a_decoder = nn.Sequential(OrderedDict([
             ('fc_block', nn.Sequential(OrderedDict([
                 ('fc', nn.Linear(256, 256)),
@@ -230,9 +322,9 @@ class Actor(nn.Module):
                 ('nl', nn.ReLU(inplace=True)),
             ]))),
         ]))
+        self.a_skip_co = nn.Sequential()
         self.a_head = nn.Linear(256, ac_dim)
         if self.hps.s2r2:
-            # > Reward final decoder
             self.r_decoder = nn.Sequential(OrderedDict([
                 ('fc_block_1', nn.Sequential(OrderedDict([
                     ('fc', nn.Linear(256, 256)),
@@ -240,9 +332,10 @@ class Actor(nn.Module):
                     ('nl', nn.ReLU(inplace=True)),
                 ]))),
             ]))
+            self.r_skip_co = nn.Sequential()
             self.r_head = nn.Linear(256, 1)
         # Perform initialization
-        self.encoder.apply(init(nonlin='relu', param=None))
+        self.s_encoder.apply(init(nonlin='relu', param=None))
         self.a_decoder.apply(init(nonlin='relu', param=None))
         self.a_head.apply(init(weight_scale=0.01, constant_bias=0.0))
         if self.hps.s2r2:
@@ -261,11 +354,11 @@ class Actor(nn.Module):
             raise ValueError("should not be called")
 
     def forward(self, ob):
-        x = self.encoder(ob)
-        ac = float(self.ac_max) * torch.tanh(self.a_head(self.a_decoder(x)))
+        x = self.s_encoder(ob)
+        ac = float(self.ac_max) * torch.tanh(self.a_head(self.a_decoder(x) + self.a_skip_co(x)))
         out = [ac]
         if self.hps.s2r2:
-            reward = self.r_head(self.r_decoder(x))
+            reward = self.r_head(self.r_decoder(x) + self.r_skip_co(x))
             out.append(reward)
         return out
 
@@ -278,79 +371,46 @@ class Actor(nn.Module):
         return [n for n, _ in self.named_parameters() if 'ln' in n]
 
 
-class VanillaCritic(nn.Module):
+class Critic(nn.Module):
 
     def __init__(self, env, hps):
-        super(VanillaCritic, self).__init__()
+        super(Critic, self).__init__()
         ob_dim = env.observation_space.shape[0]
         ac_dim = env.action_space.shape[0]
+        if hps.use_c51:
+            num_heads = hps.c51_num_atoms
+        elif hps.use_qr:
+            num_heads = hps.num_tau
+        else:
+            num_heads = 1
         self.hps = hps
-        self.q_trunk = nn.Sequential(OrderedDict([
-            ('fc_block_1', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(ob_dim + ac_dim, 256)),
-                ('ln', nn.LayerNorm(256)),
-                ('nl', nn.ReLU(inplace=True)),
-            ]))),
-            ('fc_block_2', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(256, 256)),
-                ('ln', nn.LayerNorm(256)),
-                ('nl', nn.ReLU(inplace=True)),
-            ]))),
-        ]))
-
-        self.q_head = nn.Linear(256, 1)
-        # Perform initialization
-        self.q_trunk.apply(init(nonlin='relu', param=None))
-        self.q_head.apply(init(weight_scale=0.01, constant_bias=0.0))
-
-    def Q(self, ob, ac):
-        return self.forward(ob, ac)
-
-    def forward(self, ob, ac):
-        x = torch.cat([ob, ac], dim=-1)
-        x = self.q_trunk(x)
-        x = self.q_head(x)
-        return x
-
-    @property
-    def out_params(self):
-        return [p for p in self.q_head.parameters()]
-
-
-class MinimalVanillaCritic(nn.Module):
-
-    def __init__(self, env, hps):
-        super(MinimalVanillaCritic, self).__init__()
-        ob_dim = env.observation_space.shape[0]
-        ac_dim = env.action_space.shape[0]
-        self.hps = hps
-        self.qs_trunk = nn.Sequential(OrderedDict([
+        self.s_encoder = nn.Sequential(OrderedDict([
             ('fc_block_1', nn.Sequential(OrderedDict([
                 ('fc', nn.Linear(ob_dim, 256)),
                 ('ln', nn.LayerNorm(256)),
                 ('nl', nn.ReLU(inplace=True)),
             ]))),
         ]))
-        self.qa_trunk = nn.Sequential(OrderedDict([
+        self.a_encoder = nn.Sequential(OrderedDict([
             ('fc_block_1', nn.Sequential(OrderedDict([
                 ('fc', nn.Linear(ac_dim, 256)),
                 ('ln', nn.LayerNorm(256)),
                 ('nl', nn.ReLU(inplace=True)),
             ]))),
         ]))
-        self.q_trunk = nn.Sequential(OrderedDict([
+        self.c_trunk = nn.Sequential(OrderedDict([
             ('fc_block_1', nn.Sequential(OrderedDict([
                 ('fc', nn.Linear(256, 256)),
                 ('ln', nn.LayerNorm(256)),
                 ('nl', nn.ReLU(inplace=True)),
             ]))),
         ]))
-        self.q_head = nn.Linear(256, 1)
+        self.c_head = nn.Linear(256, num_heads)
         # Perform initialization
-        self.qs_trunk.apply(init(nonlin='relu', param=None))
-        self.qa_trunk.apply(init(nonlin='relu', param=None))
-        self.q_trunk.apply(init(nonlin='relu', param=None))
-        self.q_head.apply(init(weight_scale=0.01, constant_bias=0.0))
+        self.s_encoder.apply(init(nonlin='relu', param=None))
+        self.a_encoder.apply(init(nonlin='relu', param=None))
+        self.c_trunk.apply(init(nonlin='relu', param=None))
+        self.c_head.apply(init(weight_scale=0.01, constant_bias=0.0))
 
     def encode(self, ob, ac):
         assert sum([isinstance(x, torch.Tensor) for x in [ob, ac]]) in [0, 2]
@@ -362,211 +422,20 @@ class MinimalVanillaCritic(nn.Module):
         ac = ac.cpu()
         # Encode
         if self.hps.state_only:
-            return self.qs_trunk(ob).detach()
+            return self.s_encoder(ob).detach()
         else:
-            return (self.qs_trunk(ob) +
-                    self.qa_trunk(ac)).detach()
+            return (self.c_trunk(self.s_encoder(ob) +
+                                 self.a_encoder(ac))).detach()
 
-    def Q(self, ob, ac):
+    def QZ(self, ob, ac):
         return self.forward(ob, ac)
 
     def forward(self, ob, ac):
-        xs = self.qs_trunk(ob)
-        xa = self.qa_trunk(ac)
-        x = self.q_trunk(xs + xa)
-        x = self.q_head(x)
+        xs = self.s_encoder(ob)
+        xa = self.a_encoder(ac)
+        x = self.c_trunk(xs + xa)
+        x = self.c_head(x)
+        if self.hps.use_c51:
+            # Return a categorical distribution
+            x = F.log_softmax(x, dim=1).exp()
         return x
-
-    @property
-    def out_params(self):
-        return [p for p in self.q_head.parameters()]
-
-
-class C51QRCritic(nn.Module):
-
-    def __init__(self, env, hps):
-        """Distributional critic, C51 and QR-DQN version
-        based on the value networks used in C51 and QR-DQN
-        (C51 paper: http://arxiv.org/abs/1707.06887)
-        (QR-DQN paper: http://arxiv.org/abs/1710.10044)
-        """
-        super(C51QRCritic, self).__init__()
-        ob_dim = env.observation_space.shape[0]
-        ac_dim = env.action_space.shape[0]
-        assert sum([hps.use_c51, hps.use_qr]) == 1 and not hps.use_iqn
-        num_z_heads = hps.c51_num_atoms if hps.use_c51 else hps.num_tau
-        self.hps = hps
-        self.z_trunk = nn.Sequential(OrderedDict([
-            ('fc_block_1', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(ob_dim + ac_dim, 256)),
-                ('ln', nn.LayerNorm(256)),
-                ('nl', nn.ReLU(inplace=True)),
-            ]))),
-            ('fc_block_2', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(256, 256)),
-                ('ln', nn.LayerNorm(256)),
-                ('nl', nn.ReLU(inplace=True)),
-            ]))),
-        ]))
-        self.z_head = nn.Linear(256, num_z_heads)
-        # Perform initialization
-        self.z_trunk.apply(init(nonlin='relu', param=None))
-        self.z_head.apply(init(weight_scale=0.01, constant_bias=0.0))
-
-    def Z(self, ob, ac):
-        return self.forward(ob, ac)
-
-    def forward(self, ob, ac):
-        x = torch.cat([ob, ac], dim=-1)
-        x = self.z_trunk(x)
-        z = self.z_head(x)
-        if self.hps.use_c51:
-            # Return a categorical distribution
-            z = F.log_softmax(z, dim=1).exp()
-        return z
-
-
-class MinimalC51QRCritic(nn.Module):
-
-    def __init__(self, env, hps):
-        """Distributional critic, C51 and QR-DQN version
-        based on the value networks used in C51 and QR-DQN
-        (C51 paper: http://arxiv.org/abs/1707.06887)
-        (QR-DQN paper: http://arxiv.org/abs/1710.10044)
-        """
-        super(MinimalC51QRCritic, self).__init__()
-        ob_dim = env.observation_space.shape[0]
-        ac_dim = env.action_space.shape[0]
-        assert sum([hps.use_c51, hps.use_qr]) == 1 and not hps.use_iqn
-        num_z_heads = hps.c51_num_atoms if hps.use_c51 else hps.num_tau
-        self.hps = hps
-        self.zs_trunk = nn.Sequential(OrderedDict([
-            ('fc_block_1', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(ob_dim, 256)),
-                ('ln', nn.LayerNorm(256)),
-                ('nl', nn.ReLU(inplace=True)),
-            ]))),
-        ]))
-        self.za_trunk = nn.Sequential(OrderedDict([
-            ('fc_block_1', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(ac_dim, 256)),
-                ('ln', nn.LayerNorm(256)),
-                ('nl', nn.ReLU(inplace=True)),
-            ]))),
-        ]))
-        self.z_trunk = nn.Sequential(OrderedDict([
-            ('fc_block_1', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(256, 256)),
-                ('ln', nn.LayerNorm(256)),
-                ('nl', nn.ReLU(inplace=True)),
-            ]))),
-        ]))
-        self.z_head = nn.Linear(256, num_z_heads)
-        # Perform initialization
-        self.zs_trunk.apply(init(nonlin='relu', param=None))
-        self.za_trunk.apply(init(nonlin='relu', param=None))
-        self.z_trunk.apply(init(nonlin='relu', param=None))
-        self.z_head.apply(init(weight_scale=0.01, constant_bias=0.0))
-
-    def encode(self, ob, ac):
-        assert sum([isinstance(x, torch.Tensor) for x in [ob, ac]]) in [0, 2]
-        if not isinstance(ob, torch.Tensor):  # then ac is not neither
-            ob = torch.FloatTensor(ob)
-            ac = torch.FloatTensor(ac)
-        # Transfer to cpu
-        ob = ob.cpu()
-        ac = ac.cpu()
-        # Encode
-        if self.hps.state_only:
-            return self.zs_trunk(ob).detach()
-        else:
-            return (self.z_trunk(self.zs_trunk(ob) +
-                                 self.za_trunk(ac))).detach()
-
-    def Z(self, ob, ac):
-        return self.forward(ob, ac)
-
-    def forward(self, ob, ac):
-        zs = self.zs_trunk(ob)
-        za = self.za_trunk(ac)
-        z = self.z_trunk(zs + za)
-        z = self.z_head(z)
-        if self.hps.use_c51:
-            # Return a categorical distribution
-            z = F.log_softmax(z, dim=1).exp()
-        return z
-
-
-class IQNCritic(nn.Module):
-
-    def __init__(self, env, hps):
-        """Distributional critic, IQN version
-        (IQN paper: https://arxiv.org/abs/1806.06923)
-        """
-        super(IQNCritic, self).__init__()
-        ob_dim = env.observation_space.shape[0]
-        ac_dim = env.action_space.shape[0]
-        self.hps = hps
-        self.psi = nn.Sequential(OrderedDict([
-            ('fc_block_1', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(ob_dim + ac_dim, 256)),
-                ('ln', nn.LayerNorm(256)),
-                ('nl', nn.ReLU(inplace=True)),
-            ]))),
-            ('fc_block_2', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(256, 256)),
-                ('ln', nn.LayerNorm(256)),
-                ('nl', nn.ReLU(inplace=True)),
-            ]))),
-        ]))
-        self.phi = nn.Sequential(OrderedDict([
-            ('fc_block', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(self.hps.quantile_emb_dim, 256)),
-                ('ln', nn.LayerNorm(256)),
-                ('nl', nn.ReLU(inplace=True)),
-            ]))),
-        ]))
-        self.hadamard = nn.Sequential(OrderedDict([
-            ('fc_block', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(256, 256)),
-                ('ln', nn.LayerNorm(256)),
-                ('nl', nn.ReLU(inplace=True)),
-            ]))),
-        ]))
-        self.z_head = nn.Linear(256, 1)
-        # Perform initialization
-        self.psi.apply(init(nonlin='relu', param=None))
-        self.phi.apply(init(nonlin='relu', param=None))
-        self.hadamard.apply(init(nonlin='relu', param=None))
-        self.z_head.apply(init(weight_scale=0.01, constant_bias=0.0))
-
-    def Z(self, num_quantiles, ob, ac):
-        return self.forward(num_quantiles, ob, ac)
-
-    def forward(self, num_quantiles, ob, ac):
-        # Psi embedding
-        psi = self.psi(torch.cat([ob, ac], dim=-1))
-        psi = psi.repeat(num_quantiles, 1)
-        # Tau embedding, equation 4 in IQN paper
-        # Create tau and populate with unit uniform noise
-        tau = torch.FloatTensor(self.hps.batch_size * num_quantiles, 1)
-        tau.uniform_(0., 1.)
-        # Expand the quantiles, e.g. [tau1, tau2, tau3] tiled with [1, dim]
-        # becomes [[tau1, tau2, tau3], [tau1, tau2, tau3], ...]
-        emb = tau.repeat(1, self.hps.quantile_emb_dim)
-        # Craft the embedding used in the IQN paper
-        indices = torch.arange(1, self.hps.quantile_emb_dim + 1, dtype=torch.float32).to(tau)
-        pi = math.pi * torch.ones(self.hps.quantile_emb_dim, dtype=torch.float32).to(tau)
-        assert indices.shape == pi.shape
-        emb *= torch.mul(indices, pi)
-        emb = torch.cos(emb)
-        # Pass through the phi net
-        phi = self.phi(emb)
-        # Verify that the shapes of the embeddings are compatible
-        assert psi.shape == phi.shape, "{}, {}".format(psi.shape, phi.shape)
-        # Multiply the embedding element-wise (hadamard product)
-        had = psi * (1.0 + phi)
-        had = self.hadamard(had)
-        z = F.relu(self.z_head(had))
-        z = z.view(-1, num_quantiles, 1)
-        return z, tau

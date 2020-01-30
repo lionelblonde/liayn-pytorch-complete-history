@@ -59,7 +59,7 @@ class TargNet(nn.Module):
         return x
 
 
-class RND(object):
+class RandNetDistill(object):
 
     def __init__(self, in_size, device):
         self.device = device
@@ -69,8 +69,7 @@ class RND(object):
 
     def train(self, x):
         x = torch.FloatTensor(x).to(self.device)
-        loss = (self.pred_net(x) -
-                self.targ_net(x)).pow(2).mean()
+        loss = (self.pred_net(x) - self.targ_net(x)).pow(2).mean()
         self.opt.zero_grad()
         loss.backward()
         self.opt.step()

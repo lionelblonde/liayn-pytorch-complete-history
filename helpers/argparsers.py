@@ -28,13 +28,13 @@ def argparser(description="DDPG Experiment"):
                         type=int, default=100)
     parser.add_argument('--num_timesteps', help='total number of interactions',
                         type=int, default=int(1e7))
-    parser.add_argument('--training_steps_per_iter', type=int, default=20)
+    parser.add_argument('--training_steps_per_iter', type=int, default=4)
     parser.add_argument('--eval_steps_per_iter', type=int, default=10)
     parser.add_argument('--eval_frequency', type=int, default=10)
 
     # Optimization
-    parser.add_argument('--actor_lr', type=float, default=3e-4)
-    parser.add_argument('--critic_lr', type=float, default=3e-4)
+    parser.add_argument('--actor_lr', type=float, default=1e-4)
+    parser.add_argument('--critic_lr', type=float, default=1e-4)
     boolean_flag(parser, 'with_scheduler', default=False)
     parser.add_argument('--clip_norm', type=float, default=1.)
     parser.add_argument('--wd_scale', help='weight decay scale', type=float, default=0.001)
@@ -52,7 +52,8 @@ def argparser(description="DDPG Experiment"):
     parser.add_argument('--targ_up_freq', type=int, default=100, help='hard target nets update')
     boolean_flag(parser, 'n_step_returns', default=True)
     parser.add_argument('--lookahead', help='num lookahead steps', type=int, default=10)
-    boolean_flag(parser, 's2r2', help='reward control auxiliary task', default=False)
+    boolean_flag(parser, 's2r2', help='s2r2 auxiliary task', default=False)
+    parser.add_argument('--s2r2_scale', type=float, default=0.025)
     boolean_flag(parser, 'popart', default=False)
 
     # TD3
@@ -75,27 +76,25 @@ def argparser(description="DDPG Experiment"):
     # Distributional RL
     boolean_flag(parser, 'use_c51', default=False)
     boolean_flag(parser, 'use_qr', default=False)
-    boolean_flag(parser, 'use_iqn', default=False)
     parser.add_argument('--c51_num_atoms', type=int, default=51)
     parser.add_argument('--c51_vmin', type=float, default=0.)
     parser.add_argument('--c51_vmax', type=float, default=1000.)
-    parser.add_argument('--quantile_emb_dim', type=int, default=64, help='n in IQN paper')
     parser.add_argument('--num_tau', type=int, default=32, help='N in IQN paper')
-    parser.add_argument('--num_tau_prime', type=int, default=32, help='N prime in IQN paper')
-    parser.add_argument('--num_tau_tilde', type=int, default=16, help='K in IQN paper')
 
     # Adversarial imitation
-    parser.add_argument('--d_lr', type=float, default=3e-4)
+    parser.add_argument('--d_lr', type=float, default=1e-5)
     boolean_flag(parser, 'state_only', default=False)
     boolean_flag(parser, 'minimax_only', default=True)
     parser.add_argument('--ent_reg_scale', type=float, default=0.)
-    parser.add_argument('--d_update_ratio', type=int, default=5,
+    parser.add_argument('--d_update_ratio', type=int, default=1,
                         help='number of discriminator update per generator update')
     parser.add_argument('--num_demos', help='number of expert demo trajs for imitation',
                         type=int, default=None)
-    boolean_flag(parser, 'grad_pen', help='whether to use gradient penalty', default=False)
+    boolean_flag(parser, 'grad_pen', help='whether to use gradient penalty', default=True)
+    boolean_flag(parser, 'os_label_smoothing', default=False)
     boolean_flag(parser, 'rnd', help='whether to use rnd', default=False)
     boolean_flag(parser, 'historical_patching', default=False)
+    boolean_flag(parser, 'minimal', help='whether to use a minimal adversary', default=False)
 
     # Evaluation
     parser.add_argument('--model_path', type=str, default=None)

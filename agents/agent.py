@@ -14,15 +14,12 @@ from helpers.math_util import huber_quant_reg_loss
 from helpers.distributed_util import average_gradients, sync_with_root, RunMoms
 from agents.memory import ReplayBuffer, PrioritizedReplayBuffer, UnrealReplayBuffer
 from agents.nets import Actor
-from agents.nets import (
-    VanillaCritic, MinimalVanillaCritic,
-    C51QRCritic, MinimalC51QRCritic,
-    IQNCritic,
-    Discriminator, MinimalDiscriminator,
-)
+from agents.nets import (Critic,
+                         Discriminator, MinimalDiscriminator,
+                         GatedRelabeler, MinimalGatedRelabeler)
 from agents.param_noise import AdaptiveParamNoise
 from agents.ac_noise import NormalAcNoise, OUAcNoise
-from agents.rnd import RND
+from agents.rnd import RandNetDistill
 
 
 class Agent(object):
@@ -42,15 +39,13 @@ class Agent(object):
         self.hps = hps
         assert self.hps.lookahead > 1 or not self.hps.n_step_returns
 
+        # FIXME
+        self.hps.gated_relabelling = True
+        self.hps.gate_temp = 1.0
+
         # Define demo dataset
         self.expert_dataset = expert_dataset
         self.eval_mode = self.expert_dataset is None
-
-        self.hps.minimal = False
-        self.hps.s2r2_scale = 0.025
-        self.hps.one_sided_label_smoothing = True
-        self.hps.patch_drift = False
-        self.hps.rnd_drift = False
 
         # Define action clipping range
         assert all(self.ac_space.low == -self.ac_space.high)
@@ -58,10 +53,9 @@ class Agent(object):
         assert all(ac_comp == self.max_ac for ac_comp in self.ac_space.high)
 
         # Define critic to use
-        assert sum([self.hps.use_c51, self.hps.use_qr, self.hps.use_iqn]) <= 1
+        assert sum([self.hps.use_c51, self.hps.use_qr]) <= 1
         if self.hps.use_c51:
             assert not self.hps.clipped_double
-            Critic = MinimalC51QRCritic if self.hps.minimal else C51QRCritic
             c51_supp_range = (self.hps.c51_vmin,
                               self.hps.c51_vmax,
                               self.hps.c51_num_atoms)
@@ -76,7 +70,6 @@ class Agent(object):
                                                                     self.hps.c51_num_atoms)
         elif self.hps.use_qr:
             assert not self.hps.clipped_double
-            Critic = C51QRCritic
             qr_cum_density = np.array([((2 * i) + 1) / (2.0 * self.hps.num_tau)
                                        for i in range(self.hps.num_tau)])
             qr_cum_density = torch.FloatTensor(qr_cum_density).to(self.device)
@@ -84,11 +77,6 @@ class Agent(object):
                                                                           self.hps.num_tau,
                                                                           self.hps.num_tau,
                                                                           -1)
-        elif self.hps.use_iqn:
-            assert not self.hps.clipped_double
-            Critic = IQNCritic
-        else:
-            Critic = MinimalVanillaCritic if self.hps.minimal else VanillaCritic
 
         # Parse the noise types
         self.param_noise, self.ac_noise = self.parse_noise_type(self.hps.noise_type)
@@ -109,6 +97,16 @@ class Agent(object):
             sync_with_root(self.twin)
             self.targ_twin = Critic(self.env, self.hps).to(self.device)
             self.targ_twin.load_state_dict(self.twin.state_dict())
+        if self.hps.gated_relabelling:
+            # Set up gated relabeller
+            if self.hps.minimal:
+                self.gate = MinimalGatedRelabeler(self.hps).to(self.device)
+            else:
+                self.gate = GatedRelabeler(self.env, self.hps).to(self.device)
+            sync_with_root(self.gate)
+        if self.hps.rnd:
+            # Set up random network distillation
+            self.rnd = RandNetDistill(in_size=1, device=self.device)
 
         if self.param_noise is not None:
             # Create parameter-noise-perturbed ('pnp') actor
@@ -121,10 +119,6 @@ class Agent(object):
         # Set up replay buffer
         self.setup_replay_buffer()
 
-        if self.hps.rnd:
-            # Set up random network distillation
-            self.rnd = RND(in_size=1, device=self.device)
-
         # Set up the optimizers
         self.actr_opt = torch.optim.Adam(self.actr.parameters(),
                                          lr=self.hps.actor_lr)
@@ -135,6 +129,8 @@ class Agent(object):
             self.twin_opt = torch.optim.Adam(self.twin.parameters(),
                                              lr=self.hps.critic_lr,
                                              weight_decay=self.hps.wd_scale)
+        if self.hps.gated_relabelling:
+            self.gate_opt = torch.optim.Adam(self.gate.parameters(), lr=1e-5)  # XXX
 
         # Set up the learning rate schedule
         def _lr(t):  # flake8: using a def instead of a lambda
@@ -272,7 +268,7 @@ class Agent(object):
 
     def predict(self, ob, apply_noise):
         """Predict an action, with or without perturbation,
-        and optionaly compute and return the associated Q value.
+        and optionaly compute and return the associated QZ value.
         """
         # Create tensor from the state (`require_grad=False` by default)
         ob = ob[None] if self.hps.pixels else self.normalize_clip_ob(ob[None])
@@ -333,14 +329,21 @@ class Agent(object):
         if self.hps.historical_patching:
             # Use patched reward instead of sampled one and patch all sampled memory entries
             sampled_reward = reward.clone().detach()
-            patched_reward = self.get_reward(state, action)
-            reward = patched_reward.clone().detach()
-            self.replay_buffer.patch_rewards(batch['idxs'], reward.cpu().numpy())
-        if self.hps.patch_drift:
-            assert self.hps.historical_patching
-            patch_drift = np.abs((sampled_reward - reward).squeeze().detach().cpu().numpy()) + 1e-6
-            if self.hps.rnd_drift:
-                rnd_drift = self.rnd.get_novelty(reward).detach().cpu().numpy() + 1e-6
+            patched_reward = self.get_reward(state, action).clone().detach()
+            if self.hps.gated_relabelling:
+                assert self.hps.rnd
+                fingerprint = self.rnd.get_novelty(patched_reward).unsqueeze(-1)
+                if self.hps.minimal:
+                    enc = self.crit.encode(state, action)  # FIXME
+                    print("enc: {}".format(enc[:10, :10, ...]))  # FIXME
+                    g = self.gate.G(enc, fingerprint)
+                else:
+                    g = self.gate.G(state, action, fingerprint)
+                print("g: {}".format(g[:10, ...]))  # FIXME
+                reward = (g * sampled_reward) + ((1. - g) * patched_reward)
+            else:
+                reward = patched_reward
+            self.replay_buffer.patch_rewards(batch['idxs'], reward.clone().detach().cpu().numpy())
         next_state = torch.FloatTensor(batch['obs1']).to(self.device)
         done = torch.FloatTensor(batch['dones1'].astype('float32')).to(self.device)
         if self.hps.prioritized_replay:
@@ -368,11 +371,11 @@ class Agent(object):
 
             # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> C51-like.
 
-            # Compute Z estimate
-            z = self.crit.Z(state, action).unsqueeze(-1)
+            # Compute QZ estimate
+            z = self.crit.QZ(state, action).unsqueeze(-1)
             z.data.clamp_(0.01, 0.99)
-            # Compute target Z estimate
-            z_prime = self.targ_crit.Z(next_state, next_action)
+            # Compute target QZ estimate
+            z_prime = self.targ_crit.QZ(next_state, next_action).detach()
             z_prime.data.clamp_(0.01, 0.99)
 
             gamma_mask = ((self.hps.gamma ** td_len) * (1 - done))
@@ -399,12 +402,6 @@ class Agent(object):
             if self.hps.prioritized_replay:
                 # Update priorities
                 new_priorities = np.abs(ce_losses.sum(dim=1).detach().cpu().numpy()) + 1e-6
-                if self.hps.patch_drift:
-                    assert self.hps.historical_patching
-                    new_priorities += 2. * patch_drift
-                    if self.hps.rnd_drift:
-                        assert self.hps.rnd
-                        new_priorities += 1000. * rnd_drift
                 self.replay_buffer.update_priorities(batch['idxs'], new_priorities)
                 # Adjust with importance weights
                 ce_losses *= iws
@@ -412,18 +409,18 @@ class Agent(object):
             crit_loss = ce_losses.mean()
 
             # Actor loss
-            actr_loss = -self.crit.Z(state, self.actr.act(state))
+            actr_loss = -self.crit.QZ(state, self.actr.act(state))
             actr_loss = actr_loss.matmul(self.c51_supp).mean()
 
         elif self.hps.use_qr:
 
             # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> QR-like.
 
-            # Compute Z estimate
-            z = self.crit.Z(state, action).unsqueeze(-1)
+            # Compute QZ estimate
+            z = self.crit.QZ(state, action).unsqueeze(-1)
 
-            # Compute target Z estimate
-            z_prime = self.targ_crit.Z(next_state, next_action)
+            # Compute target QZ estimate
+            z_prime = self.targ_crit.QZ(next_state, next_action).detach()
             # Reshape rewards to be of shape [batch_size x num_tau, 1]
             reward = reward.repeat(self.hps.num_tau, 1)
             # Reshape product of gamma and mask to be of shape [batch_size x num_tau, 1]
@@ -437,7 +434,7 @@ class Agent(object):
             # Compute the TD error loss
             # Note: online version has shape [batch_size, num_tau, 1],
             # while the target version has shape [batch_size, num_tau, 1].
-            td_errors = targ_z[:, :, None, :].detach() - z[:, None, :, :]  # broadcasting
+            td_errors = targ_z[:, :, None, :] - z[:, None, :, :]  # broadcasting
             # The resulting shape is [batch_size, num_tau, num_tau, 1]
 
             # Assemble the Huber Quantile Regression loss
@@ -450,12 +447,6 @@ class Agent(object):
                 # Update priorities
                 new_priorities = np.abs(td_errors.sum(dim=2).mean(dim=1).detach().cpu().numpy())
                 new_priorities += 1e-6
-                if self.hps.patch_drift:
-                    assert self.hps.historical_patching
-                    new_priorities += 2. * patch_drift
-                    if self.hps.rnd_drift:
-                        assert self.hps.rnd
-                        new_priorities += 1000. * rnd_drift
                 self.replay_buffer.update_priorities(batch['idxs'], new_priorities)
 
             # Sum over current quantile value (tau, N in paper) dimension, and
@@ -468,89 +459,31 @@ class Agent(object):
             crit_loss = crit_loss.mean()
 
             # Actor loss
-            actr_loss = -self.crit.Z(state, self.actr.act(state)).mean()
-
-        elif self.hps.use_iqn:
-
-            # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> IQN-like.
-
-            # Compute Z estimate
-            z, tau = self.crit.Z(self.hps.num_tau, state, action)
-
-            # Compute target Z estimate
-            z_prime, _ = self.targ_crit.Z(self.hps.num_tau_prime, next_state, next_action)
-            # Reshape rewards to be of shape [batch_size x num_tau_prime, 1]
-            reward_reps = reward.repeat(self.hps.num_tau_prime, 1)
-            # Reshape product of gamma and mask to be of shape [batch_size x num_tau_prime, 1]
-            gamma_mask = ((self.hps.gamma ** td_len) * (1 - done)).repeat(self.hps.num_tau_prime, 1)
-            # Reshape Z prime to be of shape [batch_size x num_tau_prime, 1]
-            z_prime = z_prime.view(-1, 1)
-            targ_z = reward_reps + (gamma_mask * z_prime.detach())
-            # Reshape target to be of shape [batch_size, num_tau_prime, 1]
-            targ_z = targ_z.view(-1, self.hps.num_tau_prime, 1)
-
-            # Critic loss
-            # Tile by num_tau_prime_samples along a new dimension, the goal is to give
-            # the Huber quantile regression loss quantiles that have the same shape
-            # as the TD errors for it to deal with each component as expected
-            tau = tau.view(self.hps.batch_size, self.hps.num_tau, 1)[:, None, :, :]
-            tau = tau.repeat(1, self.hps.num_tau_prime, 1, 1)
-
-            # Compute the TD error loss
-            # Note: online version has shape [batch_size, num_tau, 1],
-            # while the target version has shape [batch_size, num_tau_prime, 1].
-            td_errors = targ_z[:, :, None, :] - z[:, None, :, :]  # broadcasting
-            # The resulting shape is [batch_size, num_tau_prime, num_tau, 1]
-
-            # Assemble the Huber Quantile Regression loss
-            huber_td_errors = huber_quant_reg_loss(td_errors, tau)
-            # The resulting shape is [batch_size, num_tau_prime, num_tau, 1]
-
-            if self.hps.prioritized_replay:
-                # Adjust with importance weights
-                huber_td_errors *= iws
-                # Update priorities
-                new_priorities = np.abs(td_errors.sum(dim=2).mean(dim=1).detach().cpu().numpy())
-                new_priorities += 1e-6
-                if self.hps.patch_drift:
-                    assert self.hps.historical_patching
-                    new_priorities += 2. * patch_drift
-                    if self.hps.rnd_drift:
-                        assert self.hps.rnd
-                        new_priorities += 1000. * rnd_drift
-                self.replay_buffer.update_priorities(batch['idxs'], new_priorities)
-
-            # Sum over current quantile value (tau, N in paper) dimension, and
-            # average over target quantile value (tau prime, N' in paper) dimension.
-            crit_loss = huber_td_errors.sum(dim=2)
-            # Resulting shape is [batch_size, num_tau_prime, 1]
-            crit_loss = crit_loss.mean(dim=1)
-            # Resulting shape is [batch_size, 1]
-            # Average across the minibatch
-            crit_loss = crit_loss.mean()
-
-            # Actor loss
-            actr_loss = -self.crit.Z(self.hps.num_tau_tilde, state, self.actr.act(state))[0].mean()
+            actr_loss = -self.crit.QZ(state, self.actr.act(state)).mean()
 
         else:
 
             # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> VANILLA
 
-            # Compute Q estimate
-            q = self.denorm_rets(self.crit.Q(state, action))
-            if self.hps.clipped_double:
-                twin_q = self.denorm_rets(self.twin.Q(state, action))
+            enc = self.crit.encode(state, action)  # FIXME
+            print("enc: {}".format(enc[:10, :10, ...]))  # FIXME
 
-            # Compute target Q estimate
-            q_prime = self.targ_crit.Q(next_state, next_action)
+            # Compute QZ estimate
+            q = self.denorm_rets(self.crit.QZ(state, action))
             if self.hps.clipped_double:
-                # Define Q' as the minimum Q value between TD3's twin Q's
-                twin_q_prime = self.targ_twin.Q(next_state, next_action)
-                q_prime = torch.min(q_prime, twin_q_prime)
+                twin_q = self.denorm_rets(self.twin.QZ(state, action))
+
+            # Compute target QZ estimate
+            q_prime = self.targ_crit.QZ(next_state, next_action).detach()
+            if self.hps.clipped_double:
+                # Define QZ' as the minimum QZ value between TD3's twin QZ's
+                twin_q_prime = self.targ_twin.QZ(next_state, next_action).detach()
+                q_prime = (0.75 * torch.min(q_prime, twin_q_prime) +
+                           0.25 * torch.max(q_prime, twin_q_prime))  # soft minimum from BCZ
             targ_q = (reward +
                       (self.hps.gamma ** td_len) * (1. - done) *
-                      self.denorm_rets(q_prime).detach())  # make q_prime unnormalized
-            # Normalize target Q with running statistics
+                      self.denorm_rets(q_prime))  # make q_prime unnormalized
+            # Normalize target QZ with running statistics
             targ_q = self.norm_rets(targ_q)
 
             if self.hps.popart:
@@ -585,12 +518,6 @@ class Agent(object):
                     twin_huber_td_errors *= iws
                 # Update priorities
                 new_priorities = np.abs((q - targ_q).detach().cpu().numpy()) + 1e-6
-                if self.hps.patch_drift:
-                    assert self.hps.historical_patching
-                    new_priorities += 2. * patch_drift
-                    if self.hps.rnd_drift:
-                        assert self.hps.rnd
-                        new_priorities += 1000. * rnd_drift
                 self.replay_buffer.update_priorities(batch['idxs'], new_priorities)
 
             crit_loss = huber_td_errors.mean()
@@ -598,14 +525,14 @@ class Agent(object):
                 twin_loss = twin_huber_td_errors.mean()
 
             # Actor loss
-            actr_loss = -self.crit.Q(state, self.actr.act(state)).mean()
+            actr_loss = -self.crit.QZ(state, self.actr.act(state)).mean()
 
         # ######################################################################
 
         if self.hps.s2r2:
             # Self-supervised reward regression
             s2r2_loss = F.smooth_l1_loss(patched_reward if self.hps.historical_patching else reward,
-                                       self.actr.rc(state))
+                                         self.actr.s2r2(state))
             s2r2_loss *= self.hps.s2r2_scale
             actr_loss += s2r2_loss
 
@@ -614,6 +541,8 @@ class Agent(object):
         actr_loss.backward()
         average_gradients(self.actr, self.device)
         actr_gradn = U.clip_grad_norm_(self.actr.parameters(), self.hps.clip_norm)
+        if self.hps.historical_patching and self.hps.gated_relabelling:
+            self.gate_opt.zero_grad()
         self.crit_opt.zero_grad()
         crit_loss.backward()
         average_gradients(self.crit, self.device)
@@ -623,6 +552,8 @@ class Agent(object):
             twin_loss.backward()
             average_gradients(self.twin, self.device)
             twin_gradn = U.clip_grad_norm_(self.twin.parameters(), self.hps.clip_norm)
+        if self.hps.historical_patching and self.hps.gated_relabelling:
+            average_gradients(self.gate, self.device)
 
         # Perform model updates
         if update_critic:
@@ -639,6 +570,9 @@ class Agent(object):
                 self.actr_sched.step(iters_so_far)
                 # Update target nets
                 self.update_target_net(iters_so_far)
+        if self.hps.historical_patching and self.hps.gated_relabelling:
+            # Update gate
+            self.gate_opt.step()
         # Update discriminator
         for _ in range(self.hps.d_update_ratio):
             for p_chunk, e_chunk in zip(p_dataloader, self.e_dataloader):
@@ -685,7 +619,7 @@ class Agent(object):
         # Create labels
         fake_labels = torch.zeros_like(p_scores).to(self.device)
         real_labels = torch.ones_like(e_scores).to(self.device)
-        if self.hps.one_sided_label_smoothing:
+        if self.hps.os_label_smoothing:
             # Label smoothing, suggested in 'Improved Techniques for Training GANs',
             # Salimans 2016, https://arxiv.org/abs/1606.03498
             # The paper advises on the use of one-sided label smoothing, i.e.
@@ -693,7 +627,7 @@ class Agent(object):
             # Extra comment explanation: https://github.com/openai/improved-gan/blob/
             # 9ff96a7e9e5ac4346796985ddbb9af3239c6eed1/imagenet/build_model.py#L88-L121
             # Additional material: https://github.com/soumith/ganhacks/issues/10
-            real_labels.uniform_(0.7, 1.2)
+            real_labels.uniform_(0.8, 1.2)
         # Create binary classification (cross-entropy) losses
         p_loss = F.binary_cross_entropy_with_logits(input=p_scores, target=fake_labels)
         e_loss = F.binary_cross_entropy_with_logits(input=e_scores, target=real_labels)
@@ -719,7 +653,7 @@ class Agent(object):
 
     def update_target_net(self, iters_so_far):
         """Update the target networks"""
-        if sum([self.hps.use_c51, self.hps.use_qr, self.hps.use_iqn]) == 0:
+        if sum([self.hps.use_c51, self.hps.use_qr]) == 0:
             # If non-distributional, targets slowly track their non-target counterparts
             for param, targ_param in zip(self.actr.parameters(), self.targ_actr.parameters()):
                 targ_param.data.copy_(self.hps.polyak * param.data +

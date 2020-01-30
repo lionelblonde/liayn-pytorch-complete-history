@@ -27,11 +27,12 @@ CONDA = CONFIG['resources']['conda_env']
 # Define experiment type
 TYPE = 'sweep' if args.sweep else 'fixed'
 # Write out the boolean arguments (using the 'boolean_flag' function)
-BOOL_ARGS = ['cuda', 'pixels', 's2r2', 'popart', 'historical_patching',
+BOOL_ARGS = ['cuda', 'pixels', 's2r2', 'popart',
              'render', 'record', 'with_scheduler',
              'prioritized_replay', 'ranked', 'unreal',
              'n_step_returns', 'clipped_double', 'targ_actor_smoothing',
-             'state_only', 'minimax_only', 'grad_pen', 'rnd',
+             'state_only', 'minimax_only', 'grad_pen', 'os_label_smoothing',
+             'rnd', 'historical_patching', 'minimal',
              'use_c51', 'use_qr', 'use_iqn']
 
 # Create the list of environments from the indicated benchmark
@@ -108,13 +109,13 @@ def get_hps(sweep):
             # Training
             'save_frequency': CONFIG['parameters'].get('save_frequency', 400),
             'num_timesteps': int(float(CONFIG['parameters'].get('num_timesteps', 2e7))),
-            'training_steps_per_iter': np.random.choice([10, 25, 50]),
+            'training_steps_per_iter': np.random.choice([4, 16, 32]),
             'eval_steps_per_iter': CONFIG['parameters'].get('eval_steps_per_iter', 10),
             'eval_frequency': CONFIG['parameters'].get('eval_frequency', 10),
 
             # Optimization
-            'actor_lr': float(np.random.choice([1e-3, 3e-4])),
-            'critic_lr': float(np.random.choice([1e-3, 3e-4])),
+            'actor_lr': float(np.random.choice([1e-4, 3e-4])),
+            'critic_lr': float(np.random.choice([1e-4, 3e-4])),
             'with_scheduler': CONFIG['parameters']['with_scheduler'],
             'clip_norm': CONFIG['parameters']['clip_norm'],
             'wd_scale': float(np.random.choice([1e-4, 3e-4, 1e-3])),
@@ -134,6 +135,7 @@ def get_hps(sweep):
             'n_step_returns': CONFIG['parameters'].get('n_step_returns', False),
             'lookahead': np.random.choice([5, 10, 20, 40, 60]),
             's2r2': CONFIG['parameters'].get('s2r2', False),
+            's2r2_scale': np.random.choice([0.001, 0.01, 0.1]),
             'popart': CONFIG['parameters'].get('popart', False),
 
             # TD3
@@ -153,25 +155,23 @@ def get_hps(sweep):
             # Distributional RL
             'use_c51': CONFIG['parameters'].get('use_c51', False),
             'use_qr': CONFIG['parameters'].get('use_qr', False),
-            'use_iqn': CONFIG['parameters'].get('use_iqn', False),
             'c51_num_atoms': CONFIG['parameters'].get('c51_num_atoms', 51),
             'c51_vmin': CONFIG['parameters'].get('c51_vmin', 0.),
             'c51_vmax': CONFIG['parameters'].get('c51_vmax', 100.),
-            'quantile_emb_dim': np.random.choice([32, 64]),
             'num_tau': np.random.choice([16, 32]),
-            'num_tau_prime': np.random.choice([16, 32]),
-            'num_tau_tilde': np.random.choice([8, 16]),
 
             # Adversarial imitation
-            'd_lr': float(CONFIG['parameters'].get('d_lr', 3e-4)),
+            'd_lr': float(CONFIG['parameters'].get('d_lr', 1e-5)),
             'state_only': CONFIG['parameters'].get('state_only', False),
             'minimax_only': CONFIG['parameters'].get('minimax_only', True),
             'ent_reg_scale': CONFIG['parameters'].get('ent_reg_scale', 0.),
             'd_update_ratio': CONFIG['parameters'].get('d_update_ratio', 2),
             'num_demos': CONFIG['parameters'].get('num_demos', 0),
             'grad_pen': CONFIG['parameters'].get('grad_pen', False),
+            'os_label_smoothing': CONFIG['parameters'].get('os_label_smoothing', False),
             'rnd': CONFIG['parameters'].get('rnd', False),
             'historical_patching': CONFIG['parameters'].get('historical_patching', False),
+            'minimal': CONFIG['parameters'].get('minimal', False),
         }
     else:
         # No search, fixed map
@@ -189,7 +189,7 @@ def get_hps(sweep):
             # Training
             'save_frequency': CONFIG['parameters'].get('save_frequency', 400),
             'num_timesteps': int(float(CONFIG['parameters'].get('num_timesteps', 2e7))),
-            'training_steps_per_iter': CONFIG['parameters'].get('train_steps_per_iter', 20),
+            'training_steps_per_iter': CONFIG['parameters'].get('training_steps_per_iter', 20),
             'eval_steps_per_iter': CONFIG['parameters'].get('eval_steps_per_iter', 10),
             'eval_frequency': CONFIG['parameters'].get('eval_frequency', 10),
 
@@ -212,6 +212,7 @@ def get_hps(sweep):
             'n_step_returns': CONFIG['parameters'].get('n_step_returns', False),
             'lookahead': CONFIG['parameters'].get('lookahead', 60),
             's2r2': CONFIG['parameters'].get('s2r2', False),
+            's2r2_scale': CONFIG['parameters'].get('s2r2_scale', 0.025),
             'popart': CONFIG['parameters'].get('popart', False),
 
             # TD3
@@ -231,25 +232,23 @@ def get_hps(sweep):
             # Distributional RL
             'use_c51': CONFIG['parameters'].get('use_c51', False),
             'use_qr': CONFIG['parameters'].get('use_qr', False),
-            'use_iqn': CONFIG['parameters'].get('use_iqn', False),
             'c51_num_atoms': CONFIG['parameters'].get('c51_num_atoms', 51),
             'c51_vmin': CONFIG['parameters'].get('c51_vmin', 0.),
             'c51_vmax': CONFIG['parameters'].get('c51_vmax', 100.),
-            'quantile_emb_dim': CONFIG['parameters'].get('quantile_emb_dim', 32),
             'num_tau': CONFIG['parameters'].get('num_tau', 16),
-            'num_tau_prime': CONFIG['parameters'].get('num_tau_prime', 16),
-            'num_tau_tilde': CONFIG['parameters'].get('num_tau_tilde', 8),
 
             # Adversarial imitation
-            'd_lr': float(CONFIG['parameters'].get('d_lr', 3e-4)),
+            'd_lr': float(CONFIG['parameters'].get('d_lr', 1e-5)),
             'state_only': CONFIG['parameters'].get('state_only', False),
             'minimax_only': CONFIG['parameters'].get('minimax_only', True),
             'ent_reg_scale': CONFIG['parameters'].get('ent_reg_scale', 0.),
             'd_update_ratio': CONFIG['parameters'].get('d_update_ratio', 2),
             'num_demos': CONFIG['parameters'].get('num_demos', 0),
             'grad_pen': CONFIG['parameters'].get('grad_pen', False),
+            'os_label_smoothing': CONFIG['parameters'].get('os_label_smoothing', False),
             'rnd': CONFIG['parameters'].get('rnd', False),
             'historical_patching': CONFIG['parameters'].get('historical_patching', False),
+            'minimal': CONFIG['parameters'].get('minimal', False),
         }
 
     # Duplicate for each environment
