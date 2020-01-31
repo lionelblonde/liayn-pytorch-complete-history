@@ -9,7 +9,8 @@ def argparser(description="DDPG Experiment"):
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
     # Primary
-    parser.add_argument('--env_id', help='environment identifier', default='Hopper-v2')
+    parser.add_argument('--wandb_project', help='wandb project name', default='DEFAULT')
+    parser.add_argument('--env_id', help='environment identifier', default=None)
     parser.add_argument('--seed', help='RNG seed', type=int, default=0)
     parser.add_argument('--expert_path', help='demos location', type=str, default=None)
 
@@ -78,7 +79,7 @@ def argparser(description="DDPG Experiment"):
     boolean_flag(parser, 'use_qr', default=False)
     parser.add_argument('--c51_num_atoms', type=int, default=51)
     parser.add_argument('--c51_vmin', type=float, default=0.)
-    parser.add_argument('--c51_vmax', type=float, default=1000.)
+    parser.add_argument('--c51_vmax', type=float, default=100.)
     parser.add_argument('--num_tau', type=int, default=32, help='N in IQN paper')
 
     # Adversarial imitation
@@ -94,7 +95,6 @@ def argparser(description="DDPG Experiment"):
     boolean_flag(parser, 'os_label_smoothing', default=False)
     boolean_flag(parser, 'rnd', help='whether to use rnd', default=False)
     boolean_flag(parser, 'historical_patching', default=False)
-    boolean_flag(parser, 'minimal', help='whether to use a minimal adversary', default=False)
 
     # Evaluation
     parser.add_argument('--model_path', type=str, default=None)

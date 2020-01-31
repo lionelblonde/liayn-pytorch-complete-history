@@ -13,6 +13,7 @@ from helpers.experiment import uuid as create_uuid
 
 parser = argparse.ArgumentParser(description="Job Spawner")
 parser.add_argument('--config', type=str, default=None)
+parser.add_argument('--envset', type=str, default=None)
 boolean_flag(parser, 'call', default=False, help="launch immediately?")
 boolean_flag(parser, 'sweep', default=False, help="hp search?")
 args = parser.parse_args()
@@ -23,6 +24,7 @@ CONFIG = yaml.safe_load(open(args.config))
 # Extract parameters from config
 NUM_SEEDS = CONFIG['parameters']['num_seeds']
 CLUSTER = CONFIG['resources']['cluster']
+WANDB_PROJECT = CONFIG['resources']['wandb_project'].upper() + '-' + CLUSTER.upper()
 CONDA = CONFIG['resources']['conda_env']
 # Define experiment type
 TYPE = 'sweep' if args.sweep else 'fixed'
@@ -32,40 +34,34 @@ BOOL_ARGS = ['cuda', 'pixels', 's2r2', 'popart',
              'prioritized_replay', 'ranked', 'unreal',
              'n_step_returns', 'clipped_double', 'targ_actor_smoothing',
              'state_only', 'minimax_only', 'grad_pen', 'os_label_smoothing',
-             'rnd', 'historical_patching', 'minimal',
+             'rnd', 'historical_patching',
              'use_c51', 'use_qr', 'use_iqn']
 
 # Create the list of environments from the indicated benchmark
 BENCH = CONFIG['parameters']['benchmark']
-DIFFICULTY = CONFIG['parameters']['difficulty']
 if BENCH == 'mujoco':
-    map_ = {'easy': ['InvertedPendulum'],  # debug, sanity check
-            'normal': ['InvertedPendulum',
-                       'Hopper',
+    map_ = {'debug': ['InvertedPendulum'],
+            'easy': ['InvertedPendulum',
+                     'InvertedDoublePendulum'],
+            'normal': ['Hopper',
                        'Walker2d'],
-            'hard': ['InvertedPendulum',
-                     'Hopper',
-                     'Walker2d',
-                     'HalfCheetah',
+            'hard': ['HalfCheetah',
                      'Ant'],
             'all': ['InvertedPendulum',
                     'InvertedDoublePendulum',
-                    'Reacher',
                     'Hopper',
                     'Walker2d',
                     'HalfCheetah',
                     'Ant'],
             }
-    ENVS = map_[DIFFICULTY]
+    ENVS = map_[args.envset]
     ENVS = ["{}-v2".format(n) for n in ENVS]
 else:
     raise NotImplementedError("benchmark not covered by the spawner.")
 
-# If needed, create the list of demonstrations
-NEED_DEMOS = CONFIG['parameters']['need_demos']
-if NEED_DEMOS:
-    demo_dir = os.environ['DEMO_DIR']
-    DEMOS = {k: osp.join(demo_dir, k) for k in ENVS}
+# Create the list of demonstrations
+demo_dir = os.environ['DEMO_DIR']
+DEMOS = {k: osp.join(demo_dir, k) for k in ENVS}
 
 
 def copy_and_add_seed(hpmap, seed):
@@ -83,8 +79,7 @@ def copy_and_add_env(hpmap, env):
     hpmap_ = deepcopy(hpmap)
     # Add the env and if demos are needed, add those too
     hpmap_.update({'env_id': env})
-    if NEED_DEMOS:
-        hpmap_.update({'expert_path': DEMOS[env]})
+    hpmap_.update({'expert_path': DEMOS[env]})
     return hpmap_
 
 
@@ -96,6 +91,9 @@ def get_hps(sweep):
     if sweep:
         # Random search
         hpmap = {
+            # Primary
+            'wandb_project': WANDB_PROJECT,
+
             # Generic
             'uuid': uuid,
             'cuda': CONFIG['parameters']['cuda'],
@@ -171,11 +169,13 @@ def get_hps(sweep):
             'os_label_smoothing': CONFIG['parameters'].get('os_label_smoothing', False),
             'rnd': CONFIG['parameters'].get('rnd', False),
             'historical_patching': CONFIG['parameters'].get('historical_patching', False),
-            'minimal': CONFIG['parameters'].get('minimal', False),
         }
     else:
         # No search, fixed map
         hpmap = {
+            # Primary
+            'wandb_project': WANDB_PROJECT,
+
             # Generic
             'uuid': uuid,
             'cuda': CONFIG['parameters']['cuda'],
@@ -248,7 +248,6 @@ def get_hps(sweep):
             'os_label_smoothing': CONFIG['parameters'].get('os_label_smoothing', False),
             'rnd': CONFIG['parameters'].get('rnd', False),
             'historical_patching': CONFIG['parameters'].get('historical_patching', False),
-            'minimal': CONFIG['parameters'].get('minimal', False),
         }
 
     # Duplicate for each environment

@@ -37,7 +37,7 @@ def sigmoid(logits, temp=1.0):
     return 1. / (1. + torch.exp(-logits))
 
 
-# >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> Networks.
+# >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> Models.
 
 class Discriminator(nn.Module):
 
@@ -133,173 +133,6 @@ class Discriminator(nn.Module):
         return score
 
 
-class MinimalDiscriminator(nn.Module):
-
-    def __init__(self, hps):
-        super(MinimalDiscriminator, self).__init__()
-        self.hps = hps
-        self.leak = 0.1
-        self.score_trunk = nn.Sequential(OrderedDict([
-            ('fc_block_1', nn.Sequential(OrderedDict([
-                ('fc', U.spectral_norm(nn.Linear(256, 256))),
-                ('nl', nn.LeakyReLU(negative_slope=self.leak, inplace=True)),
-            ]))),
-        ]))
-        self.score_head = nn.Linear(256, 1)
-        # Perform initialization
-        self.score_trunk.apply(init(nonlin='leaky_relu', param=self.leak))
-        self.score_head.apply(init(weight_scale=0.01, constant_bias=0.0))
-
-    def grad_pen(self, p_x, e_x):
-        """Gradient penalty regularizer (motivation from Wasserstein GANs (Gulrajani),
-        but empirically useful in JS-GANs (Lucic et al. 2017)) and later in (Karol et al. 2018).
-        """
-        # Assemble interpolated state-action pair
-        x_eps = torch.rand(p_x.size(-1)).to(p_x.device)
-        x_interp = x_eps * p_x + ((1. - x_eps) * e_x)
-        # Set `requires_grad=True` to later have access to
-        # gradients w.r.t. the inputs (not populated by default)
-        x_interp = Variable(x_interp, requires_grad=True)
-        # Create the operation of interest
-        score = self.D(x_interp)
-        # Get the gradient of this operation with respect to its inputs
-        grads = autograd.grad(outputs=score,
-                              inputs=[x_interp],
-                              only_inputs=True,
-                              grad_outputs=torch.ones(score.size()).to(p_x.device),
-                              retain_graph=True,
-                              create_graph=True,
-                              allow_unused=False)
-        assert len(list(grads)) == 1, "length must be exactly 1"
-        grad = grads[0]  # tuple of size 1, so extract the only element
-        # Return the gradient penalty (try to induce 1-Lipschitzness)
-        return (grad.norm(2, dim=-1) - 1.).pow(2).mean()
-
-    def get_reward(self, x):
-        """Craft surrogate reward"""
-        if not isinstance(x, torch.Tensor):
-            x = torch.FloatTensor(x)
-        # Transfer to cpu
-        x = x.cpu()
-
-        # Counterpart of GAN's minimax (also called "saturating") loss
-        # Numerics: 0 for non-expert-like states, goes to +inf for expert-like states
-        # compatible with envs with traj cutoffs for bad (non-expert-like) behavior
-        # e.g. walking simulations that get cut off when the robot falls over
-        minimax_reward = -torch.log(1. - torch.sigmoid(self.D(x).detach()) + 1e-8)
-
-        if self.hps.minimax_only:
-            return minimax_reward
-        else:
-            # Counterpart of GAN's non-saturating loss
-            # Recommended in the original GAN paper and later in (Fedus et al. 2017)
-            # Numerics: 0 for expert-like states, goes to -inf for non-expert-like states
-            # compatible with envs with traj cutoffs for good (expert-like) behavior
-            # e.g. mountain car, which gets cut off when the car reaches the destination
-            non_satur_reward = torch.log(torch.sigmoid(self.D(x).detach()))
-            # Return the sum the two previous reward functions (as in AIRL, Fu et al. 2018)
-            # Numerics: might be better might be way worse
-            return non_satur_reward + minimax_reward
-
-    def D(self, x):
-        return self.forward(x)
-
-    def forward(self, x):
-        x = self.score_trunk(x)
-        score = self.score_head(x)
-        return score
-
-
-class GatedRelabeler(nn.Module):
-
-    def __init__(self, env, hps):
-        super(GatedRelabeler, self).__init__()
-        ob_dim = env.observation_space.shape[0]
-        ac_dim = env.action_space.shape[0]
-        self.hps = hps
-        self.f_encoder = nn.Sequential(OrderedDict([
-            ('fc_block', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(1, 64)),
-                ('ln', nn.LayerNorm(64)),
-                ('nl', nn.ReLU(inplace=True)),
-            ]))),
-        ]))
-        self.s_encoder = nn.Sequential(OrderedDict([
-            ('fc_block_1', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(ob_dim, 64)),
-                ('ln', nn.LayerNorm(64)),
-                ('nl', nn.ReLU(inplace=True)),
-            ]))),
-        ]))
-        self.a_encoder = nn.Sequential(OrderedDict([
-            ('fc_block_1', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(ac_dim, 64)),
-                ('ln', nn.LayerNorm(64)),
-                ('nl', nn.ReLU(inplace=True)),
-            ]))),
-        ]))
-        self.g_trunk = nn.Sequential(OrderedDict([
-            ('fc_block_1', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(64, 64)),
-                ('ln', nn.LayerNorm(64)),
-                ('nl', nn.ReLU(inplace=True)),
-            ]))),
-        ]))
-        self.g_head = nn.Linear(64, 1)
-        # Perform initialization
-        self.s_encoder.apply(init(nonlin='relu', param=None))
-        self.a_encoder.apply(init(nonlin='relu', param=None))
-        self.f_encoder.apply(init(nonlin='relu', param=None))
-        self.g_trunk.apply(init(nonlin='relu', param=None))
-        self.g_head.apply(init(weight_scale=0.01, constant_bias=5.0))  # gate starts open
-
-    def G(self, ob, ac, f):
-        return self.forward(ob, ac, f)
-
-    def forward(self, ob, ac, f):
-        x = (self.f_encoder(f) +
-             self.s_encoder(ob) +
-             self.a_encoder(ac))
-        x = self.g_trunk(x)
-        gate = sigmoid(logits=self.g_head(x), temp=self.hps.gate_temp)
-        return gate
-
-
-class MinimalGatedRelabeler(nn.Module):
-
-    def __init__(self, hps):
-        super(MinimalGatedRelabeler, self).__init__()
-        self.hps = hps
-        self.f_encoder = nn.Sequential(OrderedDict([
-            ('fc_block', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(1, 256)),
-                ('ln', nn.LayerNorm(256)),
-                ('nl', nn.ReLU(inplace=True)),
-            ]))),
-        ]))
-        self.g_trunk = nn.Sequential(OrderedDict([
-            ('fc_block_1', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(256, 256)),
-                ('ln', nn.LayerNorm(256)),
-                ('nl', nn.ReLU(inplace=True)),
-            ]))),
-        ]))
-        self.g_head = nn.Linear(256, 1)
-        # Perform initialization
-        self.f_encoder.apply(init(nonlin='relu', param=None))
-        self.g_trunk.apply(init(nonlin='relu', param=None))
-        self.g_head.apply(init(weight_scale=0.01, constant_bias=5.0))  # gate starts open
-
-    def G(self, x, f):
-        return self.forward(x, f)
-
-    def forward(self, x, f):
-        x = self.f_encoder(f) + x
-        x = self.g_trunk(x)
-        gate = sigmoid(logits=self.g_head(x), temp=self.hps.gate_temp)
-        return gate
-
-
 class Actor(nn.Module):
 
     def __init__(self, env, hps):
@@ -384,21 +217,14 @@ class Critic(nn.Module):
         else:
             num_heads = 1
         self.hps = hps
-        self.s_encoder = nn.Sequential(OrderedDict([
+        self.c_encoder = nn.Sequential(OrderedDict([
             ('fc_block_1', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(ob_dim, 256)),
+                ('fc', nn.Linear(ob_dim + ac_dim, 256)),
                 ('ln', nn.LayerNorm(256)),
                 ('nl', nn.ReLU(inplace=True)),
             ]))),
         ]))
-        self.a_encoder = nn.Sequential(OrderedDict([
-            ('fc_block_1', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(ac_dim, 256)),
-                ('ln', nn.LayerNorm(256)),
-                ('nl', nn.ReLU(inplace=True)),
-            ]))),
-        ]))
-        self.c_trunk = nn.Sequential(OrderedDict([
+        self.c_decoder = nn.Sequential(OrderedDict([
             ('fc_block_1', nn.Sequential(OrderedDict([
                 ('fc', nn.Linear(256, 256)),
                 ('ln', nn.LayerNorm(256)),
@@ -407,35 +233,63 @@ class Critic(nn.Module):
         ]))
         self.c_head = nn.Linear(256, num_heads)
         # Perform initialization
-        self.s_encoder.apply(init(nonlin='relu', param=None))
-        self.a_encoder.apply(init(nonlin='relu', param=None))
-        self.c_trunk.apply(init(nonlin='relu', param=None))
+        self.c_encoder.apply(init(nonlin='relu', param=None))
+        self.c_decoder.apply(init(nonlin='relu', param=None))
         self.c_head.apply(init(weight_scale=0.01, constant_bias=0.0))
-
-    def encode(self, ob, ac):
-        assert sum([isinstance(x, torch.Tensor) for x in [ob, ac]]) in [0, 2]
-        if not isinstance(ob, torch.Tensor):  # then ac is not neither
-            ob = torch.FloatTensor(ob)
-            ac = torch.FloatTensor(ac)
-        # Transfer to cpu
-        ob = ob.cpu()
-        ac = ac.cpu()
-        # Encode
-        if self.hps.state_only:
-            return self.s_encoder(ob).detach()
-        else:
-            return (self.c_trunk(self.s_encoder(ob) +
-                                 self.a_encoder(ac))).detach()
 
     def QZ(self, ob, ac):
         return self.forward(ob, ac)
 
     def forward(self, ob, ac):
-        xs = self.s_encoder(ob)
-        xa = self.a_encoder(ac)
-        x = self.c_trunk(xs + xa)
+        x = torch.cat([ob, ac], dim=-1)
+        x = self.c_encoder(x)
+        x = self.c_decoder(x)
         x = self.c_head(x)
         if self.hps.use_c51:
             # Return a categorical distribution
             x = F.log_softmax(x, dim=1).exp()
         return x
+
+    @property
+    def out_params(self):
+        return [p for p in self.c_head.parameters()]
+
+
+# >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> Unused for now.
+
+class GatedRelabel(nn.Module):
+
+    def __init__(self, env, hps):
+        super(GatedRelabel, self).__init__()
+        ob_dim = env.observation_space.shape[0]
+        ac_dim = env.action_space.shape[0]
+        self.hps = hps
+        self.g_encoder = nn.Sequential(OrderedDict([
+            ('fc_block', nn.Sequential(OrderedDict([
+                ('fc', nn.Linear(ob_dim + ac_dim + 1, 256)),
+                ('ln', nn.LayerNorm(256)),
+                ('nl', nn.ReLU(inplace=True)),
+            ]))),
+        ]))
+        self.g_decoder = nn.Sequential(OrderedDict([
+            ('fc_block_1', nn.Sequential(OrderedDict([
+                ('fc', nn.Linear(256, 256)),
+                ('ln', nn.LayerNorm(256)),
+                ('nl', nn.ReLU(inplace=True)),
+            ]))),
+        ]))
+        self.g_head = nn.Linear(256, 1)
+        # Perform initialization
+        self.g_encoder.apply(init(nonlin='relu', param=None))
+        self.g_decoder.apply(init(nonlin='relu', param=None))
+        self.g_head.apply(init(weight_scale=0.01, constant_bias=5.0))  # gate starts open
+
+    def G(self, ob, ac, fp):
+        return self.forward(ob, ac, fp)
+
+    def forward(self, ob, ac, fp):
+        x = torch.cat([ob, ac, fp], dim=-1)
+        x = self.g_encoder(x)
+        x = self.g_decoder(x)
+        gate = sigmoid(logits=self.g_head(x), temp=self.hps.gate_temp)
+        return gate

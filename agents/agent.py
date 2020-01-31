@@ -13,10 +13,7 @@ from helpers.dataset import Dataset
 from helpers.math_util import huber_quant_reg_loss
 from helpers.distributed_util import average_gradients, sync_with_root, RunMoms
 from agents.memory import ReplayBuffer, PrioritizedReplayBuffer, UnrealReplayBuffer
-from agents.nets import Actor
-from agents.nets import (Critic,
-                         Discriminator, MinimalDiscriminator,
-                         GatedRelabeler, MinimalGatedRelabeler)
+from agents.nets import Actor, Critic, Discriminator
 from agents.param_noise import AdaptiveParamNoise
 from agents.ac_noise import NormalAcNoise, OUAcNoise
 from agents.rnd import RandNetDistill
@@ -38,10 +35,6 @@ class Agent(object):
         self.device = device
         self.hps = hps
         assert self.hps.lookahead > 1 or not self.hps.n_step_returns
-
-        # FIXME
-        self.hps.gated_relabelling = True
-        self.hps.gate_temp = 1.0
 
         # Define demo dataset
         self.expert_dataset = expert_dataset
@@ -97,13 +90,6 @@ class Agent(object):
             sync_with_root(self.twin)
             self.targ_twin = Critic(self.env, self.hps).to(self.device)
             self.targ_twin.load_state_dict(self.twin.state_dict())
-        if self.hps.gated_relabelling:
-            # Set up gated relabeller
-            if self.hps.minimal:
-                self.gate = MinimalGatedRelabeler(self.hps).to(self.device)
-            else:
-                self.gate = GatedRelabeler(self.env, self.hps).to(self.device)
-            sync_with_root(self.gate)
         if self.hps.rnd:
             # Set up random network distillation
             self.rnd = RandNetDistill(in_size=1, device=self.device)
@@ -129,8 +115,6 @@ class Agent(object):
             self.twin_opt = torch.optim.Adam(self.twin.parameters(),
                                              lr=self.hps.critic_lr,
                                              weight_decay=self.hps.wd_scale)
-        if self.hps.gated_relabelling:
-            self.gate_opt = torch.optim.Adam(self.gate.parameters(), lr=1e-5)  # XXX
 
         # Set up the learning rate schedule
         def _lr(t):  # flake8: using a def instead of a lambda
@@ -149,10 +133,7 @@ class Agent(object):
             # Set up demonstrations dataset
             self.e_dataloader = DataLoader(self.expert_dataset, self.hps.batch_size, shuffle=True)
             # Create discriminator
-            if self.hps.minimal:
-                self.disc = MinimalDiscriminator(self.hps).to(self.device)
-            else:
-                self.disc = Discriminator(self.env, self.hps).to(self.device)
+            self.disc = Discriminator(self.env, self.hps).to(self.device)
             sync_with_root(self.disc)
             # Create optimizer
             self.disc_opt = torch.optim.Adam(self.disc.parameters(),
@@ -291,12 +272,7 @@ class Agent(object):
         return ac
 
     def get_reward(self, ob, ac):
-        if self.hps.minimal:
-            q_feat = self.crit.encode(ob, ac)  # already detached
-            reward = self.disc.get_reward(q_feat)  # already detached
-        else:
-            reward = self.disc.get_reward(ob, ac)
-        return reward
+        return self.disc.get_reward(ob, ac)
 
     def train(self, update_critic, update_actor, rollout, iters_so_far):
         """Train the agent"""
@@ -333,16 +309,10 @@ class Agent(object):
             if self.hps.gated_relabelling:
                 assert self.hps.rnd
                 fingerprint = self.rnd.get_novelty(patched_reward).unsqueeze(-1)
-                if self.hps.minimal:
-                    enc = self.crit.encode(state, action)  # FIXME
-                    print("enc: {}".format(enc[:10, :10, ...]))  # FIXME
-                    g = self.gate.G(enc, fingerprint)
-                else:
-                    g = self.gate.G(state, action, fingerprint)
-                print("g: {}".format(g[:10, ...]))  # FIXME
+                g = self.gate.G(state, action, fingerprint)
                 reward = (g * sampled_reward) + ((1. - g) * patched_reward)
             else:
-                reward = patched_reward
+                reward = patched_reward  #
             self.replay_buffer.patch_rewards(batch['idxs'], reward.clone().detach().cpu().numpy())
         next_state = torch.FloatTensor(batch['obs1']).to(self.device)
         done = torch.FloatTensor(batch['dones1'].astype('float32')).to(self.device)
@@ -375,7 +345,7 @@ class Agent(object):
             z = self.crit.QZ(state, action).unsqueeze(-1)
             z.data.clamp_(0.01, 0.99)
             # Compute target QZ estimate
-            z_prime = self.targ_crit.QZ(next_state, next_action).detach()
+            z_prime = self.targ_crit.QZ(next_state, next_action)
             z_prime.data.clamp_(0.01, 0.99)
 
             gamma_mask = ((self.hps.gamma ** td_len) * (1 - done))
@@ -420,7 +390,7 @@ class Agent(object):
             z = self.crit.QZ(state, action).unsqueeze(-1)
 
             # Compute target QZ estimate
-            z_prime = self.targ_crit.QZ(next_state, next_action).detach()
+            z_prime = self.targ_crit.QZ(next_state, next_action)
             # Reshape rewards to be of shape [batch_size x num_tau, 1]
             reward = reward.repeat(self.hps.num_tau, 1)
             # Reshape product of gamma and mask to be of shape [batch_size x num_tau, 1]
@@ -434,7 +404,7 @@ class Agent(object):
             # Compute the TD error loss
             # Note: online version has shape [batch_size, num_tau, 1],
             # while the target version has shape [batch_size, num_tau, 1].
-            td_errors = targ_z[:, :, None, :] - z[:, None, :, :]  # broadcasting
+            td_errors = targ_z[:, :, None, :].detach() - z[:, None, :, :]  # broadcasting
             # The resulting shape is [batch_size, num_tau, num_tau, 1]
 
             # Assemble the Huber Quantile Regression loss
@@ -465,24 +435,21 @@ class Agent(object):
 
             # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> VANILLA
 
-            enc = self.crit.encode(state, action)  # FIXME
-            print("enc: {}".format(enc[:10, :10, ...]))  # FIXME
-
             # Compute QZ estimate
             q = self.denorm_rets(self.crit.QZ(state, action))
             if self.hps.clipped_double:
                 twin_q = self.denorm_rets(self.twin.QZ(state, action))
 
             # Compute target QZ estimate
-            q_prime = self.targ_crit.QZ(next_state, next_action).detach()
+            q_prime = self.targ_crit.QZ(next_state, next_action)
             if self.hps.clipped_double:
                 # Define QZ' as the minimum QZ value between TD3's twin QZ's
-                twin_q_prime = self.targ_twin.QZ(next_state, next_action).detach()
+                twin_q_prime = self.targ_twin.QZ(next_state, next_action)
                 q_prime = (0.75 * torch.min(q_prime, twin_q_prime) +
-                           0.25 * torch.max(q_prime, twin_q_prime))  # soft minimum from BCZ
+                           0.25 * torch.max(q_prime, twin_q_prime))  # soft minimum from BCQ
             targ_q = (reward +
                       (self.hps.gamma ** td_len) * (1. - done) *
-                      self.denorm_rets(q_prime))  # make q_prime unnormalized
+                      self.denorm_rets(q_prime).detach())  # make q_prime unnormalized
             # Normalize target QZ with running statistics
             targ_q = self.norm_rets(targ_q)
 
@@ -541,8 +508,6 @@ class Agent(object):
         actr_loss.backward()
         average_gradients(self.actr, self.device)
         actr_gradn = U.clip_grad_norm_(self.actr.parameters(), self.hps.clip_norm)
-        if self.hps.historical_patching and self.hps.gated_relabelling:
-            self.gate_opt.zero_grad()
         self.crit_opt.zero_grad()
         crit_loss.backward()
         average_gradients(self.crit, self.device)
@@ -552,8 +517,6 @@ class Agent(object):
             twin_loss.backward()
             average_gradients(self.twin, self.device)
             twin_gradn = U.clip_grad_norm_(self.twin.parameters(), self.hps.clip_norm)
-        if self.hps.historical_patching and self.hps.gated_relabelling:
-            average_gradients(self.gate, self.device)
 
         # Perform model updates
         if update_critic:
@@ -570,9 +533,6 @@ class Agent(object):
                 self.actr_sched.step(iters_so_far)
                 # Update target nets
                 self.update_target_net(iters_so_far)
-        if self.hps.historical_patching and self.hps.gated_relabelling:
-            # Update gate
-            self.gate_opt.step()
         # Update discriminator
         for _ in range(self.hps.d_update_ratio):
             for p_chunk, e_chunk in zip(p_dataloader, self.e_dataloader):
@@ -605,12 +565,8 @@ class Agent(object):
         e_state = torch.FloatTensor(e_chunk['obs0']).to(self.device)
         e_action = torch.FloatTensor(e_chunk['acs']).to(self.device)
         # Compute scores
-        if self.hps.minimal:
-            p_scores = self.disc.D(self.crit.encode(p_state, p_action))
-            e_scores = self.disc.D(self.crit.encode(e_state, e_action))
-        else:
-            p_scores = self.disc.D(p_state, p_action)
-            e_scores = self.disc.D(e_state, e_action)
+        p_scores = self.disc.D(p_state, p_action)
+        e_scores = self.disc.D(e_state, e_action)
         # Create entropy loss
         scores = torch.cat([p_scores, e_scores], dim=0)
         entropy = F.binary_cross_entropy_with_logits(input=scores,
@@ -636,11 +592,7 @@ class Agent(object):
 
         if self.hps.grad_pen:
             # Create gradient penalty loss (coefficient from the original paper)
-            if self.hps.minimal:
-                grad_pen_in = [self.crit.encode(p_state, p_action),
-                               self.crit.encode(e_state, e_action)]
-            else:
-                grad_pen_in = [p_state, p_action, e_state, e_action]
+            grad_pen_in = [p_state, p_action, e_state, e_action]
             grad_pen = 10. * self.disc.grad_pen(*grad_pen_in)
             d_loss += grad_pen
 

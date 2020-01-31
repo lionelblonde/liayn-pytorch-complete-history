@@ -242,7 +242,7 @@ def learn(args,
 
     # Setup wandb
     if rank == 0:
-        wandb.init(project="StabOffPolIL",
+        wandb.init(project=args.wandb_project,
                    name=experiment_name,
                    group='.'.join(experiment_name.split('.')[:-1]),
                    config=args.__dict__)
