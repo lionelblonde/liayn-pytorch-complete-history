@@ -79,8 +79,6 @@ else:
     raise NotImplementedError("benchmark not covered by the spawner.")
 assert bool(TOC), "each benchmark must have a 'TOC' dictionary"
 
-print(TOC)
-
 # Create the list of demonstrations
 demo_dir = os.environ['DEMO_DIR']
 DEMOS = {k: osp.join(demo_dir, k) for k in ENVS}
@@ -396,8 +394,6 @@ def run(args):
     names = ["{}.{}".format(TYPE, hpmap['uuid']) for i, hpmap in enumerate(hpmaps)]
     # Create environment keys for envionment-specific hyperparameter selection
     envkeys = [hpmap['env_id'].split('-')[0] for hpmap in hpmaps]
-
-    print(envkeys)
 
     # Finally get all the required job strings
     jobs = [create_job_str(name, command, envkey)

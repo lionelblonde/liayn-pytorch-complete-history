@@ -302,12 +302,21 @@ class Agent(object):
         state = torch.FloatTensor(batch['obs0']).to(self.device)
         action = torch.FloatTensor(batch['acs']).to(self.device)
         reward = torch.FloatTensor(batch['rews']).to(self.device)
+
+        if self.hps.s2r2 or self.hps.historical_patching:
+            # Get reward estimate from latest discriminator update
+            patched_reward = self.get_reward(state, action).detach()
+
         if self.hps.historical_patching:
-            # Use patched reward instead of sampled one and patch all sampled memory entries
-            # sampled_reward = reward.clone().detach()
-            patched_reward = self.get_reward(state, action).clone().detach()
-            reward = patched_reward
-            self.replay_buffer.patch_rewards(batch['idxs'], reward.clone().detach().cpu().numpy())
+            sampled_reward = reward.clone().detach()
+            # Calculate gap between replay reward and latest predicted reward
+            patch_gap = sampled_reward - patched_reward
+            # Overwrite reward with patched one
+            reward = patched_reward.clone()
+
+            # XXX
+            # self.replay_buffer.patch_rewards(batch['idxs'], reward.clone().detach().cpu().numpy())
+
         next_state = torch.FloatTensor(batch['obs1']).to(self.device)
         done = torch.FloatTensor(batch['dones1'].astype('float32')).to(self.device)
         if self.hps.prioritized_replay:
@@ -492,9 +501,9 @@ class Agent(object):
 
         if self.hps.s2r2:
             # Self-supervised reward regression
-            s2r2_loss = F.smooth_l1_loss(patched_reward if self.hps.historical_patching else reward,
-                                         self.actr.s2r2(state))
+            s2r2_loss = F.smooth_l1_loss(patched_reward, self.actr.s2r2(state))
             s2r2_loss *= self.hps.s2r2_scale
+            # Add to actor loss
             actr_loss += s2r2_loss
 
         # Compute gradients
@@ -546,7 +555,13 @@ class Agent(object):
         if self.hps.clipped_double:
             lrnows.update({'twin': self.twin_sched.get_lr()})
 
-        return losses, gradns, lrnows
+        extra = {}
+        if self.hps.historical_patching:
+            extra.update({'sampled_reward': sampled_reward.mean().cpu().numpy(),
+                          'patched_reward': patched_reward.mean().cpu().numpy(),
+                          'patch_gap': patch_gap.mean().cpu().numpy()})
+
+        return losses, gradns, lrnows, extra
 
     def update_disc(self, p_chunk, e_chunk):
         """Update the discriminator network"""

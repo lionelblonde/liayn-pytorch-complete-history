@@ -17,7 +17,6 @@ def rollout_generator(env, agent, rollout_len):
 
     t = 0
     done = True
-    env_rew = 0.0
     rollout = defaultdict(list)
 
     if agent.hps.rnd or not agent.hps.pixels:
@@ -63,11 +62,10 @@ def rollout_generator(env, agent, rollout_len):
             rollout.clear()
 
         # Interact with env(s)
-        new_ob, env_rew, done, _ = env.step(ac)
+        new_ob, _, done, _ = env.step(ac)
 
         # Store transition(s) in the replay buffer
         rew = np.asscalar(agent.get_reward(ob, ac).cpu().numpy().flatten())
-        terminate = 1 / (1 + np.exp(-rew)) < 0.1  # from "minimal adversary" paper
         transition = {"obs0": ob,
                       "acs": ac,
                       "rews": rew,
@@ -83,7 +81,7 @@ def rollout_generator(env, agent, rollout_len):
         # Set current state with the next
         ob = np.array(deepcopy(new_ob))
 
-        if done or terminate:
+        if done:
             # Reset agent's noise processes and env
             agent.reset_noise()
             ob = np.array(env.reset())
@@ -294,10 +292,10 @@ def learn(args,
                 update_critic = True
                 update_critic = not bool(training_step % args.d_update_ratio)
                 update_actor = update_critic and not bool(training_step % args.actor_update_delay)
-                losses, gradns, lrnows = agent.train(update_critic=update_critic,
-                                                     update_actor=update_actor,
-                                                     rollout=rollout,
-                                                     iters_so_far=iters_so_far)
+                losses, gradns, lrnows, extra = agent.train(update_critic=update_critic,
+                                                            update_actor=update_actor,
+                                                            rollout=rollout,
+                                                            iters_so_far=iters_so_far)
                 d['actr_gradns'].append(gradns['actr'])
                 d['actr_losses'].append(losses['actr'])
                 d['crit_gradns'].append(gradns['crit'])
@@ -305,6 +303,10 @@ def learn(args,
                 if agent.hps.clipped_double:
                     d['twin_gradns'].append(gradns['twin'])
                     d['twin_losses'].append(losses['twin'])
+                if agent.hps.historical_patching:
+                    d['sampled_reward'].append(extra['sampled_reward'])
+                    d['patched_reward'].append(extra['patched_reward'])
+                    d['patch_gap'].append(extra['patch_gap'])
 
             # Log statistics
             stats = OrderedDict()
@@ -402,6 +404,11 @@ def learn(args,
                 wandb.log({'twin_loss': np.mean(d['twin_losses']),
                            'twin_gradn': np.mean(d['twin_gradns']),
                            'twin_lrnow': np.array(lrnows['twin'])},
+                          step=timesteps_so_far)
+            if agent.hps.historical_patching:
+                wandb.log({'sampled_reward': np.mean(d['sampled_reward']),
+                           'patched_reward': np.mean(d['patched_reward']),
+                           'patch_gap': np.mean(d['patch_gap'])},
                           step=timesteps_so_far)
 
         # Increment counters
