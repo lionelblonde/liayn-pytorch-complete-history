@@ -14,6 +14,7 @@ from helpers.experiment import uuid as create_uuid
 parser = argparse.ArgumentParser(description="Job Spawner")
 parser.add_argument('--config', type=str, default=None)
 parser.add_argument('--envset', type=str, default=None)
+parser.add_argument('--num_demos', '--list', nargs='+', type=str, default=None)
 boolean_flag(parser, 'call', default=False, help="launch immediately?")
 boolean_flag(parser, 'sweep', default=False, help="hp search?")
 args = parser.parse_args()
@@ -23,6 +24,7 @@ CONFIG = yaml.safe_load(open(args.config))
 
 # Extract parameters from config
 NUM_SEEDS = CONFIG['parameters']['num_seeds']
+NUM_DEMOS = [int(i) for i in args.num_demos]
 CLUSTER = CONFIG['resources']['cluster']
 WANDB_PROJECT = CONFIG['resources']['wandb_project'].upper() + '-' + CLUSTER.upper()
 CONDA = CONFIG['resources']['conda_env']
@@ -40,24 +42,44 @@ BOOL_ARGS = ['cuda', 'pixels', 's2r2', 'popart',
 # Create the list of environments from the indicated benchmark
 BENCH = CONFIG['parameters']['benchmark']
 if BENCH == 'mujoco':
-    map_ = {'debug': ['InvertedPendulum'],
-            'easy': ['InvertedPendulum',
-                     'InvertedDoublePendulum'],
-            'normal': ['Hopper',
-                       'Walker2d'],
-            'hard': ['HalfCheetah',
-                     'Ant'],
-            'all': ['InvertedPendulum',
+    # Define environments map
+    TOC = {'debug': ['InvertedPendulum'],
+           'easy': ['InvertedPendulum',
                     'InvertedDoublePendulum',
-                    'Hopper',
+                    'Reacher'],
+           'hard': ['Hopper',
                     'Walker2d',
                     'HalfCheetah',
                     'Ant'],
-            }
-    ENVS = map_[args.envset]
+           }
+    if args.envset == 'all':
+        ENVS = TOC['easy'] + TOC['hard']
+    else:
+        ENVS = TOC[args.envset]
     ENVS = ["{}-v2".format(n) for n in ENVS]
+
+    if CLUSTER == 'baobab':
+        # Define per-environement partitions map
+        PEP = {'InvertedPendulum': 'shared-EL7',
+               'InvertedDoublePendulum': 'shared-EL7',
+               'Reacher': 'shared-EL7',
+               'Hopper': 'parallel-EL7',
+               'Walker2d': 'parallel-EL7',
+               'HalfCheetah': 'parallel-EL7',
+               'Ant': 'parallel-EL7'}
+        # Define per-environment timeouts map
+        PET = {'InvertedPendulum': '0-12:00:00',
+               'InvertedDoublePendulum': '0-12:00:00',
+               'Reacher': '0-12:00:00',
+               'Hopper': '2-00:00:00',
+               'Walker2d': '4-00:00:00',
+               'HalfCheetah': '4-00:00:00',
+               'Ant': '4-00:00:00'}
 else:
     raise NotImplementedError("benchmark not covered by the spawner.")
+assert bool(TOC), "each benchmark must have a 'TOC' dictionary"
+
+print(TOC)
 
 # Create the list of demonstrations
 demo_dir = os.environ['DEMO_DIR']
@@ -69,17 +91,25 @@ def copy_and_add_seed(hpmap, seed):
     # Add the seed and edit the job uuid to only differ by the seed
     hpmap_.update({'seed': seed})
     # Enrich the uuid with extra information
-    hpmap_.update({'uuid': "{}.{}.seed{}".format(hpmap['uuid'],
-                                                 hpmap['env_id'],
-                                                 str(seed).zfill(2))})
+    hpmap_.update({'uuid': "{}.{}.demos{}.seed{}".format(hpmap['uuid'],
+                                                         hpmap['env_id'],
+                                                         str(hpmap['num_demos']).zfill(3),
+                                                         str(seed).zfill(2))})
     return hpmap_
 
 
 def copy_and_add_env(hpmap, env):
     hpmap_ = deepcopy(hpmap)
-    # Add the env and if demos are needed, add those too
+    # Add the env and demos
     hpmap_.update({'env_id': env})
     hpmap_.update({'expert_path': DEMOS[env]})
+    return hpmap_
+
+
+def copy_and_add_num_demos(hpmap, num_demos):
+    hpmap_ = deepcopy(hpmap)
+    # Add the num of demos
+    hpmap_.update({'num_demos': num_demos})
     return hpmap_
 
 
@@ -254,15 +284,20 @@ def get_hps(sweep):
     hpmaps = [copy_and_add_env(hpmap, env)
               for env in ENVS]
 
+    # Duplicate for each number of demos
+    hpmaps = [copy_and_add_num_demos(hpmap_, num_demos)
+              for hpmap_ in hpmaps
+              for num_demos in NUM_DEMOS]
+
     # Duplicate for each seed
-    hpmapz = [copy_and_add_seed(hpmap_, seed)
+    hpmaps = [copy_and_add_seed(hpmap_, seed)
               for hpmap_ in hpmaps
               for seed in range(NUM_SEEDS)]
 
     # Verify that the correct number of configs have been created
-    assert len(hpmapz) == NUM_SEEDS * len(ENVS)
+    assert len(hpmaps) == NUM_SEEDS * len(ENVS) * len(NUM_DEMOS)
 
-    return hpmapz
+    return hpmaps
 
 
 def unroll_options(hpmap):
@@ -284,7 +319,7 @@ def unroll_options(hpmap):
     return arguments
 
 
-def create_job_str(name, command):
+def create_job_str(name, command, envkey):
     """Build the batch script that launches a job"""
 
     # Prepend python command with python binary path
@@ -293,11 +328,11 @@ def create_job_str(name, command):
     if CLUSTER == 'baobab':
         # Set sbatch config
         bash_script_str = ('#!/usr/bin/env bash\n\n')
-        bash_script_str += ('#SBATCH --job-name={}\n'
-                            '#SBATCH --partition={}\n'
-                            '#SBATCH --ntasks={}\n'
+        bash_script_str += ('#SBATCH --job-name={jobname}\n'
+                            '#SBATCH --partition={partition}\n'
+                            '#SBATCH --ntasks={ntasks}\n'
                             '#SBATCH --cpus-per-task=1\n'
-                            '#SBATCH --time={}\n'
+                            '#SBATCH --time={timeout}\n'
                             '#SBATCH --mem=32000\n'
                             '#SBATCH --output=./out/run_%j.out\n'
                             '#SBATCH --constraint="V3|V4|V5|V6|V7"\n')
@@ -312,33 +347,14 @@ def create_job_str(name, command):
             bash_script_str += ('module load CUDA\n')
         bash_script_str += ('\n')
         # Launch command
-        bash_script_str += ('srun {}')
+        bash_script_str += ('srun {command}')
 
-        bash_script_str = bash_script_str.format(name,
-                                                 CONFIG['resources']['partition'],
-                                                 CONFIG['resources']['num_workers'],
-                                                 CONFIG['resources']['timeout'],
-                                                 command)
-    elif CLUSTER == 'cscs':
-        # Set sbatch config
-        bash_script_str = ('#!/usr/bin/env bash\n\n')
-        bash_script_str += ('#SBATCH --job-name={}\n'
-                            '#SBATCH --partition={}\n'
-                            '#SBATCH --ntasks={}\n'
-                            '#SBATCH --cpus-per-task=2\n'
-                            '#SBATCH --time={}\n'
-                            '#SBATCH --constraint=gpu\n\n')
-        # Load modules
-        bash_script_str += ('module load daint-gpu\n')
-        bash_script_str += ('\n')
-        # Launch command
-        bash_script_str += ('mpirun {}')
+        bash_script_str = bash_script_str.format(jobname=name,
+                                                 partition=PEP[envkey],
+                                                 ntasks=CONFIG['resources']['num_workers'],
+                                                 timeout=PET[envkey],
+                                                 command=command)
 
-        bash_script_str = bash_script_str.format(name,
-                                                 CONFIG['resources']['partition'],
-                                                 CONFIG['resources']['num_workers'],
-                                                 CONFIG['resources']['timeout'],
-                                                 command)
     elif CLUSTER == 'local':
         # Set header
         bash_script_str = ('#!/usr/bin/env bash\n\n')
@@ -377,10 +393,15 @@ def run(args):
         # Terminate in case of duplicate experiment (extremely unlikely though)
         raise ValueError("bad luck, there are dupes -> Try again (:")
     # Create the job maps
-    names = ["{}.{}".format(TYPE, hpmap['uuid'])
-             for i, hpmap in enumerate(hpmaps)]
+    names = ["{}.{}".format(TYPE, hpmap['uuid']) for i, hpmap in enumerate(hpmaps)]
+    # Create environment keys for envionment-specific hyperparameter selection
+    envkeys = [hpmap['env_id'].split('-')[0] for hpmap in hpmaps]
+
+    print(envkeys)
+
     # Finally get all the required job strings
-    jobs = [create_job_str(name, command) for name, command in zipsame(names, commands)]
+    jobs = [create_job_str(name, command, envkey)
+            for name, command, envkey in zipsame(names, commands, envkeys)]
 
     # Spawn the jobs
     for i, (name, job) in enumerate(zipsame(names, jobs)):

@@ -304,15 +304,9 @@ class Agent(object):
         reward = torch.FloatTensor(batch['rews']).to(self.device)
         if self.hps.historical_patching:
             # Use patched reward instead of sampled one and patch all sampled memory entries
-            sampled_reward = reward.clone().detach()
+            # sampled_reward = reward.clone().detach()
             patched_reward = self.get_reward(state, action).clone().detach()
-            if self.hps.gated_relabelling:
-                assert self.hps.rnd
-                fingerprint = self.rnd.get_novelty(patched_reward).unsqueeze(-1)
-                g = self.gate.G(state, action, fingerprint)
-                reward = (g * sampled_reward) + ((1. - g) * patched_reward)
-            else:
-                reward = patched_reward  #
+            reward = patched_reward
             self.replay_buffer.patch_rewards(batch['idxs'], reward.clone().detach().cpu().numpy())
         next_state = torch.FloatTensor(batch['obs1']).to(self.device)
         done = torch.FloatTensor(batch['dones1'].astype('float32')).to(self.device)

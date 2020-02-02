@@ -244,7 +244,8 @@ def learn(args,
     if rank == 0:
         wandb.init(project=args.wandb_project,
                    name=experiment_name,
-                   group='.'.join(experiment_name.split('.')[:-1]),
+                   group='.'.join(experiment_name.split('.')[:-2]),
+                   job_type=experiment_name.split('.')[-2],
                    config=args.__dict__)
 
     # Create rollout generator for training the agent
