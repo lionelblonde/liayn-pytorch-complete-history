@@ -4,6 +4,7 @@ from collections import defaultdict
 
 import numpy as np
 
+from helpers import logger
 from helpers.math_util import discount
 from helpers.misc_util import zipsame
 from helpers.segment_tree import SumSegmentTree, MinSegmentTree
@@ -59,86 +60,90 @@ class ReplayBuffer(object):
         transitions['idxs'] = idxs  # add idxs too
         return transitions
 
-    def sample(self, batch_size):
+    def sample(self, batch_size, patcher):
         """Sample transitions uniformly from the replay buffer"""
         idxs = np.random.randint(low=0, high=self.num_entries, size=batch_size)
         transitions = self.batchify(idxs)
+
+        if patcher is not None:
+            # Patch the rewards
+            transitions['rews'] = patcher(transitions['obs0'],
+                                          transitions['acs']).detach().cpu().numpy()
+
         return transitions
 
-    def sample_recent(self, batch_size, window):
-        """Sample transitions from the most recent ones
-        `window_width` designates how far we go back in time
-        """
-        width = window if window <= self.num_entries else self.num_entries
-        # Extract the indices of the 'width' most recent entries
-        idxs = np.ones(width) * self.latest_entry_idx
-        idxs -= np.arange(start=width - 1, stop=-1, step=-1)
-        idxs += self.capacity
-        idxs %= self.capacity
-        idxs = idxs.astype(int)
-        assert len(idxs) == width
-        # Subsample from the isolated indices
-        idxs = np.random.choice(idxs, size=batch_size)
-        # Collect the transitions from the replay buffer
-        transitions = self.batchify(idxs)
-        return transitions
-
-    def lookahead(self, transitions, n, gamma):
+    def lookahead(self, transitions, n, gamma, patcher):
         """Perform n-step TD lookahead estimations starting from every transition"""
         assert 0 <= gamma <= 1
 
         # Initiate the batch of transition data necessary to perform n-step TD backups
-        lookahead_batch = defaultdict(list)
+        la_batch = defaultdict(list)
 
         # Iterate over the indices to deploy the n-step backup for each
         for idx in transitions['idxs']:
             # Create indexes of transitions in lookahead of lengths max `n` following sampled one
-            lookahead_end_idx = min(idx + n, self.num_entries) - 1
-            lookahead_idxs = np.array(range(idx, lookahead_end_idx + 1))
+            la_end_idx = min(idx + n, self.num_entries) - 1
+            la_idxs = np.array(range(idx, la_end_idx + 1))
             # Collect the batch for the lookahead rollout indices
-            lookahead_transitions = self.batchify(lookahead_idxs)
+            la_transitions = self.batchify(la_idxs)
+            if patcher is not None:
+                # Patch the rewards
+                la_transitions['rews'] = patcher(la_transitions['obs0'],
+                                                 la_transitions['acs']).detach().cpu().numpy()
             # Only keep data from the current episode, drop everything after episode reset, if any
-            dones = lookahead_transitions['dones1']
-            ep_end_idx = idx + list(dones).index(1.0) if 1.0 in dones else lookahead_end_idx
-            lookahead_is_trimmed = 0.0 if ep_end_idx == lookahead_end_idx else 1.0
+            dones = la_transitions['dones1']
+            ep_end_idx = idx + list(dones).index(1.0) if 1.0 in dones else la_end_idx
+            la_is_trimmed = 0.0 if ep_end_idx == la_end_idx else 1.0
             # Compute lookahead length
             td_len = ep_end_idx - idx + 1
             # Trim down the lookahead transitions
-            lookahead_rews = lookahead_transitions['rews'][:td_len]
+            la_rews = la_transitions['rews'][:td_len]
             # Compute discounted cumulative reward
-            lookahead_discounted_sum_n_rews = discount(lookahead_rews, gamma)[0]
+            la_discounted_sum_n_rews = discount(la_rews, gamma)[0]
             # Populate the batch for this n-step TD backup
-            lookahead_batch['obs0'].append(lookahead_transitions['obs0'][0])
-            lookahead_batch['obs1'].append(lookahead_transitions['obs1'][td_len - 1])
-            lookahead_batch['acs'].append(lookahead_transitions['acs'][0])
-            lookahead_batch['rews'].append(lookahead_discounted_sum_n_rews)
-            lookahead_batch['dones1'].append(lookahead_is_trimmed)
-            lookahead_batch['td_len'].append(td_len)
+            la_batch['obs0'].append(la_transitions['obs0'][0])
+            la_batch['obs1'].append(la_transitions['obs1'][td_len - 1])
+            la_batch['acs'].append(la_transitions['acs'][0])
+            la_batch['rews'].append(la_discounted_sum_n_rews)
+            la_batch['dones1'].append(la_is_trimmed)
+            la_batch['td_len'].append(td_len)
 
-        lookahead_batch['idxs'] = transitions['idxs']
+            # # This block: sanity checker
+            # logger.info("\n\n")
+            # print("idx: {}".format(idx))
+            # print("la_end_idx: {}".format(la_end_idx))
+            # print("la_idxs: {}".format(la_idxs))
+            # print("td_len: {}".format(td_len))
+            # print("['rews'][:td_len]: {}".format(la_rews))
+            # print("la_discounted_sum_n_rews: {}".format(la_discounted_sum_n_rews))
+            # print("['obs0']: {}".format(la_transitions['obs0']))
+            # print("['obs1']: {}".format(la_transitions['obs1']))
+            # print("['dones1']: {}".format(la_transitions['dones1']))
+            # print("['obs0'][0]: {}".format(la_transitions['obs0'][0]))
+            # print("['obs1'][td_len - 1]: {}".format(la_transitions['obs1'][td_len - 1]))
+            # print("la_is_trimmed: {}".format(la_is_trimmed))
+            # logger.info("\n\n")
+
+        la_batch['idxs'] = transitions['idxs']
 
         # Wrap every value with `array_min2d`
-        lookahead_batch = {k: array_min2d(v) for k, v in lookahead_batch.items()}
-        return lookahead_batch
+        la_batch = {k: array_min2d(v) for k, v in la_batch.items()}
+        return la_batch
 
-    def lookahead_sample(self, batch_size, n, gamma):
+    def lookahead_sample(self, batch_size, n, gamma, patcher):
         """Sample from the replay buffer.
         This function is for n-step TD backups, where n > 1
         """
         # Sample a batch of transitions
-        transitions = self.sample(batch_size)
+        transitions = self.sample(batch_size, patcher)
         # Expand each transition with a n-step TD lookahead
-        return self.lookahead(transitions, n, gamma)
+        return self.lookahead(transitions, n, gamma, patcher)
 
     def append(self, transition):
         """Add transition to the replay buffer"""
         assert self.ring_buffers.keys() == transition.keys(), "keys must coincide"
         for k in self.ring_buffers.keys():
             self.ring_buffers[k].append(transition[k])
-
-    def patch_rewards(self, idxs, rewards):
-        for idx, reward in zip(idxs, rewards):
-            self.ring_buffers['rews'].data[idx] = reward
 
     def __repr__(self):
         return "ReplayBuffer(capacity={})".format(self.capacity)
@@ -223,7 +228,7 @@ class PrioritizedReplayBuffer(ReplayBuffer):
             transition_idxs.append(transition_idx)
         return np.array(transition_idxs)
 
-    def _sample(self, batch_size, sampling_fn):
+    def _sample(self, batch_size, sampling_fn, patcher):
         """Sample from the replay buffer according to assigned priorities
         while using importance weights to offset the biasing effect of non-uniform sampling.
         `beta` (defined in `__init__`) represents to what degree importance weights are used.
@@ -248,30 +253,35 @@ class PrioritizedReplayBuffer(ReplayBuffer):
             iws.append(weight_transition / max_weight)
 
         # Collect batch of transitions w/ iws and indices
-        weighted_transitions = super().batchify(idxs)
-        weighted_transitions['iws'] = array_min2d(np.array(iws))
-        weighted_transitions['idxs'] = np.array(idxs)
-        return weighted_transitions
+        w_transitions = super().batchify(idxs)
+        w_transitions['iws'] = array_min2d(np.array(iws))
+        w_transitions['idxs'] = np.array(idxs)
 
-    def sample(self, batch_size):
-        return self._sample(batch_size, self._sample_w_priorities)
+        if patcher is not None:
+            # Patch the rewards
+            w_transitions['rews'] = patcher(w_transitions['obs0'],
+                                            w_transitions['acs']).detach().cpu().numpy()
 
-    def sample_uniform(self, batch_size):
-        return super().sample(batch_size=batch_size)
+        return w_transitions
 
-    def lookahead_sample(self, batch_size, n, gamma):
+    def sample(self, batch_size, patcher):
+        return self._sample(batch_size, self._sample_w_priorities, patcher)
+
+    def sample_uniform(self, *args):
+        return super().sample(*args)
+
+    def lookahead_sample(self, batch_size, n, gamma, patcher):
         """Sample from the replay buffer according to assigned priorities.
         This function is for n-step TD backups, where n > 1
         """
         assert n > 1
         # Sample a batch of transitions
-        transitions = self.sample(batch_size=batch_size)
+        transitions = self.sample(batch_size, patcher)
         # Expand each transition w/ a n-step TD lookahead
-        lookahead_batch = super().lookahead(transitions=transitions, n=n, gamma=gamma)
-        # Add iws and indices to the dict
-        lookahead_batch['iws'] = transitions['iws']
-        lookahead_batch['idxs'] = transitions['idxs']
-        return lookahead_batch
+        la_batch = super().lookahead(transitions, n, gamma, patcher)
+        # Add iws to the dict
+        la_batch['iws'] = transitions['iws']
+        return la_batch
 
     def append(self, *args, **kwargs):
         super().append(*args, **kwargs)
@@ -377,11 +387,11 @@ class UnrealReplayBuffer(PrioritizedReplayBuffer):
                     break
         return np.array(transition_idxs)
 
-    def sample(self, batch_size):
-        return super()._sample(batch_size, self._sample_unreal)
+    def sample(self, batch_size, patcher):
+        return super()._sample(batch_size, self._sample_unreal, patcher)
 
-    def lookahead_sample(self, batch_size, n, gamma):
-        return super().lookahead_sample(batch_size, n, gamma)
+    def lookahead_sample(self, *args):
+        return super().lookahead_sample(*args)
 
     def append(self, *args, **kwargs):
         super().append(*args, **kwargs)

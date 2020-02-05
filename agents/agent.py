@@ -1,5 +1,6 @@
 from collections import namedtuple
 import os.path as osp
+from copy import deepcopy
 
 import numpy as np
 import torch
@@ -35,6 +36,8 @@ class Agent(object):
         self.device = device
         self.hps = hps
         assert self.hps.lookahead > 1 or not self.hps.n_step_returns
+
+        self.hps.purl = False
 
         # Define demo dataset
         self.expert_dataset = expert_dataset
@@ -91,8 +94,9 @@ class Agent(object):
             self.targ_twin = Critic(self.env, self.hps).to(self.device)
             self.targ_twin.load_state_dict(self.twin.state_dict())
         if self.hps.rnd:
-            # Set up random network distillation
-            self.rnd = RandNetDistill(in_size=1, device=self.device)
+            # Set up random network distillation estimatiors, for online and batch data
+            self.rnd_o = RandNetDistill(self.env, self.hps, self.device, width=100, lr=1e-4)
+            self.rnd_b = RandNetDistill(self.env, self.hps, self.device, width=100, lr=1e-4)
 
         if self.param_noise is not None:
             # Create parameter-noise-perturbed ('pnp') actor
@@ -272,10 +276,18 @@ class Agent(object):
         return ac
 
     def get_reward(self, ob, ac):
+        if not self.hps.pixels:
+            # Normalize observation
+            ob = self.normalize_clip_ob(ob)
         return self.disc.get_reward(ob, ac)
 
     def train(self, update_critic, update_actor, rollout, iters_so_far):
         """Train the agent"""
+
+        # Create patcher if needed
+        patcher = None
+        if self.hps.historical_patching:
+            patcher = lambda x, y: self.get_reward(x, y)  # noqa
 
         # Get a batch of transitions from the replay buffer
         if self.hps.n_step_returns:
@@ -283,40 +295,24 @@ class Agent(object):
                 self.hps.batch_size,
                 self.hps.lookahead,
                 self.hps.gamma,
+                patcher=patcher,
             )
         else:
             batch = self.replay_buffer.sample(
                 self.hps.batch_size,
+                patcher=patcher,
             )
 
         if not self.hps.pixels:
+            batch['obs0_not_norm'] = deepcopy(batch['obs0'])
             # Standardize and clip observations
             batch['obs0'] = self.normalize_clip_ob(batch['obs0'])
             batch['obs1'] = self.normalize_clip_ob(batch['obs1'])
-
-        if self.hps.rnd:
-            # Update RND network
-            self.rnd.train(rollout['rews'])
 
         # Create tensors from the inputs
         state = torch.FloatTensor(batch['obs0']).to(self.device)
         action = torch.FloatTensor(batch['acs']).to(self.device)
         reward = torch.FloatTensor(batch['rews']).to(self.device)
-
-        if self.hps.s2r2 or self.hps.historical_patching:
-            # Get reward estimate from latest discriminator update
-            patched_reward = self.get_reward(state, action).detach()
-
-        if self.hps.historical_patching:
-            sampled_reward = reward.clone().detach()
-            # Calculate gap between replay reward and latest predicted reward
-            patch_gap = sampled_reward - patched_reward
-            # Overwrite reward with patched one
-            reward = patched_reward.clone()
-
-            # XXX
-            # self.replay_buffer.patch_rewards(batch['idxs'], reward.clone().detach().cpu().numpy())
-
         next_state = torch.FloatTensor(batch['obs1']).to(self.device)
         done = torch.FloatTensor(batch['dones1'].astype('float32')).to(self.device)
         if self.hps.prioritized_replay:
@@ -333,8 +329,11 @@ class Agent(object):
         else:
             next_action = self.targ_actr.act(next_state)
 
-        # Create data loader
-        # It is an iterable over 1 element, but using a dataloader is cleaner
+        if self.hps.rnd:
+            s_o = torch.FloatTensor(rollout['obs']).to(self.device)  # must be unnormalized
+            a_o = torch.FloatTensor(rollout['acs']).to(self.device)
+
+        # Create data loader (iterable over 1 elt, but using a dataloader is cleaner)
         p_dataset = Dataset(batch)
         p_dataloader = DataLoader(p_dataset, self.hps.batch_size, shuffle=True)
 
@@ -383,7 +382,16 @@ class Agent(object):
 
             # Actor loss
             actr_loss = -self.crit.QZ(state, self.actr.act(state))
-            actr_loss = actr_loss.matmul(self.c51_supp).mean()
+            actr_loss = actr_loss.matmul(self.c51_supp)
+            if self.hps.s2r2:
+                # Self-supervised auxiliary loss
+                s2r2_loss = F.smooth_l1_loss(input=self.actr.s2r2(state),
+                                             target=-actr_loss.detach(),
+                                             reduction='none')
+                s2r2_loss *= self.hps.s2r2_scale
+                # Add to actor loss
+                actr_loss += s2r2_loss
+            actr_loss = actr_loss.mean()
 
         elif self.hps.use_qr:
 
@@ -432,7 +440,16 @@ class Agent(object):
             crit_loss = crit_loss.mean()
 
             # Actor loss
-            actr_loss = -self.crit.QZ(state, self.actr.act(state)).mean()
+            actr_loss = -self.crit.QZ(state, self.actr.act(state))
+            if self.hps.s2r2:
+                # Self-supervised auxiliary loss
+                s2r2_loss = F.smooth_l1_loss(input=self.actr.s2r2(state),
+                                             target=-actr_loss.detach(),
+                                             reduction='none')
+                s2r2_loss *= self.hps.s2r2_scale
+                # Add to actor loss
+                actr_loss += s2r2_loss
+            actr_loss = actr_loss.mean()
 
         else:
 
@@ -496,15 +513,15 @@ class Agent(object):
 
             # Actor loss
             actr_loss = -self.crit.QZ(state, self.actr.act(state)).mean()
+            if self.hps.s2r2:
+                # Self-supervised auxiliary loss
+                s2r2_loss = F.smooth_l1_loss(input=self.actr.s2r2(state),
+                                             target=-actr_loss.detach())
+                s2r2_loss *= self.hps.s2r2_scale
+                # Add to actor loss
+                actr_loss += s2r2_loss
 
         # ######################################################################
-
-        if self.hps.s2r2:
-            # Self-supervised reward regression
-            s2r2_loss = F.smooth_l1_loss(patched_reward, self.actr.s2r2(state))
-            s2r2_loss *= self.hps.s2r2_scale
-            # Add to actor loss
-            actr_loss += s2r2_loss
 
         # Compute gradients
         self.actr_opt.zero_grad()
@@ -514,12 +531,10 @@ class Agent(object):
         self.crit_opt.zero_grad()
         crit_loss.backward()
         average_gradients(self.crit, self.device)
-        crit_gradn = U.clip_grad_norm_(self.crit.parameters(), self.hps.clip_norm)
         if self.hps.clipped_double:
             self.twin_opt.zero_grad()
             twin_loss.backward()
             average_gradients(self.twin, self.device)
-            twin_gradn = U.clip_grad_norm_(self.twin.parameters(), self.hps.clip_norm)
 
         # Perform model updates
         if update_critic:
@@ -541,38 +556,46 @@ class Agent(object):
             for p_chunk, e_chunk in zip(p_dataloader, self.e_dataloader):
                 self.update_disc(p_chunk, e_chunk)
 
+        if self.hps.rnd:
+            # Update RND network
+            self.rnd_o.train(s_o, a_o)
+            self.rnd_b.train(state, action)
+
         # Aggregate the elements to return
         losses = {'actr': actr_loss.clone().cpu().data.numpy(),
                   'crit': crit_loss.clone().cpu().data.numpy()}
-        gradns = {'actr': actr_gradn,
-                  'crit': crit_gradn}
+        gradns = {'actr': actr_gradn}
         if self.hps.clipped_double:
             losses.update({'twin': twin_loss.clone().cpu().data.numpy()})
-            gradns.update({'twin': twin_gradn})
 
         lrnows = {'actr': self.actr_sched.get_lr(),
                   'crit': self.crit_sched.get_lr()}
         if self.hps.clipped_double:
             lrnows.update({'twin': self.twin_sched.get_lr()})
 
-        extra = {}
-        if self.hps.historical_patching:
-            extra.update({'sampled_reward': sampled_reward.mean().cpu().numpy(),
-                          'patched_reward': patched_reward.mean().cpu().numpy(),
-                          'patch_gap': patch_gap.mean().cpu().numpy()})
-
-        return losses, gradns, lrnows, extra
+        return losses, gradns, lrnows
 
     def update_disc(self, p_chunk, e_chunk):
         """Update the discriminator network"""
         # Create tensors from the inputs
-        p_state = torch.FloatTensor(p_chunk['obs0']).to(self.device)  # already normalized
+        p_state = torch.FloatTensor(p_chunk['obs0_not_norm']).to(self.device)  # unnormalized
         p_action = torch.FloatTensor(p_chunk['acs']).to(self.device)
         if not self.hps.pixels:
             # Standardize and clip observations
             e_chunk['obs0'] = self.normalize_clip_ob(e_chunk['obs0'])
         e_state = torch.FloatTensor(e_chunk['obs0']).to(self.device)
         e_action = torch.FloatTensor(e_chunk['acs']).to(self.device)
+
+        trunc_isw = 1.0
+        if self.hps.rnd:
+            # Build prob estimates from novelty estimators
+            rnd_o_score = torch.exp(-self.rnd_o.get_novelty(p_state, p_action))
+            rnd_b_score = torch.exp(-self.rnd_b.get_novelty(p_state, p_action))
+            # Assemble truncated importance-sampling weights
+            isw = rnd_o_score / rnd_b_score
+            ceil = 1.0025
+            trunc_isw = torch.min(ceil * torch.ones_like(rnd_o_score), isw).detach()
+
         # Compute scores
         p_scores = self.disc.D(p_state, p_action)
         e_scores = self.disc.D(e_state, e_action)
@@ -592,12 +615,31 @@ class Agent(object):
             # Extra comment explanation: https://github.com/openai/improved-gan/blob/
             # 9ff96a7e9e5ac4346796985ddbb9af3239c6eed1/imagenet/build_model.py#L88-L121
             # Additional material: https://github.com/soumith/ganhacks/issues/10
-            real_labels.uniform_(0.8, 1.2)
+            real_labels.uniform_(0.7, 1.2)
         # Create binary classification (cross-entropy) losses
-        p_loss = F.binary_cross_entropy_with_logits(input=p_scores, target=fake_labels)
-        e_loss = F.binary_cross_entropy_with_logits(input=e_scores, target=real_labels)
+        p_loss = F.binary_cross_entropy_with_logits(input=p_scores,
+                                                    target=fake_labels,
+                                                    reduction='none')
+        e_loss = F.binary_cross_entropy_with_logits(input=e_scores,
+                                                    target=real_labels,
+                                                    reduction='none')
+        p_e_loss = (trunc_isw * p_loss) + e_loss
+        p_e_loss = p_e_loss.mean()
+        # Equivalently, hard-coded and reduced (no label smoothing for this form):
+        # p_e_loss = -torch.log(1. - torch.sigmoid(p_scores) + 1e-8) - F.logsigmoid(e_scores)
+        # p_e_loss = p_e_loss.mean()
+
+        if self.hps.purl:
+            # Overwrite with loss from PURL paper
+            eta = 0.25
+            beta = 0.0
+            p_e_loss = (eta * torch.log(1. - torch.sigmoid(e_scores) + 1e-8) +
+                        torch.max(-beta * torch.ones_like(p_scores),
+                                  F.logsigmoid(e_scores) - (eta * F.logsigmoid(p_scores))))
+            p_e_loss = p_e_loss.mean()
+
         # Aggregated loss
-        d_loss = p_loss + e_loss + entropy_loss
+        d_loss = p_e_loss + entropy_loss
 
         if self.hps.grad_pen:
             # Create gradient penalty loss (coefficient from the original paper)
@@ -609,7 +651,6 @@ class Agent(object):
         self.disc_opt.zero_grad()
         d_loss.backward()
         average_gradients(self.disc, self.device)
-        U.clip_grad_norm_(self.disc.parameters(), self.hps.clip_norm)
         self.disc_opt.step()
 
     def update_target_net(self, iters_so_far):
@@ -638,7 +679,7 @@ class Agent(object):
         """Adapt the parameter noise standard deviation"""
 
         # Perturb separate copy of the policy to adjust the scale for the next 'real' perturbation
-        batch = self.replay_buffer.sample(self.hps.batch_size)
+        batch = self.replay_buffer.sample(self.hps.batch_size, patcher=None)
         state = torch.FloatTensor(batch['obs0']).to(self.device)
         # Update the perturbable params
         for p in self.actr.perturbable_params:

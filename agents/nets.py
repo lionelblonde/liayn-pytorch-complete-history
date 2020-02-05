@@ -32,11 +32,6 @@ def init(nonlin=None, param=None,
     return _init
 
 
-def sigmoid(logits, temp=1.0):
-    logits = logits / (1. * temp)  # float
-    return 1. / (1. + torch.exp(-logits))
-
-
 # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> Models.
 
 class Discriminator(nn.Module):
@@ -51,15 +46,15 @@ class Discriminator(nn.Module):
         in_dim = self.ob_dim if self.hps.state_only else self.ob_dim + self.ac_dim
         self.score_trunk = nn.Sequential(OrderedDict([
             ('fc_block_1', nn.Sequential(OrderedDict([
-                ('fc', U.spectral_norm(nn.Linear(in_dim, 256))),
+                ('fc', U.spectral_norm(nn.Linear(in_dim, 100))),
                 ('nl', nn.LeakyReLU(negative_slope=self.leak, inplace=True)),
             ]))),
             ('fc_block_2', nn.Sequential(OrderedDict([
-                ('fc', U.spectral_norm(nn.Linear(256, 256))),
+                ('fc', U.spectral_norm(nn.Linear(100, 100))),
                 ('nl', nn.LeakyReLU(negative_slope=self.leak, inplace=True)),
             ]))),
         ]))
-        self.score_head = nn.Linear(256, 1)
+        self.score_head = nn.Linear(100, 1)
         # Perform initialization
         self.score_trunk.apply(init(nonlin='leaky_relu', param=self.leak))
         self.score_head.apply(init(weight_scale=0.01, constant_bias=0.0))
@@ -118,7 +113,7 @@ class Discriminator(nn.Module):
             # Numerics: 0 for expert-like states, goes to -inf for non-expert-like states
             # compatible with envs with traj cutoffs for good (expert-like) behavior
             # e.g. mountain car, which gets cut off when the car reaches the destination
-            non_satur_reward = torch.log(torch.sigmoid(self.D(ob, ac).detach()))
+            non_satur_reward = F.logsigmoid(self.D(ob, ac).detach())
             # Return the sum the two previous reward functions (as in AIRL, Fu et al. 2018)
             # Numerics: might be better might be way worse
             return non_satur_reward + minimax_reward
@@ -219,19 +214,19 @@ class Critic(nn.Module):
         self.hps = hps
         self.c_encoder = nn.Sequential(OrderedDict([
             ('fc_block_1', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(ob_dim + ac_dim, 256)),
-                ('ln', nn.LayerNorm(256)),
+                ('fc', nn.Linear(ob_dim + ac_dim, 400)),
+                ('ln', nn.LayerNorm(400)),
                 ('nl', nn.ReLU(inplace=True)),
             ]))),
         ]))
         self.c_decoder = nn.Sequential(OrderedDict([
             ('fc_block_1', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(256, 256)),
-                ('ln', nn.LayerNorm(256)),
+                ('fc', nn.Linear(400, 300)),
+                ('ln', nn.LayerNorm(300)),
                 ('nl', nn.ReLU(inplace=True)),
             ]))),
         ]))
-        self.c_head = nn.Linear(256, num_heads)
+        self.c_head = nn.Linear(300, num_heads)
         # Perform initialization
         self.c_encoder.apply(init(nonlin='relu', param=None))
         self.c_decoder.apply(init(nonlin='relu', param=None))
@@ -253,43 +248,3 @@ class Critic(nn.Module):
     @property
     def out_params(self):
         return [p for p in self.c_head.parameters()]
-
-
-# >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> Unused for now.
-
-class GatedRelabel(nn.Module):
-
-    def __init__(self, env, hps):
-        super(GatedRelabel, self).__init__()
-        ob_dim = env.observation_space.shape[0]
-        ac_dim = env.action_space.shape[0]
-        self.hps = hps
-        self.g_encoder = nn.Sequential(OrderedDict([
-            ('fc_block', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(ob_dim + ac_dim + 1, 256)),
-                ('ln', nn.LayerNorm(256)),
-                ('nl', nn.ReLU(inplace=True)),
-            ]))),
-        ]))
-        self.g_decoder = nn.Sequential(OrderedDict([
-            ('fc_block_1', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(256, 256)),
-                ('ln', nn.LayerNorm(256)),
-                ('nl', nn.ReLU(inplace=True)),
-            ]))),
-        ]))
-        self.g_head = nn.Linear(256, 1)
-        # Perform initialization
-        self.g_encoder.apply(init(nonlin='relu', param=None))
-        self.g_decoder.apply(init(nonlin='relu', param=None))
-        self.g_head.apply(init(weight_scale=0.01, constant_bias=5.0))  # gate starts open
-
-    def G(self, ob, ac, fp):
-        return self.forward(ob, ac, fp)
-
-    def forward(self, ob, ac, fp):
-        x = torch.cat([ob, ac, fp], dim=-1)
-        x = self.g_encoder(x)
-        x = self.g_decoder(x)
-        gate = sigmoid(logits=self.g_head(x), temp=self.hps.gate_temp)
-        return gate

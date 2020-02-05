@@ -16,18 +16,29 @@ from agents.agent import Agent
 def rollout_generator(env, agent, rollout_len):
 
     t = 0
-    done = True
     rollout = defaultdict(list)
 
-    if agent.hps.rnd or not agent.hps.pixels:
-        # Create reference batch
-        ref = agent.expert_dataset.data
+    # Pre-fill memory by performing uniform actions,
+    # while also warm-starting running stats
+    ob = np.array(env.reset())
+    for _ in range(int(1e3)):
         # Update running stats
-        agent.rms_obs.update(ref['obs0'])
-        if agent.hps.rnd:
-            # Randomly select a subset, fixed throughout the run
-            ne = ref['obs0'].shape[0]
-            idx = np.random.randint(ne - 1, size=min(32, ne))
+        agent.rms_obs.update(ob)
+        # Sample action uniformly (>< agent)
+        ac = env.action_space.sample()
+        new_ob, rew, done, _ = env.step(ac)
+        transition = {"obs0": ob,
+                      "acs": ac,
+                      "rews": rew,
+                      "obs1": new_ob,
+                      "dones1": done}
+        # Add transition to memory
+        agent.replay_buffer.append(transition)
+        # Assign new to current
+        ob = np.array(deepcopy(new_ob))
+        if done:
+            ob = np.array(env.reset())
+    logger.info("[INFO] memory now contains {} entries".format(agent.replay_buffer.num_entries))
 
     # Reset agent's noise processes and env
     agent.reset_noise()
@@ -35,9 +46,6 @@ def rollout_generator(env, agent, rollout_len):
 
     while True:
 
-        if not agent.hps.pixels:
-            # Normalize observation
-            ob = agent.normalize_clip_ob(ob)
         # Predict action
         ac = agent.predict(ob, apply_noise=True)
         # NaN-proof and clip
@@ -45,17 +53,14 @@ def rollout_generator(env, agent, rollout_len):
         ac = np.clip(ac, env.action_space.low, env.action_space.high)
 
         if t > 0 and t % rollout_len == 0:
-            out = {"acs": np.array(rollout["acs"]).reshape(-1, *agent.ac_shape)}
+            obs = np.array(rollout["obs"]).reshape(-1, *agent.ob_shape)
+            out = {
+                "obs": obs,
+                "acs": np.array(rollout["acs"]).reshape(-1, *agent.ac_shape),
+            }
             if not agent.hps.pixels:
                 # Update running stats
-                obs = np.array(rollout["obs"]).reshape(-1, *agent.ob_shape)
                 agent.rms_obs.update(obs)
-            if agent.hps.rnd:
-                # Compute reward and novelty on the reference batch
-                rews = agent.get_reward(ref['obs0'][idx, ...], ref['acs'][idx, ...])
-                novs = np.asscalar(agent.rnd.get_novelty(rews).mean().cpu().numpy().flatten())
-                out.update({"rews": rews,
-                            "novs": novs})
             # Yield
             yield out
             # When going back in, clear the rollout
@@ -74,8 +79,7 @@ def rollout_generator(env, agent, rollout_len):
         agent.replay_buffer.append(transition)
 
         # Populate rollout
-        if not agent.hps.pixels:
-            rollout["obs"].append(ob)
+        rollout["obs"].append(ob)
         rollout["acs"].append(ac)
 
         # Set current state with the next
@@ -115,8 +119,6 @@ def ep_generator(env, agent, render, record):
 
     while True:
 
-        # Normalize observation
-        ob = agent.normalize_clip_ob(ob)
         # Predict action
         ac = agent.predict(ob, apply_noise=False)
         # NaN-proof and clip
@@ -292,21 +294,15 @@ def learn(args,
                 update_critic = True
                 update_critic = not bool(training_step % args.d_update_ratio)
                 update_actor = update_critic and not bool(training_step % args.actor_update_delay)
-                losses, gradns, lrnows, extra = agent.train(update_critic=update_critic,
-                                                            update_actor=update_actor,
-                                                            rollout=rollout,
-                                                            iters_so_far=iters_so_far)
+                losses, gradns, lrnows = agent.train(update_critic=update_critic,
+                                                     update_actor=update_actor,
+                                                     rollout=rollout,
+                                                     iters_so_far=iters_so_far)
                 d['actr_gradns'].append(gradns['actr'])
                 d['actr_losses'].append(losses['actr'])
-                d['crit_gradns'].append(gradns['crit'])
                 d['crit_losses'].append(losses['crit'])
                 if agent.hps.clipped_double:
-                    d['twin_gradns'].append(gradns['twin'])
                     d['twin_losses'].append(losses['twin'])
-                if agent.hps.historical_patching:
-                    d['sampled_reward'].append(extra['sampled_reward'])
-                    d['patched_reward'].append(extra['patched_reward'])
-                    d['patch_gap'].append(extra['patch_gap'])
 
             # Log statistics
             stats = OrderedDict()
@@ -319,11 +315,9 @@ def learn(args,
                                    'gradn': np.mean(d['actr_gradns']),
                                    'lrnow': lrnows['actr'][0]}})
             stats.update({'crit': {'loss': np.mean(d['crit_losses']),
-                                   'gradn': np.mean(d['crit_gradns']),
                                    'lrnow': lrnows['crit'][0]}})
             if agent.hps.clipped_double:
                 stats.update({'twin': {'loss': np.mean(d['twin_losses']),
-                                       'gradn': np.mean(d['twin_gradns']),
                                        'lrnow': lrnows['twin'][0]}})
             if agent.param_noise is not None:
                 stats.update({'pn': {'pn_dist': np.mean(d['pn_dist']),
@@ -382,9 +376,6 @@ def learn(args,
 
             wandb.log({"num_workers": np.array(world_size)},
                       step=timesteps_so_far)
-            if agent.hps.rnd:
-                wandb.log({'novelty': np.mean(rollout['novs']) * 1e8},  # for better visualization
-                          step=timesteps_so_far)
             if iters_so_far % args.eval_frequency == 0:
                 wandb.log({'eval_len': np.mean(d['eval_len']),
                            'eval_env_ret': np.mean(d['eval_env_ret'])},
@@ -397,18 +388,11 @@ def learn(args,
                        'actr_gradn': np.mean(d['actr_gradns']),
                        'actr_lrnow': np.array(lrnows['actr']),
                        'crit_loss': np.mean(d['crit_losses']),
-                       'crit_gradn': np.mean(d['crit_gradns']),
                        'crit_lrnow': np.array(lrnows['crit'])},
                       step=timesteps_so_far)
             if agent.hps.clipped_double:
                 wandb.log({'twin_loss': np.mean(d['twin_losses']),
-                           'twin_gradn': np.mean(d['twin_gradns']),
                            'twin_lrnow': np.array(lrnows['twin'])},
-                          step=timesteps_so_far)
-            if agent.hps.historical_patching:
-                wandb.log({'sampled_reward': np.mean(d['sampled_reward']),
-                           'patched_reward': np.mean(d['patched_reward']),
-                           'patch_gap': np.mean(d['patch_gap'])},
                           step=timesteps_so_far)
 
         # Increment counters
