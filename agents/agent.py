@@ -58,12 +58,7 @@ class Agent(object):
             self.c51_supp = torch.linspace(*c51_supp_range).to(self.device)
             self.c51_delta = ((self.hps.c51_vmax - self.hps.c51_vmin) /
                               (self.hps.c51_num_atoms - 1))
-            c51_offset_range = (0,
-                                (self.hps.batch_size - 1) * self.hps.c51_num_atoms,
-                                self.hps.batch_size)
-            c51_offset = torch.linspace(*c51_offset_range)
-            self.c51_offset = c51_offset.long().unsqueeze(1).expand(self.hps.batch_size,
-                                                                    self.hps.c51_num_atoms)
+
         elif self.hps.use_qr:
             assert not self.hps.clipped_double
             qr_cum_density = np.array([((2 * i) + 1) / (2.0 * self.hps.num_tau)
@@ -352,6 +347,7 @@ class Agent(object):
 
             gamma_mask = ((self.hps.gamma ** td_len) * (1 - done))
             Tz = reward + (gamma_mask * self.c51_supp.view(1, self.hps.c51_num_atoms))
+
             Tz = Tz.clamp(self.hps.c51_vmin, self.hps.c51_vmax)
             b = (Tz - self.hps.c51_vmin) / self.c51_delta
             l = b.floor().long()  # noqa
@@ -359,12 +355,10 @@ class Agent(object):
             l[(u > 0) * (l == u)] -= 1  # noqa
             u[(l < (self.hps.c51_num_atoms - 1)) * (l == u)] += 1  # noqa
             targ_z = z_prime.clone().zero_()
-            targ_z.view(-1).index_add_(0,
-                                       (l + self.c51_offset).view(-1),
-                                       (z_prime * (u.float() - b)).view(-1))
-            targ_z.view(-1).index_add_(0,
-                                       (u + self.c51_offset).view(-1),
-                                       (z_prime * (b - l.float())).view(-1))
+            z_prime_l = (z_prime * (u.float() - b))
+            z_prime_u = (z_prime * (b - l.float())).view(-1)
+            targ_z.view(-1).index_add_(0, l.view(-1), z_prime_l.view(-1))
+            targ_z.view(-1).index_add_(0, u.view(-1), z_prime_u.view(-1))
             # Reshape target to be of shape [batch_size, self.hps.c51_num_atoms, 1]
             targ_z = targ_z.view(-1, self.hps.c51_num_atoms, 1)
 

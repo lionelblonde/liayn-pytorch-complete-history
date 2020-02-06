@@ -18,28 +18,6 @@ def rollout_generator(env, agent, rollout_len):
     t = 0
     rollout = defaultdict(list)
 
-    # Pre-fill memory by performing uniform actions,
-    # while also warm-starting running stats
-    ob = np.array(env.reset())
-    for _ in range(int(1e3)):
-        # Update running stats
-        agent.rms_obs.update(ob)
-        # Sample action uniformly (>< agent)
-        ac = env.action_space.sample()
-        new_ob, rew, done, _ = env.step(ac)
-        transition = {"obs0": ob,
-                      "acs": ac,
-                      "rews": rew,
-                      "obs1": new_ob,
-                      "dones1": done}
-        # Add transition to memory
-        agent.replay_buffer.append(transition)
-        # Assign new to current
-        ob = np.array(deepcopy(new_ob))
-        if done:
-            ob = np.array(env.reset())
-    logger.info("[INFO] memory now contains {} entries".format(agent.replay_buffer.num_entries))
-
     # Reset agent's noise processes and env
     agent.reset_noise()
     ob = np.array(env.reset())

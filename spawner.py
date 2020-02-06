@@ -48,30 +48,38 @@ if BENCH == 'mujoco':
                     'InvertedDoublePendulum',
                     'Reacher'],
            'hard': ['Hopper',
-                    'Walker2d',
-                    'HalfCheetah',
-                    'Ant'],
+                    'Walker2d'],
+           'insane': ['HalfCheetah',
+                      'Ant'],
            }
     if args.envset == 'all':
-        ENVS = TOC['easy'] + TOC['hard']
+        ENVS = TOC['easy'] + TOC['hard'] + TOC['insane']
     else:
         ENVS = TOC[args.envset]
     ENVS = ["{}-v2".format(n) for n in ENVS]
 
     if CLUSTER == 'baobab':
         # Define per-environement partitions map
-        PEP = {'InvertedPendulum': 'shared-EL7',
-               'InvertedDoublePendulum': 'shared-EL7',
-               'Reacher': 'shared-EL7',
-               'Hopper': 'parallel-EL7',
-               'Walker2d': 'parallel-EL7',
-               'HalfCheetah': 'parallel-EL7',
-               'Ant': 'parallel-EL7'}
+        PEP = {'InvertedPendulum': 'shared-EL7,mono-shared-EL7',
+               'InvertedDoublePendulum': 'shared-EL7,mono-shared-EL7',
+               'Reacher': 'shared-EL7,mono-shared-EL7',
+               'Hopper': 'shared-EL7,mono-shared-EL7',
+               'Walker2d': 'mono-EL7',
+               'HalfCheetah': 'mono-EL7',
+               'Ant': 'mono-EL7'}
+        # Define per-environment ntasks map
+        PEC = {'InvertedPendulum': '19',
+               'InvertedDoublePendulum': '19',
+               'Reacher': '19',
+               'Hopper': '38',  # less time that harder envs, but same ntasks to compensate
+               'Walker2d': '38',
+               'HalfCheetah': '38',
+               'Ant': '38'}
         # Define per-environment timeouts map
         PET = {'InvertedPendulum': '0-12:00:00',
                'InvertedDoublePendulum': '0-12:00:00',
                'Reacher': '0-12:00:00',
-               'Hopper': '2-00:00:00',
+               'Hopper': '0-12:00:00',
                'Walker2d': '4-00:00:00',
                'HalfCheetah': '4-00:00:00',
                'Ant': '4-00:00:00'}
@@ -349,7 +357,7 @@ def create_job_str(name, command, envkey):
 
         bash_script_str = bash_script_str.format(jobname=name,
                                                  partition=PEP[envkey],
-                                                 ntasks=CONFIG['resources']['num_workers'],
+                                                 ntasks=PEC[envkey],
                                                  timeout=PET[envkey],
                                                  command=command)
 
