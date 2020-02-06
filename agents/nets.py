@@ -138,35 +138,42 @@ class Actor(nn.Module):
         self.hps = hps
         self.s_encoder = nn.Sequential(OrderedDict([
             ('fc_block', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(ob_dim, 256)),
-                ('ln', nn.LayerNorm(256)),
+                ('fc', nn.Linear(ob_dim, 300)),
+                ('ln', nn.LayerNorm(300)),
                 ('nl', nn.ReLU(inplace=True)),
             ]))),
         ]))
         self.a_decoder = nn.Sequential(OrderedDict([
             ('fc_block', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(256, 256)),
-                ('ln', nn.LayerNorm(256)),
+                ('fc', nn.Linear(300, 200)),
+                ('ln', nn.LayerNorm(200)),
                 ('nl', nn.ReLU(inplace=True)),
             ]))),
         ]))
-        self.a_skip_co = nn.Sequential()
-        self.a_head = nn.Linear(256, ac_dim)
-        if self.hps.s2r2:
+        self.a_head = nn.Linear(200, ac_dim)
+        if self.hps.ss_aux_loss_q or self.hps.ss_aux_loss_z:
+            if self.hps.ss_aux_loss_z:
+                if self.hps.use_c51:
+                    num_heads = hps.c51_num_atoms
+                elif self.hps.use_qr:
+                    num_heads = hps.num_tau
+                else:
+                    raise ValueError("invalid")
+            else:  # self.hps.ss_aux_loss_q
+                num_heads = 1
             self.r_decoder = nn.Sequential(OrderedDict([
                 ('fc_block_1', nn.Sequential(OrderedDict([
-                    ('fc', nn.Linear(256, 256)),
-                    ('ln', nn.LayerNorm(256)),
+                    ('fc', nn.Linear(300, 200)),
+                    ('ln', nn.LayerNorm(200)),
                     ('nl', nn.ReLU(inplace=True)),
                 ]))),
             ]))
-            self.r_skip_co = nn.Sequential()
-            self.r_head = nn.Linear(256, 1)
+            self.r_head = nn.Linear(200, num_heads)
         # Perform initialization
         self.s_encoder.apply(init(nonlin='relu', param=None))
         self.a_decoder.apply(init(nonlin='relu', param=None))
         self.a_head.apply(init(weight_scale=0.01, constant_bias=0.0))
-        if self.hps.s2r2:
+        if self.hps.ss_aux_loss_q or self.hps.ss_aux_loss_z:
             self.r_decoder.apply(init(nonlin='relu', param=None))
             self.r_head.apply(init(weight_scale=0.01, constant_bias=0.0))
 
@@ -174,8 +181,8 @@ class Actor(nn.Module):
         out = self.forward(ob)
         return out[0]  # ac
 
-    def s2r2(self, ob):
-        if self.hps.s2r2:
+    def ss_aux_loss(self, ob):
+        if self.hps.ss_aux_loss_q or self.hps.ss_aux_loss_z:
             out = self.forward(ob)
             return out[1]  # reward
         else:
@@ -183,10 +190,10 @@ class Actor(nn.Module):
 
     def forward(self, ob):
         x = self.s_encoder(ob)
-        ac = float(self.ac_max) * torch.tanh(self.a_head(self.a_decoder(x) + self.a_skip_co(x)))
+        ac = float(self.ac_max) * torch.tanh(self.a_head(self.a_decoder(x)))
         out = [ac]
-        if self.hps.s2r2:
-            reward = self.r_head(self.r_decoder(x) + self.r_skip_co(x))
+        if self.hps.ss_aux_loss_q or self.hps.ss_aux_loss_z:
+            reward = self.r_head(self.r_decoder(x))
             out.append(reward)
         return out
 

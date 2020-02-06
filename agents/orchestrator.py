@@ -18,6 +18,10 @@ def rollout_generator(env, agent, rollout_len):
     t = 0
     rollout = defaultdict(list)
 
+    if not agent.hps.pixels:
+        # Warm-start running stats with expert observations
+        agent.rms_obs.update(agent.expert_dataset.data['obs0'])
+
     # Reset agent's noise processes and env
     agent.reset_noise()
     ob = np.array(env.reset())

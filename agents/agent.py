@@ -36,8 +36,9 @@ class Agent(object):
         self.device = device
         self.hps = hps
         assert self.hps.lookahead > 1 or not self.hps.n_step_returns
-
-        self.hps.purl = False
+        assert sum([self.hps.ss_aux_loss_q, self.hps.ss_aux_loss_z]) in [0, 1]
+        assert self.hps.d_trunc_is or not self.hps.adaptive_eta
+        assert self.hps.use_purl or not self.hps.adaptive_eta
 
         # Define demo dataset
         self.expert_dataset = expert_dataset
@@ -58,6 +59,12 @@ class Agent(object):
             self.c51_supp = torch.linspace(*c51_supp_range).to(self.device)
             self.c51_delta = ((self.hps.c51_vmax - self.hps.c51_vmin) /
                               (self.hps.c51_num_atoms - 1))
+            c51_offset_range = (0,
+                                (self.hps.batch_size - 1) * self.hps.c51_num_atoms,
+                                self.hps.batch_size)
+            c51_offset = torch.linspace(*c51_offset_range).long().unsqueeze(1)
+            self.c51_offset = c51_offset.expand(self.hps.batch_size,
+                                                self.hps.c51_num_atoms).to(self.device)
 
         elif self.hps.use_qr:
             assert not self.hps.clipped_double
@@ -67,7 +74,9 @@ class Agent(object):
             self.qr_cum_density = qr_cum_density.view(1, 1, -1, 1).expand(self.hps.batch_size,
                                                                           self.hps.num_tau,
                                                                           self.hps.num_tau,
-                                                                          -1)
+                                                                          -1).to(self.device)
+        else:
+            assert not self.hps.ss_aux_loss_z
 
         # Parse the noise types
         self.param_noise, self.ac_noise = self.parse_noise_type(self.hps.noise_type)
@@ -88,7 +97,7 @@ class Agent(object):
             sync_with_root(self.twin)
             self.targ_twin = Critic(self.env, self.hps).to(self.device)
             self.targ_twin.load_state_dict(self.twin.state_dict())
-        if self.hps.rnd:
+        if self.hps.d_trunc_is:
             # Set up random network distillation estimatiors, for online and batch data
             self.rnd_o = RandNetDistill(self.env, self.hps, self.device, width=100, lr=1e-4)
             self.rnd_b = RandNetDistill(self.env, self.hps, self.device, width=100, lr=1e-4)
@@ -154,7 +163,7 @@ class Agent(object):
     def norm_rets(self, x):
         if self.hps.popart:
             return ((x - torch.FloatTensor(self.rms_ret.mean)).to(self.device) /
-                    torch.FloatTensor(np.sqrt(self.rms_ret.var)).to(self.device) + 1e-8)
+                    torch.FloatTensor(np.sqrt(self.rms_ret.var)).to(self.device) + 1e-12)
         else:
             return x
 
@@ -235,10 +244,10 @@ class Agent(object):
         # Normalize with running mean and running std
         if torch.is_tensor(ob):
             ob = ((ob - torch.FloatTensor(self.rms_obs.mean)) /
-                  (torch.FloatTensor(np.sqrt(self.rms_obs.var)) + 1e-8))
+                  (torch.FloatTensor(np.sqrt(self.rms_obs.var)) + 1e-12))
         else:
             ob = ((ob - self.rms_obs.mean) /
-                  (np.sqrt(self.rms_obs.var) + 1e-8))
+                  (np.sqrt(self.rms_obs.var) + 1e-12))
         # Clip
         if torch.is_tensor(ob):
             ob = torch.clamp(ob, -5.0, 5.0)
@@ -324,7 +333,7 @@ class Agent(object):
         else:
             next_action = self.targ_actr.act(next_state)
 
-        if self.hps.rnd:
+        if self.hps.d_trunc_is:
             s_o = torch.FloatTensor(rollout['obs']).to(self.device)  # must be unnormalized
             a_o = torch.FloatTensor(rollout['acs']).to(self.device)
 
@@ -347,7 +356,6 @@ class Agent(object):
 
             gamma_mask = ((self.hps.gamma ** td_len) * (1 - done))
             Tz = reward + (gamma_mask * self.c51_supp.view(1, self.hps.c51_num_atoms))
-
             Tz = Tz.clamp(self.hps.c51_vmin, self.hps.c51_vmax)
             b = (Tz - self.hps.c51_vmin) / self.c51_delta
             l = b.floor().long()  # noqa
@@ -357,13 +365,13 @@ class Agent(object):
             targ_z = z_prime.clone().zero_()
             z_prime_l = (z_prime * (u.float() - b))
             z_prime_u = (z_prime * (b - l.float())).view(-1)
-            targ_z.view(-1).index_add_(0, l.view(-1), z_prime_l.view(-1))
-            targ_z.view(-1).index_add_(0, u.view(-1), z_prime_u.view(-1))
+            targ_z.view(-1).index_add_(0, (l + self.c51_offset).view(-1), z_prime_l.view(-1))
+            targ_z.view(-1).index_add_(0, (u + self.c51_offset).view(-1), z_prime_u.view(-1))
             # Reshape target to be of shape [batch_size, self.hps.c51_num_atoms, 1]
             targ_z = targ_z.view(-1, self.hps.c51_num_atoms, 1)
 
             # Critic loss
-            ce_losses = -(targ_z.detach() * torch.log(z + 1e-8)).sum(dim=1)
+            ce_losses = -(targ_z.detach() * torch.log(z)).sum(dim=1)
 
             if self.hps.prioritized_replay:
                 # Update priorities
@@ -375,16 +383,19 @@ class Agent(object):
             crit_loss = ce_losses.mean()
 
             # Actor loss
-            actr_loss = -self.crit.QZ(state, self.actr.act(state))
-            actr_loss = actr_loss.matmul(self.c51_supp)
-            if self.hps.s2r2:
+            actr_loss = -self.crit.QZ(state, self.actr.act(state))  # [batch_size, num_atoms]
+            if self.hps.ss_aux_loss_q:
+                actr_loss = actr_loss.matmul(self.c51_supp).unsqueeze(-1)  # [batch_size, 1]
+            if self.hps.ss_aux_loss_q or self.hps.ss_aux_loss_z:
                 # Self-supervised auxiliary loss
-                s2r2_loss = F.smooth_l1_loss(input=self.actr.s2r2(state),
-                                             target=-actr_loss.detach(),
-                                             reduction='none')
-                s2r2_loss *= self.hps.s2r2_scale
+                ss_aux_loss = F.smooth_l1_loss(input=self.actr.ss_aux_loss(state),
+                                               target=-actr_loss.detach(),
+                                               reduction='none')
+                ss_aux_loss *= self.hps.ss_aux_loss_scale
                 # Add to actor loss
-                actr_loss += s2r2_loss
+                actr_loss += ss_aux_loss
+            if not self.hps.ss_aux_loss_q:
+                actr_loss = actr_loss.matmul(self.c51_supp).unsqueeze(-1)  # [batch_size, 1]
             actr_loss = actr_loss.mean()
 
         elif self.hps.use_qr:
@@ -435,14 +446,14 @@ class Agent(object):
 
             # Actor loss
             actr_loss = -self.crit.QZ(state, self.actr.act(state))
-            if self.hps.s2r2:
+            if self.hps.ss_aux_loss_q or self.hps.ss_aux_loss_z:
                 # Self-supervised auxiliary loss
-                s2r2_loss = F.smooth_l1_loss(input=self.actr.s2r2(state),
-                                             target=-actr_loss.detach(),
-                                             reduction='none')
-                s2r2_loss *= self.hps.s2r2_scale
+                ss_aux_loss = F.smooth_l1_loss(input=self.actr.ss_aux_loss(state),
+                                               target=-actr_loss.detach(),
+                                               reduction='none')
+                ss_aux_loss *= self.hps.ss_aux_loss_scale
                 # Add to actor loss
-                actr_loss += s2r2_loss
+                actr_loss += ss_aux_loss
             actr_loss = actr_loss.mean()
 
         else:
@@ -471,12 +482,12 @@ class Agent(object):
                 # Apply Pop-Art, https://arxiv.org/pdf/1602.07714.pdf
                 # Save the pre-update running stats
                 old_mean = torch.FloatTensor(self.rms_ret.mean).to(self.device)
-                old_std = torch.FloatTensor(np.sqrt(self.rms_ret.var) + 1e-8).to(self.device)
+                old_std = torch.FloatTensor(np.sqrt(self.rms_ret.var) + 1e-12).to(self.device)
                 # Update the running stats
                 self.rms_ret.update(targ_q)
                 # Get the post-update running statistics
                 new_mean = torch.FloatTensor(self.rms_ret.mean).to(self.device)
-                new_std = torch.FloatTensor(np.sqrt(self.rms_ret.var) + 1e-8).to(self.device)
+                new_std = torch.FloatTensor(np.sqrt(self.rms_ret.var) + 1e-12).to(self.device)
                 # Preserve the output from before the change of normalization old->new
                 # for both online and target critic(s)
                 outs = [self.crit.out_params, self.targ_crit.out_params]
@@ -507,13 +518,13 @@ class Agent(object):
 
             # Actor loss
             actr_loss = -self.crit.QZ(state, self.actr.act(state)).mean()
-            if self.hps.s2r2:
+            if self.hps.ss_aux_loss_q:
                 # Self-supervised auxiliary loss
-                s2r2_loss = F.smooth_l1_loss(input=self.actr.s2r2(state),
-                                             target=-actr_loss.detach())
-                s2r2_loss *= self.hps.s2r2_scale
+                ss_aux_loss = F.smooth_l1_loss(input=self.actr.ss_aux_loss(state),
+                                               target=-actr_loss.detach())
+                ss_aux_loss *= self.hps.ss_aux_loss_scale
                 # Add to actor loss
-                actr_loss += s2r2_loss
+                actr_loss += ss_aux_loss
 
         # ######################################################################
 
@@ -550,7 +561,7 @@ class Agent(object):
             for p_chunk, e_chunk in zip(p_dataloader, self.e_dataloader):
                 self.update_disc(p_chunk, e_chunk)
 
-        if self.hps.rnd:
+        if self.hps.d_trunc_is:
             # Update RND network
             self.rnd_o.train(s_o, a_o)
             self.rnd_b.train(state, action)
@@ -580,57 +591,43 @@ class Agent(object):
         e_state = torch.FloatTensor(e_chunk['obs0']).to(self.device)
         e_action = torch.FloatTensor(e_chunk['acs']).to(self.device)
 
-        trunc_isw = 1.0
-        if self.hps.rnd:
+        if self.hps.d_trunc_is:
             # Build prob estimates from novelty estimators
             rnd_o_score = torch.exp(-self.rnd_o.get_novelty(p_state, p_action))
             rnd_b_score = torch.exp(-self.rnd_b.get_novelty(p_state, p_action))
             # Assemble truncated importance-sampling weights
             isw = rnd_o_score / rnd_b_score
             ceil = 1.0025
-            trunc_isw = torch.min(ceil * torch.ones_like(rnd_o_score), isw).detach()
+            trunc_is_w = torch.min(ceil * torch.ones_like(rnd_o_score), isw).unsqueeze(-1).detach()
+        else:
+            trunc_is_w = 1.0
 
         # Compute scores
         p_scores = self.disc.D(p_state, p_action)
         e_scores = self.disc.D(e_state, e_action)
+
         # Create entropy loss
         scores = torch.cat([p_scores, e_scores], dim=0)
-        entropy = F.binary_cross_entropy_with_logits(input=scores,
-                                                     target=torch.sigmoid(scores))
+        entropy = F.binary_cross_entropy_with_logits(input=scores, target=torch.sigmoid(scores))
         entropy_loss = -self.hps.ent_reg_scale * entropy
-        # Create labels
-        fake_labels = torch.zeros_like(p_scores).to(self.device)
-        real_labels = torch.ones_like(e_scores).to(self.device)
-        if self.hps.os_label_smoothing:
-            # Label smoothing, suggested in 'Improved Techniques for Training GANs',
-            # Salimans 2016, https://arxiv.org/abs/1606.03498
-            # The paper advises on the use of one-sided label smoothing, i.e.
-            # only smooth out the positive (real) targets side.
-            # Extra comment explanation: https://github.com/openai/improved-gan/blob/
-            # 9ff96a7e9e5ac4346796985ddbb9af3239c6eed1/imagenet/build_model.py#L88-L121
-            # Additional material: https://github.com/soumith/ganhacks/issues/10
-            real_labels.uniform_(0.7, 1.2)
-        # Create binary classification (cross-entropy) losses
-        p_loss = F.binary_cross_entropy_with_logits(input=p_scores,
-                                                    target=fake_labels,
-                                                    reduction='none')
-        e_loss = F.binary_cross_entropy_with_logits(input=e_scores,
-                                                    target=real_labels,
-                                                    reduction='none')
-        p_e_loss = (trunc_isw * p_loss) + e_loss
-        p_e_loss = p_e_loss.mean()
-        # Equivalently, hard-coded and reduced (no label smoothing for this form):
-        # p_e_loss = -torch.log(1. - torch.sigmoid(p_scores) + 1e-8) - F.logsigmoid(e_scores)
-        # p_e_loss = p_e_loss.mean()
 
-        if self.hps.purl:
-            # Overwrite with loss from PURL paper
-            eta = 0.25
+        if self.hps.use_purl:
+            # Create positive-unlabeled binary classification (cross-entropy) losses
+            if self.hps.adaptive_eta:
+                eta = rnd_o_score.unsqueeze(-1).detach()
+            else:
+                eta = self.hps.purl_eta
             beta = 0.0
-            p_e_loss = (eta * torch.log(1. - torch.sigmoid(e_scores) + 1e-8) +
-                        torch.max(-beta * torch.ones_like(p_scores),
-                                  F.logsigmoid(e_scores) - (eta * F.logsigmoid(p_scores))))
-            p_e_loss = p_e_loss.mean()
+            p_e_loss = eta * torch.log(1. - torch.sigmoid(e_scores) + 1e-12)
+            rhs = (F.logsigmoid(e_scores) - trunc_is_w * (eta * F.logsigmoid(p_scores)))
+            p_e_loss += torch.max(-beta * torch.ones_like(p_scores), rhs)
+        else:
+            # Create positive-negative binary classification (cross-entropy) losses
+            p_loss = -torch.log(1. - torch.sigmoid(p_scores) + 1e-12)
+            e_loss = - F.logsigmoid(e_scores)
+            p_e_loss = (trunc_is_w * p_loss) + e_loss
+        # Averate out over the batch
+        p_e_loss = p_e_loss.mean()
 
         # Aggregated loss
         d_loss = p_e_loss + entropy_loss

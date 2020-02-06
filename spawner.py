@@ -31,13 +31,14 @@ CONDA = CONFIG['resources']['conda_env']
 # Define experiment type
 TYPE = 'sweep' if args.sweep else 'fixed'
 # Write out the boolean arguments (using the 'boolean_flag' function)
-BOOL_ARGS = ['cuda', 'pixels', 's2r2', 'popart',
+BOOL_ARGS = ['cuda', 'pixels', 'ss_aux_loss_q', 'ss_aux_loss_z', 'popart',
              'render', 'record', 'with_scheduler',
              'prioritized_replay', 'ranked', 'unreal',
              'n_step_returns', 'clipped_double', 'targ_actor_smoothing',
-             'state_only', 'minimax_only', 'grad_pen', 'os_label_smoothing',
-             'rnd', 'historical_patching',
-             'use_c51', 'use_qr', 'use_iqn']
+             'state_only', 'minimax_only', 'grad_pen',
+             'd_trunc_is', 'historical_patching',
+             'use_c51', 'use_qr', 'use_iqn',
+             'use_purl', 'adaptive_eta']
 
 # Create the list of environments from the indicated benchmark
 BENCH = CONFIG['parameters']['benchmark']
@@ -143,7 +144,7 @@ def get_hps(sweep):
             # Training
             'save_frequency': CONFIG['parameters'].get('save_frequency', 400),
             'num_timesteps': int(float(CONFIG['parameters'].get('num_timesteps', 2e7))),
-            'training_steps_per_iter': np.random.choice([4, 16, 32]),
+            'training_steps_per_iter': CONFIG['parameters'].get('training_steps_per_iter', 2),
             'eval_steps_per_iter': CONFIG['parameters'].get('eval_steps_per_iter', 10),
             'eval_frequency': CONFIG['parameters'].get('eval_frequency', 10),
 
@@ -168,8 +169,9 @@ def get_hps(sweep):
             'targ_up_freq': np.random.choice([10, 1000]),
             'n_step_returns': CONFIG['parameters'].get('n_step_returns', False),
             'lookahead': np.random.choice([5, 10, 20, 40, 60]),
-            's2r2': CONFIG['parameters'].get('s2r2', False),
-            's2r2_scale': np.random.choice([0.001, 0.01, 0.1]),
+            'ss_aux_loss_q': CONFIG['parameters'].get('ss_aux_loss_q', False),
+            'ss_aux_loss_z': CONFIG['parameters'].get('ss_aux_loss_z', False),
+            'ss_aux_loss_scale': np.random.choice([0.001, 0.01, 0.1]),
             'popart': CONFIG['parameters'].get('popart', False),
 
             # TD3
@@ -192,7 +194,7 @@ def get_hps(sweep):
             'c51_num_atoms': CONFIG['parameters'].get('c51_num_atoms', 51),
             'c51_vmin': CONFIG['parameters'].get('c51_vmin', 0.),
             'c51_vmax': CONFIG['parameters'].get('c51_vmax', 100.),
-            'num_tau': np.random.choice([16, 32]),
+            'num_tau': np.random.choice([100, 200]),
 
             # Adversarial imitation
             'd_lr': float(CONFIG['parameters'].get('d_lr', 1e-5)),
@@ -202,9 +204,13 @@ def get_hps(sweep):
             'd_update_ratio': CONFIG['parameters'].get('d_update_ratio', 2),
             'num_demos': CONFIG['parameters'].get('num_demos', 0),
             'grad_pen': CONFIG['parameters'].get('grad_pen', False),
-            'os_label_smoothing': CONFIG['parameters'].get('os_label_smoothing', False),
-            'rnd': CONFIG['parameters'].get('rnd', False),
-            'historical_patching': CONFIG['parameters'].get('historical_patching', False),
+            'd_trunc_is': CONFIG['parameters'].get('d_trunc_is', False),
+            'historical_patching': CONFIG['parameters'].get('historical_patching', True),
+
+            # PU
+            'use_purl': CONFIG['parameters'].get('use_purl', False),
+            'purl_eta': CONFIG['parameters'].get('purl_eta', 0.25),
+            'adaptive_eta': CONFIG['parameters'].get('adaptive_eta', False),
         }
     else:
         # No search, fixed map
@@ -225,7 +231,7 @@ def get_hps(sweep):
             # Training
             'save_frequency': CONFIG['parameters'].get('save_frequency', 400),
             'num_timesteps': int(float(CONFIG['parameters'].get('num_timesteps', 2e7))),
-            'training_steps_per_iter': CONFIG['parameters'].get('training_steps_per_iter', 20),
+            'training_steps_per_iter': CONFIG['parameters'].get('training_steps_per_iter', 2),
             'eval_steps_per_iter': CONFIG['parameters'].get('eval_steps_per_iter', 10),
             'eval_frequency': CONFIG['parameters'].get('eval_frequency', 10),
 
@@ -247,8 +253,9 @@ def get_hps(sweep):
             'targ_up_freq': CONFIG['parameters'].get('targ_up_freq', 100),
             'n_step_returns': CONFIG['parameters'].get('n_step_returns', False),
             'lookahead': CONFIG['parameters'].get('lookahead', 60),
-            's2r2': CONFIG['parameters'].get('s2r2', False),
-            's2r2_scale': CONFIG['parameters'].get('s2r2_scale', 0.025),
+            'ss_aux_loss_q': CONFIG['parameters'].get('ss_aux_loss_q', False),
+            'ss_aux_loss_z': CONFIG['parameters'].get('ss_aux_loss_z', False),
+            'ss_aux_loss_scale': CONFIG['parameters'].get('ss_aux_loss_scale', 0.1),
             'popart': CONFIG['parameters'].get('popart', False),
 
             # TD3
@@ -271,7 +278,7 @@ def get_hps(sweep):
             'c51_num_atoms': CONFIG['parameters'].get('c51_num_atoms', 51),
             'c51_vmin': CONFIG['parameters'].get('c51_vmin', 0.),
             'c51_vmax': CONFIG['parameters'].get('c51_vmax', 100.),
-            'num_tau': CONFIG['parameters'].get('num_tau', 16),
+            'num_tau': CONFIG['parameters'].get('num_tau', 200),
 
             # Adversarial imitation
             'd_lr': float(CONFIG['parameters'].get('d_lr', 1e-5)),
@@ -281,9 +288,13 @@ def get_hps(sweep):
             'd_update_ratio': CONFIG['parameters'].get('d_update_ratio', 2),
             'num_demos': CONFIG['parameters'].get('num_demos', 0),
             'grad_pen': CONFIG['parameters'].get('grad_pen', False),
-            'os_label_smoothing': CONFIG['parameters'].get('os_label_smoothing', False),
-            'rnd': CONFIG['parameters'].get('rnd', False),
-            'historical_patching': CONFIG['parameters'].get('historical_patching', False),
+            'd_trunc_is': CONFIG['parameters'].get('d_trunc_is', False),
+            'historical_patching': CONFIG['parameters'].get('historical_patching', True),
+
+            # PU
+            'use_purl': CONFIG['parameters'].get('use_purl', False),
+            'purl_eta': CONFIG['parameters'].get('purl_eta', 0.25),
+            'adaptive_eta': CONFIG['parameters'].get('adaptive_eta', False),
         }
 
     # Duplicate for each environment

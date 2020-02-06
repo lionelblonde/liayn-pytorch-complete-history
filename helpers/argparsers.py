@@ -26,7 +26,7 @@ def argparser(description="DDPG Experiment"):
 
     # Training
     parser.add_argument('--save_frequency', help='save model every xx iterations',
-                        type=int, default=100)
+                        type=int, default=1000)
     parser.add_argument('--num_timesteps', help='total number of interactions',
                         type=int, default=int(1e7))
     parser.add_argument('--training_steps_per_iter', type=int, default=4)
@@ -42,10 +42,10 @@ def argparser(description="DDPG Experiment"):
 
     # Algorithm
     parser.add_argument('--rollout_len', help='number of interactions per iteration',
-                        type=int, default=1024)
+                        type=int, default=2)
     parser.add_argument('--batch_size', help='minibatch size', type=int, default=128)
-    parser.add_argument('--gamma', help='discount factor', type=float, default=0.995)
-    parser.add_argument('--mem_size', type=int, default=int(1e6))
+    parser.add_argument('--gamma', help='discount factor', type=float, default=0.99)
+    parser.add_argument('--mem_size', type=int, default=int(1e5))
     parser.add_argument('--noise_type', help='choices: adaptive-param_xx, normal_xx, ou_xx, none',
                         type=str, default='adaptive-param_0.2, ou_0.1, normal_0.1')
     parser.add_argument('--pn_adapt_frequency', type=float, default=50)
@@ -53,8 +53,9 @@ def argparser(description="DDPG Experiment"):
     parser.add_argument('--targ_up_freq', type=int, default=100, help='hard target nets update')
     boolean_flag(parser, 'n_step_returns', default=True)
     parser.add_argument('--lookahead', help='num lookahead steps', type=int, default=10)
-    boolean_flag(parser, 's2r2', help='s2r2 auxiliary task', default=False)
-    parser.add_argument('--s2r2_scale', type=float, default=0.025)
+    boolean_flag(parser, 'ss_aux_loss_q', help='self-supervised auxiliary loss, Q', default=False)
+    boolean_flag(parser, 'ss_aux_loss_z', help='self-supervised auxiliary loss, Z', default=False)
+    parser.add_argument('--ss_aux_loss_scale', type=float, default=0.1)
     boolean_flag(parser, 'popart', default=False)
 
     # TD3
@@ -80,7 +81,7 @@ def argparser(description="DDPG Experiment"):
     parser.add_argument('--c51_num_atoms', type=int, default=51)
     parser.add_argument('--c51_vmin', type=float, default=0.)
     parser.add_argument('--c51_vmax', type=float, default=100.)
-    parser.add_argument('--num_tau', type=int, default=32, help='N in IQN paper')
+    parser.add_argument('--num_tau', type=int, default=200)
 
     # Adversarial imitation
     parser.add_argument('--d_lr', type=float, default=1e-5)
@@ -92,9 +93,13 @@ def argparser(description="DDPG Experiment"):
     parser.add_argument('--num_demos', help='number of expert demo trajs for imitation',
                         type=int, default=None)
     boolean_flag(parser, 'grad_pen', help='whether to use gradient penalty', default=True)
-    boolean_flag(parser, 'os_label_smoothing', default=False)
-    boolean_flag(parser, 'rnd', help='whether to use rnd', default=False)
-    boolean_flag(parser, 'historical_patching', default=False)
+    boolean_flag(parser, 'd_trunc_is', help='whether to use truncated IS in D', default=False)
+    boolean_flag(parser, 'historical_patching', default=True)
+
+    # PU
+    boolean_flag(parser, 'use_purl', default=False)
+    parser.add_argument('--purl_eta', type=float, default=0.25)
+    boolean_flag(parser, 'adaptive_eta', default=False)
 
     # Evaluation
     parser.add_argument('--model_path', type=str, default=None)
