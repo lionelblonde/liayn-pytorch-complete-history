@@ -224,11 +224,20 @@ def learn(args,
 
     # Setup wandb
     if rank == 0:
-        wandb.init(project=args.wandb_project,
-                   name=experiment_name,
-                   group='.'.join(experiment_name.split('.')[:-2]),
-                   job_type=experiment_name.split('.')[-2],
-                   config=args.__dict__)
+        while True:
+            try:
+                wandb.init(project=args.wandb_project,
+                           name=experiment_name,
+                           group='.'.join(experiment_name.split('.')[:-2]),
+                           job_type=experiment_name.split('.')[-2],
+                           config=args.__dict__)
+            except ConnectionRefusedError:
+                pause = 5
+                logger.info("[WARN] wandb co error. Retrying in {} secs.".format(pause))
+                time.sleep(pause)
+            else:
+                logger.info("[WARN] wandb co established!")
+                break
 
     # Create rollout generator for training the agent
     roll_gen = rollout_generator(env, agent, args.rollout_len)
