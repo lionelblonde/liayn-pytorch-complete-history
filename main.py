@@ -29,6 +29,8 @@ def train(args):
     # Create experiment name
     experiment_name = experiment.get_name()
 
+    logger.info("EXP OK")
+
     # Set device-related knobs
     if args.cuda and torch.cuda.is_available():
         torch.backends.cudnn.benchmark = False
@@ -39,6 +41,8 @@ def train(args):
         device = torch.device("cpu")
     logger.info("device in use: {}".format(device))
 
+    logger.info("DEVICE OK")
+
     # Seedify
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed_all(args.seed)
@@ -47,17 +51,25 @@ def train(args):
     worker_seed = args.seed + (1000000 * (rank + 1))
     eval_seed = args.seed + 1000000
 
+    logger.info("SEEDS OK")
+
     # Create environment
     env = make_env(args.env_id, worker_seed)
+
+    logger.info("TRAIN ENV OK")
 
     # Create the expert demonstrations dataset from expert trajectories
     expert_dataset = DemoDataset(expert_path=args.expert_path,
                                  num_demos=args.num_demos)
 
+    logger.info("DATASET OK")
+
     # Create an evaluation environment not to mess up with training rollouts
     eval_env = None
     if rank == 0:
         eval_env = make_env(args.env_id, eval_seed)
+
+    logger.info("EVAL ENV OK")
 
     # Train
     orchestrator.learn(args=args,

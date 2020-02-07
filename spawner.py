@@ -46,9 +46,8 @@ if BENCH == 'mujoco':
     # Define environments map
     TOC = {'debug': ['InvertedPendulum'],
            'easy': ['InvertedPendulum',
-                    'InvertedDoublePendulum',
                     'Reacher'],
-           'hard': ['Hopper',
+           'hard': ['InvertedDoublePendulum',
                     'Walker2d'],
            'insane': ['HalfCheetah',
                       'Ant'],
@@ -62,28 +61,25 @@ if BENCH == 'mujoco':
     if CLUSTER == 'baobab':
         # Define per-environement partitions map
         PEP = {'InvertedPendulum': 'shared-EL7,mono-shared-EL7',
-               'InvertedDoublePendulum': 'shared-EL7,mono-shared-EL7',
                'Reacher': 'shared-EL7,mono-shared-EL7',
-               'Hopper': 'shared-EL7,mono-shared-EL7',
-               'Walker2d': 'mono-EL7',
-               'HalfCheetah': 'mono-EL7',
-               'Ant': 'mono-EL7'}
+               'InvertedDoublePendulum': 'shared-EL7,mono-shared-EL7',
+               'Walker2d': 'shared-EL7,mono-shared-EL7',  # mono-EL7
+               'HalfCheetah': 'shared-EL7,mono-shared-EL7',  # mono-EL7
+               'Ant': 'shared-EL7,mono-shared-EL7'}  # mono-EL7
         # Define per-environment ntasks map
         PEC = {'InvertedPendulum': '19',
-               'InvertedDoublePendulum': '19',
                'Reacher': '19',
-               'Hopper': '38',  # less time that harder envs, but same ntasks to compensate
+               'InvertedDoublePendulum': '19',
                'Walker2d': '38',
                'HalfCheetah': '38',
                'Ant': '38'}
         # Define per-environment timeouts map
         PET = {'InvertedPendulum': '0-12:00:00',
-               'InvertedDoublePendulum': '0-12:00:00',
                'Reacher': '0-12:00:00',
-               'Hopper': '0-12:00:00',
-               'Walker2d': '4-00:00:00',
-               'HalfCheetah': '4-00:00:00',
-               'Ant': '4-00:00:00'}
+               'InvertedDoublePendulum': '0-12:00:00',
+               'Walker2d': '0-12:00:00',  # 4-00:00:00
+               'HalfCheetah': '0-12:00:00',  # 4-00:00:00
+               'Ant': '0-12:00:00'}  # 4-00:00:00
 else:
     raise NotImplementedError("benchmark not covered by the spawner.")
 assert bool(TOC), "each benchmark must have a 'TOC' dictionary"
@@ -359,7 +355,7 @@ def create_job_str(name, command, envkey):
                                 '#SBATCH --constraint="{}"\n'.format(contraint))
         bash_script_str += ('\n')
         # Load modules
-        bash_script_str += ('module load GCC/7.3.0-2.30 OpenMPI/3.1.1\n')
+        bash_script_str += ('module load GCC/8.3.0 OpenMPI/3.1.4\n')
         if CONFIG['parameters']['cuda']:
             bash_script_str += ('module load CUDA\n')
         bash_script_str += ('\n')

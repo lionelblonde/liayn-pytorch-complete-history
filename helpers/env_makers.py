@@ -1,5 +1,8 @@
+import os
+
 import gym
 
+from helpers import logger
 import environments
 
 
@@ -16,10 +19,29 @@ def get_benchmark(env_id):
 def make_env(env_id, seed):
     """Create an environment"""
     benchmark = get_benchmark(env_id)
+    if benchmark == 'mujoco':
+        # Remove the lockfile if it exists
+        lockfile = os.path.join(
+            os.environ['CONDA_PREFIX'],
+            "lib",
+            "python3.7",
+            "site-packages",
+            "mujoco_py",
+            "generated",
+            "mujocopy-buildlock.lock",
+        )
+        try:
+            os.remove(lockfile)
+            logger.info("[WARN] removed mujoco lockfile")
+        except OSError:
+            pass
+
     env = gym.make(env_id)
     env.seed(seed)
+
     if benchmark == 'mujoco':
         pass  # weird, but struct kept general if adding other envs
     else:
         raise ValueError('unsupported benchmark')
+
     return env
