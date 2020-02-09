@@ -52,7 +52,7 @@ def rollout_generator(env, agent, rollout_len):
         new_ob, _, done, _ = env.step(ac)
 
         # Store transition(s) in the replay buffer
-        rew = np.asscalar(agent.get_reward(ob, ac).cpu().numpy().flatten())
+        rew = np.asscalar(agent.get_reward(ob, ac)[0].cpu().numpy().flatten())
         transition = {"obs0": ob,
                       "acs": ac,
                       "rews": rew,

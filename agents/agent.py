@@ -36,7 +36,6 @@ class Agent(object):
         self.device = device
         self.hps = hps
         assert self.hps.lookahead > 1 or not self.hps.n_step_returns
-        assert sum([self.hps.ss_aux_loss_q, self.hps.ss_aux_loss_z]) in [0, 1]
         assert self.hps.d_trunc_is or not self.hps.adaptive_eta
         assert self.hps.use_purl or not self.hps.adaptive_eta
 
@@ -75,8 +74,6 @@ class Agent(object):
                                                                           self.hps.num_tau,
                                                                           self.hps.num_tau,
                                                                           -1).to(self.device)
-        else:
-            assert not self.hps.ss_aux_loss_z
 
         # Parse the noise types
         self.param_noise, self.ac_noise = self.parse_noise_type(self.hps.noise_type)
@@ -283,7 +280,38 @@ class Agent(object):
         if not self.hps.pixels:
             # Normalize observation
             ob = self.normalize_clip_ob(ob)
-        return self.disc.get_reward(ob, ac)
+        # Craft surrogate reward
+        assert sum([isinstance(x, torch.Tensor) for x in [ob, ac]]) in [0, 2]
+        if not isinstance(ob, torch.Tensor):  # then ac is not neither
+            ob = torch.FloatTensor(ob)
+            ac = torch.FloatTensor(ac)
+        # Transfer to cpu
+        ob = ob.cpu()
+        ac = ac.cpu()
+        # Compure score
+        score = self.disc.D(ob, ac).detach().view(-1, 1)
+        sigscore = torch.sigmoid(score)  # squashed in [0, 1]
+        # Counterpart of GAN's minimax (also called "saturating") loss
+        # Numerics: 0 for non-expert-like states, goes to +inf for expert-like states
+        # compatible with envs with traj cutoffs for bad (non-expert-like) behavior
+        # e.g. walking simulations that get cut off when the robot falls over
+        minimax_reward = -torch.log(1. - torch.sigmoid(score) + 1e-12)
+        if self.hps.minimax_only:
+            reward = minimax_reward
+        else:
+            # Counterpart of GAN's non-saturating loss
+            # Recommended in the original GAN paper and later in (Fedus et al. 2017)
+            # Numerics: 0 for expert-like states, goes to -inf for non-expert-like states
+            # compatible with envs with traj cutoffs for good (expert-like) behavior
+            # e.g. mountain car, which gets cut off when the car reaches the destination
+            non_satur_reward = F.logsigmoid(score)
+            # Return the sum the two previous reward functions (as in AIRL, Fu et al. 2018)
+            # Numerics: might be better might be way worse
+            reward = non_satur_reward + minimax_reward
+        # Perform binning
+        num_bins = 3  # arbitrarily
+        binned = (sigscore // (1 / num_bins)).long().squeeze(-1)
+        return reward, binned
 
     def train(self, update_critic, update_actor, rollout, iters_so_far):
         """Train the agent"""
@@ -291,7 +319,7 @@ class Agent(object):
         # Create patcher if needed
         patcher = None
         if self.hps.historical_patching:
-            patcher = lambda x, y: self.get_reward(x, y)  # noqa
+            patcher = lambda x, y: self.get_reward(x, y)[0].cpu().numpy()  # noqa
 
         # Get a batch of transitions from the replay buffer
         if self.hps.n_step_returns:
@@ -384,19 +412,16 @@ class Agent(object):
 
             # Actor loss
             actr_loss = -self.crit.QZ(state, self.actr.act(state))  # [batch_size, num_atoms]
-            if self.hps.ss_aux_loss_q:
-                actr_loss = actr_loss.matmul(self.c51_supp).unsqueeze(-1)  # [batch_size, 1]
-            if self.hps.ss_aux_loss_q or self.hps.ss_aux_loss_z:
+            actr_loss = actr_loss.matmul(self.c51_supp).unsqueeze(-1)  # [batch_size, 1]
+            actr_loss = actr_loss.mean()
+
+            if self.hps.sig_score_binning_aux_loss:
                 # Self-supervised auxiliary loss
-                ss_aux_loss = F.smooth_l1_loss(input=self.actr.ss_aux_loss(state),
-                                               target=-actr_loss.detach(),
-                                               reduction='none')
+                ss_aux_loss = F.cross_entropy(input=self.actr.ss_aux_loss(state),
+                                              target=self.get_reward(state, action)[1])
                 ss_aux_loss *= self.hps.ss_aux_loss_scale
                 # Add to actor loss
                 actr_loss += ss_aux_loss
-            if not self.hps.ss_aux_loss_q:
-                actr_loss = actr_loss.matmul(self.c51_supp).unsqueeze(-1)  # [batch_size, 1]
-            actr_loss = actr_loss.mean()
 
         elif self.hps.use_qr:
 
@@ -445,16 +470,15 @@ class Agent(object):
             crit_loss = crit_loss.mean()
 
             # Actor loss
-            actr_loss = -self.crit.QZ(state, self.actr.act(state))
-            if self.hps.ss_aux_loss_q or self.hps.ss_aux_loss_z:
+            actr_loss = -self.crit.QZ(state, self.actr.act(state)).mean()
+
+            if self.hps.sig_score_binning_aux_loss:
                 # Self-supervised auxiliary loss
-                ss_aux_loss = F.smooth_l1_loss(input=self.actr.ss_aux_loss(state),
-                                               target=-actr_loss.detach(),
-                                               reduction='none')
+                ss_aux_loss = F.cross_entropy(input=self.actr.ss_aux_loss(state),
+                                              target=self.get_reward(state, action)[1])
                 ss_aux_loss *= self.hps.ss_aux_loss_scale
                 # Add to actor loss
                 actr_loss += ss_aux_loss
-            actr_loss = actr_loss.mean()
 
         else:
 
@@ -518,10 +542,11 @@ class Agent(object):
 
             # Actor loss
             actr_loss = -self.crit.QZ(state, self.actr.act(state)).mean()
-            if self.hps.ss_aux_loss_q:
+
+            if self.hps.sig_score_binning_aux_loss:
                 # Self-supervised auxiliary loss
-                ss_aux_loss = F.smooth_l1_loss(input=self.actr.ss_aux_loss(state),
-                                               target=-actr_loss.detach())
+                ss_aux_loss = F.cross_entropy(input=self.actr.ss_aux_loss(state),
+                                              target=self.get_reward(state, action)[1])
                 ss_aux_loss *= self.hps.ss_aux_loss_scale
                 # Add to actor loss
                 actr_loss += ss_aux_loss
@@ -619,7 +644,7 @@ class Agent(object):
                 eta = self.hps.purl_eta
             beta = 0.0
             p_e_loss = eta * torch.log(1. - torch.sigmoid(e_scores) + 1e-12)
-            rhs = (F.logsigmoid(e_scores) - trunc_is_w * (eta * F.logsigmoid(p_scores)))
+            rhs = (F.logsigmoid(e_scores) - (trunc_is_w * (eta * F.logsigmoid(p_scores))))
             p_e_loss += torch.max(-beta * torch.ones_like(p_scores), rhs)
         else:
             # Create positive-negative binary classification (cross-entropy) losses

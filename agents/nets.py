@@ -89,35 +89,6 @@ class Discriminator(nn.Module):
         grads_concat = torch.cat(list(grads), dim=-1)
         return (grads_concat.norm(2, dim=-1) - 1.).pow(2).mean()
 
-    def get_reward(self, ob, ac):
-        """Craft surrogate reward"""
-        assert sum([isinstance(x, torch.Tensor) for x in [ob, ac]]) in [0, 2]
-        if not isinstance(ob, torch.Tensor):  # then ac is not neither
-            ob = torch.FloatTensor(ob)
-            ac = torch.FloatTensor(ac)
-        # Transfer to cpu
-        ob = ob.cpu()
-        ac = ac.cpu()
-
-        # Counterpart of GAN's minimax (also called "saturating") loss
-        # Numerics: 0 for non-expert-like states, goes to +inf for expert-like states
-        # compatible with envs with traj cutoffs for bad (non-expert-like) behavior
-        # e.g. walking simulations that get cut off when the robot falls over
-        minimax_reward = -torch.log(1. - torch.sigmoid(self.D(ob, ac).detach()) + 1e-8)
-
-        if self.hps.minimax_only:
-            return minimax_reward
-        else:
-            # Counterpart of GAN's non-saturating loss
-            # Recommended in the original GAN paper and later in (Fedus et al. 2017)
-            # Numerics: 0 for expert-like states, goes to -inf for non-expert-like states
-            # compatible with envs with traj cutoffs for good (expert-like) behavior
-            # e.g. mountain car, which gets cut off when the car reaches the destination
-            non_satur_reward = F.logsigmoid(self.D(ob, ac).detach())
-            # Return the sum the two previous reward functions (as in AIRL, Fu et al. 2018)
-            # Numerics: might be better might be way worse
-            return non_satur_reward + minimax_reward
-
     def D(self, ob, ac):
         return self.forward(ob, ac)
 
@@ -125,7 +96,7 @@ class Discriminator(nn.Module):
         x = ob if self.hps.state_only else torch.cat([ob, ac], dim=-1)
         x = self.score_trunk(x)
         score = self.score_head(x)
-        return score
+        return score  # no sigmoid here
 
 
 class Actor(nn.Module):
@@ -151,16 +122,7 @@ class Actor(nn.Module):
             ]))),
         ]))
         self.a_head = nn.Linear(200, ac_dim)
-        if self.hps.ss_aux_loss_q or self.hps.ss_aux_loss_z:
-            if self.hps.ss_aux_loss_z:
-                if self.hps.use_c51:
-                    num_heads = hps.c51_num_atoms
-                elif self.hps.use_qr:
-                    num_heads = hps.num_tau
-                else:
-                    raise ValueError("invalid")
-            else:  # self.hps.ss_aux_loss_q
-                num_heads = 1
+        if self.hps.sig_score_binning_aux_loss:
             self.r_decoder = nn.Sequential(OrderedDict([
                 ('fc_block_1', nn.Sequential(OrderedDict([
                     ('fc', nn.Linear(300, 200)),
@@ -168,12 +130,12 @@ class Actor(nn.Module):
                     ('nl', nn.ReLU(inplace=True)),
                 ]))),
             ]))
-            self.r_head = nn.Linear(200, num_heads)
+            self.r_head = nn.Linear(200, 3)  # bins
         # Perform initialization
         self.s_encoder.apply(init(nonlin='relu', param=None))
         self.a_decoder.apply(init(nonlin='relu', param=None))
         self.a_head.apply(init(weight_scale=0.01, constant_bias=0.0))
-        if self.hps.ss_aux_loss_q or self.hps.ss_aux_loss_z:
+        if self.hps.sig_score_binning_aux_loss:
             self.r_decoder.apply(init(nonlin='relu', param=None))
             self.r_head.apply(init(weight_scale=0.01, constant_bias=0.0))
 
@@ -182,9 +144,9 @@ class Actor(nn.Module):
         return out[0]  # ac
 
     def ss_aux_loss(self, ob):
-        if self.hps.ss_aux_loss_q or self.hps.ss_aux_loss_z:
+        if self.hps.sig_score_binning_aux_loss:
             out = self.forward(ob)
-            return out[1]  # reward
+            return out[1]  # aux
         else:
             raise ValueError("should not be called")
 
@@ -192,9 +154,10 @@ class Actor(nn.Module):
         x = self.s_encoder(ob)
         ac = float(self.ac_max) * torch.tanh(self.a_head(self.a_decoder(x)))
         out = [ac]
-        if self.hps.ss_aux_loss_q or self.hps.ss_aux_loss_z:
-            reward = self.r_head(self.r_decoder(x))
-            out.append(reward)
+        if self.hps.sig_score_binning_aux_loss:
+            aux = self.r_head(self.r_decoder(x))
+            aux = F.log_softmax(aux, dim=1).exp()
+            out.append(aux)
         return out
 
     @property

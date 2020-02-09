@@ -4,7 +4,6 @@ from collections import defaultdict
 
 import numpy as np
 
-from helpers import logger
 from helpers.math_util import discount
 from helpers.misc_util import zipsame
 from helpers.segment_tree import SumSegmentTree, MinSegmentTree
@@ -68,7 +67,7 @@ class ReplayBuffer(object):
         if patcher is not None:
             # Patch the rewards
             transitions['rews'] = patcher(transitions['obs0'],
-                                          transitions['acs']).detach().cpu().numpy()
+                                          transitions['acs'])
 
         return transitions
 
@@ -89,7 +88,7 @@ class ReplayBuffer(object):
             if patcher is not None:
                 # Patch the rewards
                 la_transitions['rews'] = patcher(la_transitions['obs0'],
-                                                 la_transitions['acs']).detach().cpu().numpy()
+                                                 la_transitions['acs'])
             # Only keep data from the current episode, drop everything after episode reset, if any
             dones = la_transitions['dones1']
             ep_end_idx = idx + list(dones).index(1.0) if 1.0 in dones else la_end_idx
@@ -109,6 +108,7 @@ class ReplayBuffer(object):
             la_batch['td_len'].append(td_len)
 
             # # This block: sanity checker
+            # from helpers import logger
             # logger.info("\n\n")
             # print("idx: {}".format(idx))
             # print("la_end_idx: {}".format(la_end_idx))
@@ -260,7 +260,7 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         if patcher is not None:
             # Patch the rewards
             w_transitions['rews'] = patcher(w_transitions['obs0'],
-                                            w_transitions['acs']).detach().cpu().numpy()
+                                            w_transitions['acs'])
 
         return w_transitions
 

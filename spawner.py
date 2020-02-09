@@ -31,7 +31,7 @@ CONDA = CONFIG['resources']['conda_env']
 # Define experiment type
 TYPE = 'sweep' if args.sweep else 'fixed'
 # Write out the boolean arguments (using the 'boolean_flag' function)
-BOOL_ARGS = ['cuda', 'pixels', 'ss_aux_loss_q', 'ss_aux_loss_z', 'popart',
+BOOL_ARGS = ['cuda', 'pixels', 'sig_score_binning_aux_loss', 'popart',
              'render', 'record', 'with_scheduler',
              'prioritized_replay', 'ranked', 'unreal',
              'n_step_returns', 'clipped_double', 'targ_actor_smoothing',
@@ -165,8 +165,7 @@ def get_hps(sweep):
             'targ_up_freq': np.random.choice([10, 1000]),
             'n_step_returns': CONFIG['parameters'].get('n_step_returns', False),
             'lookahead': np.random.choice([5, 10, 20, 40, 60]),
-            'ss_aux_loss_q': CONFIG['parameters'].get('ss_aux_loss_q', False),
-            'ss_aux_loss_z': CONFIG['parameters'].get('ss_aux_loss_z', False),
+            'sig_score_binning_aux_loss': CONFIG['parameters'].get('sig_score_binning_aux_loss', False),
             'ss_aux_loss_scale': np.random.choice([0.001, 0.01, 0.1]),
             'popart': CONFIG['parameters'].get('popart', False),
 
@@ -249,8 +248,7 @@ def get_hps(sweep):
             'targ_up_freq': CONFIG['parameters'].get('targ_up_freq', 100),
             'n_step_returns': CONFIG['parameters'].get('n_step_returns', False),
             'lookahead': CONFIG['parameters'].get('lookahead', 60),
-            'ss_aux_loss_q': CONFIG['parameters'].get('ss_aux_loss_q', False),
-            'ss_aux_loss_z': CONFIG['parameters'].get('ss_aux_loss_z', False),
+            'sig_score_binning_aux_loss': CONFIG['parameters'].get('sig_score_binning_aux_loss', False),
             'ss_aux_loss_scale': CONFIG['parameters'].get('ss_aux_loss_scale', 0.1),
             'popart': CONFIG['parameters'].get('popart', False),
 
