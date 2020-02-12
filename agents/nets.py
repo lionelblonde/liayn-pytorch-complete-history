@@ -41,7 +41,7 @@ class Discriminator(nn.Module):
         self.ob_dim = env.observation_space.shape[0]
         self.ac_dim = env.action_space.shape[0]
         self.hps = hps
-        self.leak = 0.1
+        self.leak = 0.02
         # Define the input dimension, depending on whether actions are used too.
         in_dim = self.ob_dim if self.hps.state_only else self.ob_dim + self.ac_dim
         self.score_trunk = nn.Sequential(OrderedDict([
