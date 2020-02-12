@@ -1,3 +1,4 @@
+import math
 from collections import OrderedDict
 
 import torch
@@ -10,17 +11,13 @@ from torch.autograd import Variable
 
 # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> Core.
 
-def init(nonlin=None, param=None,
-         weight_scale=1., constant_bias=0.):
+def init(weight_scale=1., constant_bias=0.):
     """Perform orthogonal initialization"""
 
     def _init(m):
 
         if (isinstance(m, nn.Conv2d) or isinstance(m, nn.Linear)):
-            scale = (nn.init.calculate_gain(nonlin, param)
-                     if nonlin is not None
-                     else weight_scale)
-            nn.init.orthogonal_(m.weight, gain=scale)
+            nn.init.orthogonal_(m.weight, gain=weight_scale)
             if m.bias is not None:
                 nn.init.constant_(m.bias, constant_bias)
         elif (isinstance(m, nn.BatchNorm2d) or
@@ -41,23 +38,23 @@ class Discriminator(nn.Module):
         self.ob_dim = env.observation_space.shape[0]
         self.ac_dim = env.action_space.shape[0]
         self.hps = hps
-        self.leak = 0.02
+        self.leak = 0.1
         # Define the input dimension, depending on whether actions are used too.
         in_dim = self.ob_dim if self.hps.state_only else self.ob_dim + self.ac_dim
         self.score_trunk = nn.Sequential(OrderedDict([
             ('fc_block_1', nn.Sequential(OrderedDict([
                 ('fc', U.spectral_norm(nn.Linear(in_dim, 100))),
-                ('nl', nn.LeakyReLU(negative_slope=self.leak, inplace=True)),
+                ('nl', nn.LeakyReLU(negative_slope=self.leak)),
             ]))),
             ('fc_block_2', nn.Sequential(OrderedDict([
                 ('fc', U.spectral_norm(nn.Linear(100, 100))),
-                ('nl', nn.LeakyReLU(negative_slope=self.leak, inplace=True)),
+                ('nl', nn.LeakyReLU(negative_slope=self.leak)),
             ]))),
         ]))
         self.score_head = nn.Linear(100, 1)
         # Perform initialization
-        self.score_trunk.apply(init(nonlin='leaky_relu', param=self.leak))
-        self.score_head.apply(init(weight_scale=0.01, constant_bias=0.0))
+        self.score_trunk.apply(init(weight_scale=math.sqrt(2) / math.sqrt(1 + self.leak**2)))
+        self.score_head.apply(init())
 
     def grad_pen(self, p_ob, p_ac, e_ob, e_ac):
         """Gradient penalty regularizer (motivation from Wasserstein GANs (Gulrajani),
@@ -111,14 +108,14 @@ class Actor(nn.Module):
             ('fc_block', nn.Sequential(OrderedDict([
                 ('fc', nn.Linear(ob_dim, 300)),
                 ('ln', nn.LayerNorm(300)),
-                ('nl', nn.ReLU(inplace=True)),
+                ('nl', nn.ReLU()),
             ]))),
         ]))
         self.a_decoder = nn.Sequential(OrderedDict([
             ('fc_block', nn.Sequential(OrderedDict([
                 ('fc', nn.Linear(300, 200)),
                 ('ln', nn.LayerNorm(200)),
-                ('nl', nn.ReLU(inplace=True)),
+                ('nl', nn.ReLU()),
             ]))),
         ]))
         self.a_head = nn.Linear(200, ac_dim)
@@ -127,17 +124,17 @@ class Actor(nn.Module):
                 ('fc_block_1', nn.Sequential(OrderedDict([
                     ('fc', nn.Linear(300, 200)),
                     ('ln', nn.LayerNorm(200)),
-                    ('nl', nn.ReLU(inplace=True)),
+                    ('nl', nn.ReLU()),
                 ]))),
             ]))
             self.r_head = nn.Linear(200, 3)  # bins
         # Perform initialization
-        self.s_encoder.apply(init(nonlin='relu', param=None))
-        self.a_decoder.apply(init(nonlin='relu', param=None))
-        self.a_head.apply(init(weight_scale=0.01, constant_bias=0.0))
+        self.s_encoder.apply(init(weight_scale=math.sqrt(2)))
+        self.a_decoder.apply(init(weight_scale=math.sqrt(2)))
+        self.a_head.apply(init(weight_scale=0.01))
         if self.hps.sig_score_binning_aux_loss:
-            self.r_decoder.apply(init(nonlin='relu', param=None))
-            self.r_head.apply(init(weight_scale=0.01, constant_bias=0.0))
+            self.r_decoder.apply(init(weight_scale=math.sqrt(2)))
+            self.r_head.apply(init(weight_scale=0.01))
 
     def act(self, ob):
         out = self.forward(ob)
@@ -186,21 +183,21 @@ class Critic(nn.Module):
             ('fc_block_1', nn.Sequential(OrderedDict([
                 ('fc', nn.Linear(ob_dim + ac_dim, 400)),
                 ('ln', nn.LayerNorm(400)),
-                ('nl', nn.ReLU(inplace=True)),
+                ('nl', nn.ReLU()),
             ]))),
         ]))
         self.c_decoder = nn.Sequential(OrderedDict([
             ('fc_block_1', nn.Sequential(OrderedDict([
                 ('fc', nn.Linear(400, 300)),
                 ('ln', nn.LayerNorm(300)),
-                ('nl', nn.ReLU(inplace=True)),
+                ('nl', nn.ReLU()),
             ]))),
         ]))
         self.c_head = nn.Linear(300, num_heads)
         # Perform initialization
-        self.c_encoder.apply(init(nonlin='relu', param=None))
-        self.c_decoder.apply(init(nonlin='relu', param=None))
-        self.c_head.apply(init(weight_scale=0.01, constant_bias=0.0))
+        self.c_encoder.apply(init(weight_scale=math.sqrt(2)))
+        self.c_decoder.apply(init(weight_scale=math.sqrt(2)))
+        self.c_head.apply(init(weight_scale=0.01))
 
     def QZ(self, ob, ac):
         return self.forward(ob, ac)

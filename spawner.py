@@ -46,14 +46,14 @@ if BENCH == 'mujoco':
     # Define environments map
     TOC = {'debug': ['InvertedDoublePendulum'],
            'easy': ['InvertedPendulum',
+                    'InvertedDoublePendulum',
                     'Reacher'],
-           'hard': ['InvertedDoublePendulum',
-                    'Walker2d'],
-           'insane': ['HalfCheetah',
-                      'Ant'],
+           'hard': ['Walker2d',
+                    'HalfCheetah',
+                    'Ant'],
            }
     if args.envset == 'all':
-        ENVS = TOC['easy'] + TOC['hard'] + TOC['insane']
+        ENVS = TOC['easy'] + TOC['hard']
     else:
         ENVS = TOC[args.envset]
     ENVS = ["{}-v2".format(n) for n in ENVS]
