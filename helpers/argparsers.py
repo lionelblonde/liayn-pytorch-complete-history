@@ -84,7 +84,7 @@ def argparser(description="DDPG Experiment"):
 
     # Adversarial imitation
     parser.add_argument('--d_lr', type=float, default=1e-5)
-    boolean_flag(parser, 'state_only', default=False)
+    boolean_flag(parser, 'state_only', default=True)
     boolean_flag(parser, 'minimax_only', default=True)
     parser.add_argument('--ent_reg_scale', type=float, default=0.)
     parser.add_argument('--d_update_ratio', type=int, default=1,

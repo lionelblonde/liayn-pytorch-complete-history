@@ -44,7 +44,7 @@ BOOL_ARGS = ['cuda', 'pixels', 'sig_score_binning_aux_loss', 'popart',
 BENCH = CONFIG['parameters']['benchmark']
 if BENCH == 'mujoco':
     # Define environments map
-    TOC = {'debug': ['InvertedPendulum'],
+    TOC = {'debug': ['InvertedDoublePendulum'],
            'easy': ['InvertedPendulum',
                     'Reacher'],
            'hard': ['InvertedDoublePendulum',
@@ -67,12 +67,12 @@ if BENCH == 'mujoco':
                'HalfCheetah': 'shared-EL7,mono-shared-EL7',  # mono-EL7
                'Ant': 'shared-EL7,mono-shared-EL7'}  # mono-EL7
         # Define per-environment ntasks map
-        PEC = {'InvertedPendulum': '19',
-               'Reacher': '19',
-               'InvertedDoublePendulum': '19',
-               'Walker2d': '38',
-               'HalfCheetah': '38',
-               'Ant': '38'}
+        PEC = {'InvertedPendulum': '20',
+               'Reacher': '20',
+               'InvertedDoublePendulum': '20',
+               'Walker2d': '40',
+               'HalfCheetah': '40',
+               'Ant': '40'}
         # Define per-environment timeouts map
         PET = {'InvertedPendulum': '0-12:00:00',
                'Reacher': '0-12:00:00',
@@ -193,7 +193,7 @@ def get_hps(sweep):
 
             # Adversarial imitation
             'd_lr': float(CONFIG['parameters'].get('d_lr', 1e-5)),
-            'state_only': CONFIG['parameters'].get('state_only', False),
+            'state_only': CONFIG['parameters'].get('state_only', True),
             'minimax_only': CONFIG['parameters'].get('minimax_only', True),
             'ent_reg_scale': CONFIG['parameters'].get('ent_reg_scale', 0.),
             'd_update_ratio': CONFIG['parameters'].get('d_update_ratio', 2),
@@ -276,7 +276,7 @@ def get_hps(sweep):
 
             # Adversarial imitation
             'd_lr': float(CONFIG['parameters'].get('d_lr', 1e-5)),
-            'state_only': CONFIG['parameters'].get('state_only', False),
+            'state_only': CONFIG['parameters'].get('state_only', True),
             'minimax_only': CONFIG['parameters'].get('minimax_only', True),
             'ent_reg_scale': CONFIG['parameters'].get('ent_reg_scale', 0.),
             'd_update_ratio': CONFIG['parameters'].get('d_update_ratio', 2),

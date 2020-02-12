@@ -58,13 +58,6 @@ class Agent(object):
             self.c51_supp = torch.linspace(*c51_supp_range).to(self.device)
             self.c51_delta = ((self.hps.c51_vmax - self.hps.c51_vmin) /
                               (self.hps.c51_num_atoms - 1))
-            c51_offset_range = (0,
-                                (self.hps.batch_size - 1) * self.hps.c51_num_atoms,
-                                self.hps.batch_size)
-            c51_offset = torch.linspace(*c51_offset_range).long().unsqueeze(1)
-            self.c51_offset = c51_offset.expand(self.hps.batch_size,
-                                                self.hps.c51_num_atoms).to(self.device)
-
         elif self.hps.use_qr:
             assert not self.hps.clipped_double
             qr_cum_density = np.array([((2 * i) + 1) / (2.0 * self.hps.num_tau)
@@ -310,7 +303,8 @@ class Agent(object):
             reward = non_satur_reward + minimax_reward
         # Perform binning
         num_bins = 3  # arbitrarily
-        binned = (sigscore // (1 / num_bins)).long().squeeze(-1)
+        binned = (sigscore // ((1 / num_bins) + 1e-8)).long().squeeze(-1)
+        # Note: the 1e-12 is here to avoid the edge case and keep the bins in {0, 1, 2}
         return reward, binned
 
     def train(self, update_critic, update_actor, rollout, iters_so_far):
@@ -388,13 +382,13 @@ class Agent(object):
             b = (Tz - self.hps.c51_vmin) / self.c51_delta
             l = b.floor().long()  # noqa
             u = b.ceil().long()
-            l[(u > 0) * (l == u)] -= 1  # noqa
-            u[(l < (self.hps.c51_num_atoms - 1)) * (l == u)] += 1  # noqa
             targ_z = z_prime.clone().zero_()
-            z_prime_l = (z_prime * (u.float() - b))
-            z_prime_u = (z_prime * (b - l.float())).view(-1)
-            targ_z.view(-1).index_add_(0, (l + self.c51_offset).view(-1), z_prime_l.view(-1))
-            targ_z.view(-1).index_add_(0, (u + self.c51_offset).view(-1), z_prime_u.view(-1))
+            z_prime_l = z_prime * (u + (l == u).float() - b)  # noqa
+            z_prime_u = z_prime * (b - l.float())  # noqa
+            for i in range(targ_z.size(0)):
+                targ_z[i].index_add_(0, l[i], z_prime_l[i])
+                targ_z[i].index_add_(0, u[i], z_prime_u[i])
+
             # Reshape target to be of shape [batch_size, self.hps.c51_num_atoms, 1]
             targ_z = targ_z.view(-1, self.hps.c51_num_atoms, 1)
 
@@ -643,9 +637,10 @@ class Agent(object):
             else:
                 eta = self.hps.purl_eta
             beta = 0.0
-            p_e_loss = eta * torch.log(1. - torch.sigmoid(e_scores) + 1e-12)
-            rhs = (F.logsigmoid(e_scores) - (trunc_is_w * (eta * F.logsigmoid(p_scores))))
-            p_e_loss += torch.max(-beta * torch.ones_like(p_scores), rhs)
+            p_e_loss = -eta * torch.log(1. - torch.sigmoid(e_scores) + 1e-12)
+            p_e_loss += -torch.max(-beta * torch.ones_like(p_scores),
+                                   (F.logsigmoid(e_scores) -
+                                    (trunc_is_w * (eta * F.logsigmoid(p_scores)))))
         else:
             # Create positive-negative binary classification (cross-entropy) losses
             p_loss = -torch.log(1. - torch.sigmoid(p_scores) + 1e-12)

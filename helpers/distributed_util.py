@@ -4,6 +4,7 @@ from mpi4py import MPI
 import numpy as np
 import torch
 
+from helpers import logger
 
 COMM = MPI.COMM_WORLD
 
@@ -85,7 +86,7 @@ def mpi_moments(x, comm=COMM, axis=0, keepdims=False):
 
 
 def average_gradients(model, device):
-    for name, param in model.named_parameters():
+    for param in model.parameters():
         if param.grad is None:
             continue
         # Place the gradients on cpu
@@ -104,12 +105,11 @@ def sync_with_root(model, comm=COMM):
     rank = comm.Get_rank()
     for param in model.parameters():
         if rank == 0:
-            comm.Bcast(param.cpu().data.numpy(), root=0)
+            comm.bcast(param)
         else:
-            param_ = np.empty_like(param.cpu().data)
-            comm.Bcast(param_, root=0)
-            param_ = torch.FloatTensor(param_)
-            param.data.copy_(param_.data)
+            param.data.copy_(comm.bcast(None))
+        comm.Barrier()
+    logger.info("[INFO] workers all synced with root")
 
 
 def sync_check(model, comm=COMM):
@@ -118,12 +118,12 @@ def sync_check(model, comm=COMM):
     rank = comm.Get_rank()
     for param in model.parameters():
         if rank == 0:
-            comm.Bcast(param.cpu().data.numpy(), root=0)
+            comm.bcast(param)
         else:
-            param_ = np.empty_like(param.cpu().data)
-            comm.Bcast(param_, root=0)
-            param_ = torch.FloatTensor(param_)
+            param_ = comm.bcast(None)
             assert torch.all(torch.eq(param.cpu(), param_.cpu())), "not in sync anymore"
+        comm.Barrier()
+    logger.info("[INFO] workers all synced with root")
 
 
 def guess_available_gpus(n_gpus=None):
