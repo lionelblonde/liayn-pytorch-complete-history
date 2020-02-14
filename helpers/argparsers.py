@@ -93,6 +93,7 @@ def argparser(description="DDPG Experiment"):
                         type=int, default=None)
     boolean_flag(parser, 'grad_pen', help='whether to use gradient penalty', default=True)
     boolean_flag(parser, 'd_trunc_is', help='whether to use truncated IS in D', default=False)
+    parser.add_argument('--ceil', type=float, default=1.025)
     boolean_flag(parser, 'historical_patching', default=True)
 
     # PU

@@ -1,3 +1,4 @@
+import math
 from collections import OrderedDict
 
 import torch
@@ -15,15 +16,15 @@ class PredNet(nn.Module):
         self.pred_trunk = nn.Sequential(OrderedDict([
             ('fc_block_1', nn.Sequential(OrderedDict([
                 ('fc', nn.Linear(in_dim, width)),
-                ('nl', nn.LeakyReLU(negative_slope=self.leak, inplace=True)),
+                ('nl', nn.LeakyReLU(negative_slope=self.leak)),
             ]))),
             ('fc_block_2', nn.Sequential(OrderedDict([
                 ('fc', nn.Linear(width, width)),
-                ('nl', nn.LeakyReLU(negative_slope=self.leak, inplace=True)),
+                ('nl', nn.LeakyReLU(negative_slope=self.leak)),
             ]))),
         ]))
         # Perform initialization
-        self.pred_trunk.apply(init(nonlin='leaky_relu', param=self.leak))
+        self.pred_trunk.apply(init(weight_scale=math.sqrt(2) / math.sqrt(1 + self.leak**2)))
 
     def forward(self, *args):
         x = torch.cat(args, dim=-1)
@@ -40,15 +41,15 @@ class TargNet(nn.Module):
         self.targ_trunk = nn.Sequential(OrderedDict([
             ('fc_block_1', nn.Sequential(OrderedDict([
                 ('fc', nn.Linear(in_dim, width)),
-                ('nl', nn.LeakyReLU(negative_slope=self.leak, inplace=True)),
+                ('nl', nn.LeakyReLU(negative_slope=self.leak)),
             ]))),
             ('fc_block_2', nn.Sequential(OrderedDict([
                 ('fc', nn.Linear(width, width)),
-                ('nl', nn.LeakyReLU(negative_slope=self.leak, inplace=True)),
+                ('nl', nn.LeakyReLU(negative_slope=self.leak)),
             ]))),
         ]))
         # Perform initialization
-        self.targ_trunk.apply(init(nonlin='leaky_relu', param=self.leak))
+        self.targ_trunk.apply(init(weight_scale=math.sqrt(2) / math.sqrt(1 + self.leak**2)))
         # Make sure the target is never updated
         for param in self.targ_trunk.parameters():
             param.requires_grad = False

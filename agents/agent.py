@@ -38,6 +38,7 @@ class Agent(object):
         assert self.hps.lookahead > 1 or not self.hps.n_step_returns
         assert self.hps.d_trunc_is or not self.hps.adaptive_eta
         assert self.hps.use_purl or not self.hps.adaptive_eta
+        assert self.hps.rollout_len <= self.hps.batch_size
 
         # Define demo dataset
         self.expert_dataset = expert_dataset
@@ -307,6 +308,19 @@ class Agent(object):
         # Note: the 1e-12 is here to avoid the edge case and keep the bins in {0, 1, 2}
         return reward, binned
 
+    def get_isw(self, ob, ac):
+        if self.hps.d_trunc_is:
+            # Build prob estimates from novelty estimators
+            rnd_o_score = torch.exp(-self.rnd_o.get_novelty(ob, ac))
+            rnd_b_score = torch.exp(-self.rnd_b.get_novelty(ob, ac))
+            # Assemble truncated importance-sampling weights
+            isw = rnd_o_score / rnd_b_score
+            trunc_is_w = torch.min(self.hps.ceil * torch.ones_like(rnd_o_score),
+                                   isw).unsqueeze(-1).detach()
+        else:
+            trunc_is_w = 1.0
+        return trunc_is_w
+
     def train(self, update_critic, update_actor, rollout, iters_so_far):
         """Train the agent"""
 
@@ -358,6 +372,7 @@ class Agent(object):
         if self.hps.d_trunc_is:
             s_o = torch.FloatTensor(rollout['obs']).to(self.device)  # must be unnormalized
             a_o = torch.FloatTensor(rollout['acs']).to(self.device)
+            trunc_is_w = self.get_isw(state, action)
 
         # Create data loader (iterable over 1 elt, but using a dataloader is cleaner)
         p_dataset = Dataset(batch)
@@ -402,11 +417,18 @@ class Agent(object):
                 # Adjust with importance weights
                 ce_losses *= iws
 
+            if self.hps.d_trunc_is:
+                ce_losses *= self.get_isw(state, action)
+
             crit_loss = ce_losses.mean()
 
             # Actor loss
             actr_loss = -self.crit.QZ(state, self.actr.act(state))  # [batch_size, num_atoms]
             actr_loss = actr_loss.matmul(self.c51_supp).unsqueeze(-1)  # [batch_size, 1]
+
+            if self.hps.d_trunc_is:
+                actr_loss *= self.get_isw(state, action)
+
             actr_loss = actr_loss.mean()
 
             if self.hps.sig_score_binning_aux_loss:
@@ -583,7 +605,8 @@ class Agent(object):
         if self.hps.d_trunc_is:
             # Update RND network
             self.rnd_o.train(s_o, a_o)
-            self.rnd_b.train(state, action)
+            subsample = np.random.randint(self.hps.batch_size, size=self.hps.rollout_len)
+            self.rnd_b.train(state[subsample, ...], action[subsample, ...])
 
         # Aggregate the elements to return
         losses = {'actr': actr_loss.clone().cpu().data.numpy(),
@@ -591,11 +614,13 @@ class Agent(object):
         gradns = {'actr': actr_gradn}
         if self.hps.clipped_double:
             losses.update({'twin': twin_loss.clone().cpu().data.numpy()})
+        if self.hps.d_trunc_is:
+            losses.update({'isw': trunc_is_w.clone().cpu().data.numpy()})
 
-        lrnows = {'actr': self.actr_sched.get_lr(),
-                  'crit': self.crit_sched.get_lr()}
+        lrnows = {'actr': self.actr_sched.get_last_lr(),
+                  'crit': self.crit_sched.get_last_lr()}
         if self.hps.clipped_double:
-            lrnows.update({'twin': self.twin_sched.get_lr()})
+            lrnows.update({'twin': self.twin_sched.get_last_lr()})
 
         return losses, gradns, lrnows
 
@@ -610,16 +635,8 @@ class Agent(object):
         e_state = torch.FloatTensor(e_chunk['obs0']).to(self.device)
         e_action = torch.FloatTensor(e_chunk['acs']).to(self.device)
 
-        if self.hps.d_trunc_is:
-            # Build prob estimates from novelty estimators
-            rnd_o_score = torch.exp(-self.rnd_o.get_novelty(p_state, p_action))
-            rnd_b_score = torch.exp(-self.rnd_b.get_novelty(p_state, p_action))
-            # Assemble truncated importance-sampling weights
-            isw = rnd_o_score / rnd_b_score
-            ceil = 1.0025
-            trunc_is_w = torch.min(ceil * torch.ones_like(rnd_o_score), isw).unsqueeze(-1).detach()
-        else:
-            trunc_is_w = 1.0
+        # Compute importance sampling ratio
+        trunc_is_w = self.get_isw(p_state, p_action)
 
         # Compute scores
         p_scores = self.disc.D(p_state, p_action)
@@ -633,7 +650,9 @@ class Agent(object):
         if self.hps.use_purl:
             # Create positive-unlabeled binary classification (cross-entropy) losses
             if self.hps.adaptive_eta:
-                eta = rnd_o_score.unsqueeze(-1).detach()
+                raise NotImplementedError
+                # eta = rnd_b_score.unsqueeze(-1).detach()
+                # logger.info("eta: {}".format(eta))
             else:
                 eta = self.hps.purl_eta
             beta = 0.0
@@ -643,8 +662,8 @@ class Agent(object):
                                     (trunc_is_w * (eta * F.logsigmoid(p_scores)))))
         else:
             # Create positive-negative binary classification (cross-entropy) losses
-            p_loss = -torch.log(1. - torch.sigmoid(p_scores) + 1e-12)
-            e_loss = - F.logsigmoid(e_scores)
+            p_loss = - F.logsigmoid(p_scores)
+            e_loss = -torch.log(1. - torch.sigmoid(e_scores) + 1e-12)
             p_e_loss = (trunc_is_w * p_loss) + e_loss
         # Averate out over the batch
         p_e_loss = p_e_loss.mean()

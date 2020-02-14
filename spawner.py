@@ -46,11 +46,11 @@ if BENCH == 'mujoco':
     # Define environments map
     TOC = {'debug': ['InvertedDoublePendulum'],
            'easy': ['InvertedPendulum',
-                    'InvertedDoublePendulum',
-                    'Reacher'],
-           'hard': ['Walker2d',
-                    'HalfCheetah',
-                    'Ant'],
+                    'InvertedDoublePendulum'],
+           'hard': ['Hopper',
+                    'Walker2d'],
+           'insane': ['HalfCheetah',
+                      'Ant']
            }
     if args.envset == 'all':
         ENVS = TOC['easy'] + TOC['hard']
@@ -63,23 +63,26 @@ if BENCH == 'mujoco':
         PEP = {'InvertedPendulum': 'shared-EL7,mono-shared-EL7',
                'Reacher': 'shared-EL7,mono-shared-EL7',
                'InvertedDoublePendulum': 'shared-EL7,mono-shared-EL7',
-               'Walker2d': 'shared-EL7,mono-shared-EL7',  # mono-EL7
-               'HalfCheetah': 'shared-EL7,mono-shared-EL7',  # mono-EL7
-               'Ant': 'shared-EL7,mono-shared-EL7'}  # mono-EL7
+               'Hopper': 'shared-EL7,mono-shared-EL7',
+               'Walker2d': 'mono-EL7',
+               'HalfCheetah': 'mono-EL7',
+               'Ant': 'mono-EL7'}
         # Define per-environment ntasks map
-        PEC = {'InvertedPendulum': '20',
-               'Reacher': '20',
-               'InvertedDoublePendulum': '20',
+        PEC = {'InvertedPendulum': '10',
+               'Reacher': '10',
+               'InvertedDoublePendulum': '10',
+               'Hopper': '20',
                'Walker2d': '40',
-               'HalfCheetah': '40',
-               'Ant': '40'}
+               'HalfCheetah': '60',
+               'Ant': '60'}
         # Define per-environment timeouts map
-        PET = {'InvertedPendulum': '0-12:00:00',
-               'Reacher': '0-12:00:00',
-               'InvertedDoublePendulum': '0-12:00:00',
-               'Walker2d': '0-12:00:00',  # 4-00:00:00
-               'HalfCheetah': '0-12:00:00',  # 4-00:00:00
-               'Ant': '0-12:00:00'}  # 4-00:00:00
+        PET = {'InvertedPendulum': '0-06:00:00',
+               'Reacher': '0-06:00:00',
+               'InvertedDoublePendulum': '0-06:00:00',
+               'Hopper': '0-12:00:00',
+               'Walker2d': '4-00:00:00',
+               'HalfCheetah': '4-00:00:00',
+               'Ant': '4-00:00:00'}
 else:
     raise NotImplementedError("benchmark not covered by the spawner.")
 assert bool(TOC), "each benchmark must have a 'TOC' dictionary"
@@ -200,11 +203,12 @@ def get_hps(sweep):
             'num_demos': CONFIG['parameters'].get('num_demos', 0),
             'grad_pen': CONFIG['parameters'].get('grad_pen', False),
             'd_trunc_is': CONFIG['parameters'].get('d_trunc_is', False),
+            'ceil': float(CONFIG['parameters'].get('ceil', 1.025)),
             'historical_patching': CONFIG['parameters'].get('historical_patching', True),
 
             # PU
             'use_purl': CONFIG['parameters'].get('use_purl', False),
-            'purl_eta': CONFIG['parameters'].get('purl_eta', 0.25),
+            'purl_eta': float(CONFIG['parameters'].get('purl_eta', 0.25)),
             'adaptive_eta': CONFIG['parameters'].get('adaptive_eta', False),
         }
     else:
@@ -283,11 +287,12 @@ def get_hps(sweep):
             'num_demos': CONFIG['parameters'].get('num_demos', 0),
             'grad_pen': CONFIG['parameters'].get('grad_pen', False),
             'd_trunc_is': CONFIG['parameters'].get('d_trunc_is', False),
+            'ceil': float(CONFIG['parameters'].get('ceil', 1.025)),
             'historical_patching': CONFIG['parameters'].get('historical_patching', True),
 
             # PU
             'use_purl': CONFIG['parameters'].get('use_purl', False),
-            'purl_eta': CONFIG['parameters'].get('purl_eta', 0.25),
+            'purl_eta': float(CONFIG['parameters'].get('purl_eta', 0.25)),
             'adaptive_eta': CONFIG['parameters'].get('adaptive_eta', False),
         }
 

@@ -250,13 +250,13 @@ def learn(args,
 
         log_iter_info(logger, iters_so_far, num_iters, tstart)
 
-        if iters_so_far % 20 == 0:
-            # Check if the mpi workers are still synced
-            sync_check(agent.actr)
-            sync_check(agent.crit)
-            if agent.hps.clipped_double:
-                sync_check(agent.twin)
-            sync_check(agent.disc)
+        # if iters_so_far % 20 == 0:
+        #     # Check if the mpi workers are still synced
+        #     sync_check(agent.actr)
+        #     sync_check(agent.crit)
+        #     if agent.hps.clipped_double:
+        #         sync_check(agent.twin)
+        #     sync_check(agent.disc)
 
         if rank == 0 and iters_so_far % args.save_frequency == 0:
             # Save the model
@@ -285,10 +285,12 @@ def learn(args,
                 update_critic = True
                 update_critic = not bool(training_step % args.d_update_ratio)
                 update_actor = update_critic and not bool(training_step % args.actor_update_delay)
-                losses, gradns, lrnows = agent.train(update_critic=update_critic,
-                                                     update_actor=update_actor,
-                                                     rollout=rollout,
-                                                     iters_so_far=iters_so_far)
+                losses, gradns, lrnows = agent.train(
+                    update_critic=update_critic,
+                    update_actor=update_actor,
+                    rollout=rollout,
+                    iters_so_far=iters_so_far
+                )
                 d['actr_gradns'].append(gradns['actr'])
                 d['actr_losses'].append(losses['actr'])
                 d['crit_losses'].append(losses['crit'])
@@ -365,8 +367,13 @@ def learn(args,
         # Log stats in dashboard
         if rank == 0:
 
-            wandb.log({"num_workers": np.array(world_size)},
-                      step=timesteps_so_far)
+            wandb.log({"num_workers": np.array(world_size)})
+            if agent.hps.d_trunc_is:
+                quantiles = [0.1, 0.25, 0.5, 0.75, 0.9]
+                np.quantile(losses['isw'], quantiles)
+                wandb.log({"q{}".format(q): np.quantile(losses['isw'], q)
+                           for q in [0.1, 0.25, 0.5, 0.75, 0.9]},
+                          step=timesteps_so_far)
             if iters_so_far % args.eval_frequency == 0:
                 wandb.log({'eval_len': np.mean(d['eval_len']),
                            'eval_env_ret': np.mean(d['eval_env_ret'])},
