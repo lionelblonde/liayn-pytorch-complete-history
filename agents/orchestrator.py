@@ -8,7 +8,8 @@ import wandb
 import numpy as np
 
 from helpers import logger
-from helpers.distributed_util import sync_check, mpi_mean_reduce
+from helpers.distributed_util import mpi_mean_reduce
+# from helpers.distributed_util import sync_check
 from helpers.console_util import timed_cm_wrapper, log_iter_info
 from agents.agent import Agent
 
@@ -52,7 +53,7 @@ def rollout_generator(env, agent, rollout_len):
         new_ob, _, done, _ = env.step(ac)
 
         # Store transition(s) in the replay buffer
-        rew = np.asscalar(agent.get_reward(ob, ac)[0].cpu().numpy().flatten())
+        rew = np.asscalar(agent.get_reward(ob, ac, new_ob)[0].cpu().numpy().flatten())
         transition = {"obs0": ob,
                       "acs": ac,
                       "rews": rew,

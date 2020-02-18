@@ -99,7 +99,6 @@ def argparser(description="DDPG Experiment"):
     # PU
     boolean_flag(parser, 'use_purl', default=False)
     parser.add_argument('--purl_eta', type=float, default=0.25)
-    boolean_flag(parser, 'adaptive_eta', default=False)
 
     # Evaluation
     parser.add_argument('--model_path', type=str, default=None)

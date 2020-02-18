@@ -36,8 +36,6 @@ class Agent(object):
         self.device = device
         self.hps = hps
         assert self.hps.lookahead > 1 or not self.hps.n_step_returns
-        assert self.hps.d_trunc_is or not self.hps.adaptive_eta
-        assert self.hps.use_purl or not self.hps.adaptive_eta
         assert self.hps.rollout_len <= self.hps.batch_size
 
         # Define demo dataset
@@ -90,7 +88,7 @@ class Agent(object):
             self.targ_twin.load_state_dict(self.twin.state_dict())
         if self.hps.d_trunc_is:
             # Set up random network distillation estimatiors, for online and batch data
-            self.rnd_o = RandNetDistill(self.env, self.hps, self.device, width=100, lr=1e-4)
+            self.rnd_o = RandNetDistill(self.env, self.hps, self.device, width=100, lr=3e-3)
             self.rnd_b = RandNetDistill(self.env, self.hps, self.device, width=100, lr=1e-4)
 
         if self.param_noise is not None:
@@ -270,7 +268,9 @@ class Agent(object):
         ac = ac.clip(-self.max_ac, self.max_ac)
         return ac
 
-    def get_reward(self, ob, ac):
+    def get_reward(self, curr_ob, ac, next_ob):
+        # Define the obeservation to get the reward of
+        ob = next_ob if self.hps.state_only else curr_ob
         if not self.hps.pixels:
             # Normalize observation
             ob = self.normalize_clip_ob(ob)
@@ -315,8 +315,8 @@ class Agent(object):
             rnd_b_score = torch.exp(-self.rnd_b.get_novelty(ob, ac))
             # Assemble truncated importance-sampling weights
             isw = rnd_o_score / rnd_b_score
-            trunc_is_w = torch.min(self.hps.ceil * torch.ones_like(rnd_o_score),
-                                   isw).unsqueeze(-1).detach()
+            trunc_is_w = torch.clamp(isw, 0.01, 2.).unsqueeze(-1).detach()
+            # FIXME: self.hps.ceil unused
         else:
             trunc_is_w = 1.0
         return trunc_is_w
@@ -327,7 +327,7 @@ class Agent(object):
         # Create patcher if needed
         patcher = None
         if self.hps.historical_patching:
-            patcher = lambda x, y: self.get_reward(x, y)[0].cpu().numpy()  # noqa
+            patcher = lambda x, y, z: self.get_reward(x, y, z)[0].cpu().numpy()  # noqa
 
         # Get a batch of transitions from the replay buffer
         if self.hps.n_step_returns:
@@ -417,24 +417,18 @@ class Agent(object):
                 # Adjust with importance weights
                 ce_losses *= iws
 
-            if self.hps.d_trunc_is:
-                ce_losses *= self.get_isw(state, action)
-
             crit_loss = ce_losses.mean()
 
             # Actor loss
             actr_loss = -self.crit.QZ(state, self.actr.act(state))  # [batch_size, num_atoms]
             actr_loss = actr_loss.matmul(self.c51_supp).unsqueeze(-1)  # [batch_size, 1]
 
-            if self.hps.d_trunc_is:
-                actr_loss *= self.get_isw(state, action)
-
             actr_loss = actr_loss.mean()
 
             if self.hps.sig_score_binning_aux_loss:
                 # Self-supervised auxiliary loss
                 ss_aux_loss = F.cross_entropy(input=self.actr.ss_aux_loss(state),
-                                              target=self.get_reward(state, action)[1])
+                                              target=self.get_reward(state, action, next_state)[1])
                 ss_aux_loss *= self.hps.ss_aux_loss_scale
                 # Add to actor loss
                 actr_loss += ss_aux_loss
@@ -491,7 +485,7 @@ class Agent(object):
             if self.hps.sig_score_binning_aux_loss:
                 # Self-supervised auxiliary loss
                 ss_aux_loss = F.cross_entropy(input=self.actr.ss_aux_loss(state),
-                                              target=self.get_reward(state, action)[1])
+                                              target=self.get_reward(state, action, next_state)[1])
                 ss_aux_loss *= self.hps.ss_aux_loss_scale
                 # Add to actor loss
                 actr_loss += ss_aux_loss
@@ -562,7 +556,7 @@ class Agent(object):
             if self.hps.sig_score_binning_aux_loss:
                 # Self-supervised auxiliary loss
                 ss_aux_loss = F.cross_entropy(input=self.actr.ss_aux_loss(state),
-                                              target=self.get_reward(state, action)[1])
+                                              target=self.get_reward(state, action, next_state)[1])
                 ss_aux_loss *= self.hps.ss_aux_loss_scale
                 # Add to actor loss
                 actr_loss += ss_aux_loss
@@ -649,17 +643,11 @@ class Agent(object):
 
         if self.hps.use_purl:
             # Create positive-unlabeled binary classification (cross-entropy) losses
-            if self.hps.adaptive_eta:
-                raise NotImplementedError
-                # eta = rnd_b_score.unsqueeze(-1).detach()
-                # logger.info("eta: {}".format(eta))
-            else:
-                eta = self.hps.purl_eta
-            beta = 0.0
-            p_e_loss = -eta * torch.log(1. - torch.sigmoid(e_scores) + 1e-12)
+            beta = 0.0  # hard-coded, using standard value from the original paper
+            p_e_loss = -self.hps.purl_eta * torch.log(1. - torch.sigmoid(e_scores) + 1e-12)
             p_e_loss += -torch.max(-beta * torch.ones_like(p_scores),
                                    (F.logsigmoid(e_scores) -
-                                    (trunc_is_w * (eta * F.logsigmoid(p_scores)))))
+                                    (trunc_is_w * (self.hps.purl_eta * F.logsigmoid(p_scores)))))
         else:
             # Create positive-negative binary classification (cross-entropy) losses
             p_loss = - F.logsigmoid(p_scores)

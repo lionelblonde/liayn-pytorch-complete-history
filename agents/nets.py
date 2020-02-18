@@ -96,6 +96,13 @@ class Discriminator(nn.Module):
         return score  # no sigmoid here
 
 
+class VDB(nn.Module):
+
+    def __init__(self, env, hps):
+        super(VDB, self).__init__()
+        raise NotImplementedError
+
+
 class Actor(nn.Module):
 
     def __init__(self, env, hps):

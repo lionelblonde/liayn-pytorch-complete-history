@@ -38,7 +38,7 @@ BOOL_ARGS = ['cuda', 'pixels', 'sig_score_binning_aux_loss', 'popart',
              'state_only', 'minimax_only', 'grad_pen',
              'd_trunc_is', 'historical_patching',
              'use_c51', 'use_qr', 'use_iqn',
-             'use_purl', 'adaptive_eta']
+             'use_purl']
 
 # Create the list of environments from the indicated benchmark
 BENCH = CONFIG['parameters']['benchmark']
@@ -47,7 +47,8 @@ if BENCH == 'mujoco':
     TOC = {'debug': ['InvertedDoublePendulum'],
            'easy': ['InvertedPendulum',
                     'InvertedDoublePendulum'],
-           'hard': ['Hopper',
+           'hard': ['InvertedPendulum',
+                    'InvertedDoublePendulum',
                     'Walker2d'],
            'insane': ['HalfCheetah',
                       'Ant']
@@ -64,7 +65,7 @@ if BENCH == 'mujoco':
                'Reacher': 'shared-EL7,mono-shared-EL7',
                'InvertedDoublePendulum': 'shared-EL7,mono-shared-EL7',
                'Hopper': 'shared-EL7,mono-shared-EL7',
-               'Walker2d': 'mono-EL7',
+               'Walker2d': 'shared-EL7,mono-shared-EL7',  # 'mono-EL7'
                'HalfCheetah': 'mono-EL7',
                'Ant': 'mono-EL7'}
         # Define per-environment ntasks map
@@ -80,7 +81,7 @@ if BENCH == 'mujoco':
                'Reacher': '0-06:00:00',
                'InvertedDoublePendulum': '0-06:00:00',
                'Hopper': '0-12:00:00',
-               'Walker2d': '4-00:00:00',
+               'Walker2d': '0-12:00:00',  # 4-00:00:00
                'HalfCheetah': '4-00:00:00',
                'Ant': '4-00:00:00'}
 else:
@@ -209,7 +210,6 @@ def get_hps(sweep):
             # PU
             'use_purl': CONFIG['parameters'].get('use_purl', False),
             'purl_eta': float(CONFIG['parameters'].get('purl_eta', 0.25)),
-            'adaptive_eta': CONFIG['parameters'].get('adaptive_eta', False),
         }
     else:
         # No search, fixed map
@@ -293,7 +293,6 @@ def get_hps(sweep):
             # PU
             'use_purl': CONFIG['parameters'].get('use_purl', False),
             'purl_eta': float(CONFIG['parameters'].get('purl_eta', 0.25)),
-            'adaptive_eta': CONFIG['parameters'].get('adaptive_eta', False),
         }
 
     # Duplicate for each environment
