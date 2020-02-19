@@ -36,7 +36,7 @@ BOOL_ARGS = ['cuda', 'pixels', 'sig_score_binning_aux_loss', 'popart',
              'prioritized_replay', 'ranked', 'unreal',
              'n_step_returns', 'clipped_double', 'targ_actor_smoothing',
              'state_only', 'minimax_only', 'grad_pen',
-             'd_trunc_is', 'historical_patching',
+             'historical_patching',
              'use_c51', 'use_qr', 'use_iqn',
              'use_purl']
 
@@ -203,10 +203,13 @@ def get_hps(sweep):
             'd_update_ratio': CONFIG['parameters'].get('d_update_ratio', 2),
             'num_demos': CONFIG['parameters'].get('num_demos', 0),
             'grad_pen': CONFIG['parameters'].get('grad_pen', False),
-            'd_trunc_is': CONFIG['parameters'].get('d_trunc_is', False),
-            'ceil': float(CONFIG['parameters'].get('ceil', 1.025)),
             'historical_patching': CONFIG['parameters'].get('historical_patching', True),
-
+            'fake_ls_type': np.random.choice(['"random-uniform_0.7_1.2"',
+                                              '"interp-uniform_0.1"',
+                                              '"none"']),
+            'real_ls_type': np.random.choice(['"random-uniform_0.7_1.2"',
+                                              '"interp-uniform_0.1_2"',
+                                              '"none"']),
             # PU
             'use_purl': CONFIG['parameters'].get('use_purl', False),
             'purl_eta': float(CONFIG['parameters'].get('purl_eta', 0.25)),
@@ -286,9 +289,9 @@ def get_hps(sweep):
             'd_update_ratio': CONFIG['parameters'].get('d_update_ratio', 2),
             'num_demos': CONFIG['parameters'].get('num_demos', 0),
             'grad_pen': CONFIG['parameters'].get('grad_pen', False),
-            'd_trunc_is': CONFIG['parameters'].get('d_trunc_is', False),
-            'ceil': float(CONFIG['parameters'].get('ceil', 1.025)),
             'historical_patching': CONFIG['parameters'].get('historical_patching', True),
+            'fake_ls_type': CONFIG['parameters']['fake_ls_type'],
+            'real_ls_type': CONFIG['parameters']['real_ls_type'],
 
             # PU
             'use_purl': CONFIG['parameters'].get('use_purl', False),

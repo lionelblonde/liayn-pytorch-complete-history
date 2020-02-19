@@ -46,8 +46,7 @@ def argparser(description="DDPG Experiment"):
     parser.add_argument('--batch_size', help='minibatch size', type=int, default=128)
     parser.add_argument('--gamma', help='discount factor', type=float, default=0.99)
     parser.add_argument('--mem_size', type=int, default=int(1e5))
-    parser.add_argument('--noise_type', help='choices: adaptive-param_xx, normal_xx, ou_xx, none',
-                        type=str, default='adaptive-param_0.2, ou_0.1, normal_0.1')
+    parser.add_argument('--noise_type', type=str, default='adaptive-param_0.2, ou_0.1, normal_0.1')
     parser.add_argument('--pn_adapt_frequency', type=float, default=50)
     parser.add_argument('--polyak', type=float, default=0.005, help='soft target nets update')
     parser.add_argument('--targ_up_freq', type=int, default=100, help='hard target nets update')
@@ -92,9 +91,9 @@ def argparser(description="DDPG Experiment"):
     parser.add_argument('--num_demos', help='number of expert demo trajs for imitation',
                         type=int, default=None)
     boolean_flag(parser, 'grad_pen', help='whether to use gradient penalty', default=True)
-    boolean_flag(parser, 'd_trunc_is', help='whether to use truncated IS in D', default=False)
-    parser.add_argument('--ceil', type=float, default=1.025)
     boolean_flag(parser, 'historical_patching', default=True)
+    parser.add_argument('--fake_ls_type', type=str, default='none')
+    parser.add_argument('--real_ls_type', type=str, default='random-uniform_0.7_1.2')
 
     # PU
     boolean_flag(parser, 'use_purl', default=False)

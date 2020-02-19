@@ -7,6 +7,8 @@ import torch
 import torch.nn.utils as U
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
+from torch import autograd
+from torch.autograd import Variable
 
 from helpers import logger
 from helpers.console_util import log_env_info, log_module_info
@@ -17,7 +19,6 @@ from agents.memory import ReplayBuffer, PrioritizedReplayBuffer, UnrealReplayBuf
 from agents.nets import Actor, Critic, Discriminator
 from agents.param_noise import AdaptiveParamNoise
 from agents.ac_noise import NormalAcNoise, OUAcNoise
-from agents.rnd import RandNetDistill
 
 
 class Agent(object):
@@ -70,6 +71,10 @@ class Agent(object):
         # Parse the noise types
         self.param_noise, self.ac_noise = self.parse_noise_type(self.hps.noise_type)
 
+        # Parse the label smoothing types
+        self.apply_ls_fake = self.parse_label_smoothing_type(self.hps.fake_ls_type)
+        self.apply_ls_real = self.parse_label_smoothing_type(self.hps.real_ls_type)
+
         # Create online and target nets, and initilize the target nets
         self.actr = Actor(self.env, self.hps).to(self.device)
         sync_with_root(self.actr)
@@ -86,10 +91,6 @@ class Agent(object):
             sync_with_root(self.twin)
             self.targ_twin = Critic(self.env, self.hps).to(self.device)
             self.targ_twin.load_state_dict(self.twin.state_dict())
-        if self.hps.d_trunc_is:
-            # Set up random network distillation estimatiors, for online and batch data
-            self.rnd_o = RandNetDistill(self.env, self.hps, self.device, width=100, lr=3e-3)
-            self.rnd_b = RandNetDistill(self.env, self.hps, self.device, width=100, lr=1e-4)
 
         if self.param_noise is not None:
             # Create parameter-noise-perturbed ('pnp') actor
@@ -167,7 +168,7 @@ class Agent(object):
         """Parse the `noise_type` hyperparameter"""
         ac_noise = None
         param_noise = None
-        logger.info(">>>> parsing noise type")
+        logger.info("[INFO] parsing noise type")
         # Parse the comma-seprated (with possible whitespaces) list of noise params
         for cur_noise_type in noise_type.split(','):
             cur_noise_type = cur_noise_type.strip()  # remove all whitespaces (start and end)
@@ -178,8 +179,7 @@ class Agent(object):
             elif 'adaptive-param' in cur_noise_type:
                 # Set parameter noise
                 _, std = cur_noise_type.split('_')
-                std = float(std)
-                param_noise = AdaptiveParamNoise(initial_std=std, delta=std)
+                param_noise = AdaptiveParamNoise(initial_std=float(std), delta=float(std))
                 logger.info("[INFO] {} configured".format(param_noise))
             elif 'normal' in cur_noise_type:
                 _, std = cur_noise_type.split('_')
@@ -194,8 +194,40 @@ class Agent(object):
                                      sigma=(float(std) * np.ones(self.ac_dim)))
                 logger.info("[INFO] {} configured".format(ac_noise))
             else:
-                raise RuntimeError("unknown specified noise type: '{}'".format(cur_noise_type))
+                raise RuntimeError("unknown noise type: '{}'".format(cur_noise_type))
         return param_noise, ac_noise
+
+    def parse_label_smoothing_type(self, ls_type):
+        """Parse the `label_smoothing_type` hyperparameter"""
+        if ls_type == 'none':
+
+            def _apply_ls(labels):
+                pass
+
+        elif 'random-uniform' in ls_type:
+            # Label smoothing, suggested in 'Improved Techniques for Training GANs',
+            # Salimans 2016, https://arxiv.org/abs/1606.03498
+            # The paper advises on the use of one-sided label smoothing, i.e.
+            # only smooth out the positive (real) targets side.
+            # Extra comment explanation: https://github.com/openai/improved-gan/blob/
+            # 9ff96a7e9e5ac4346796985ddbb9af3239c6eed1/imagenet/build_model.py#L88-L121
+            # Additional material: https://github.com/soumith/ganhacks/issues/10
+            _, lb, ub = ls_type.split('_')
+
+            def _apply_ls(labels):
+                # Replace labels by uniform noise from the interval
+                labels.uniform_(float(lb), float(ub))
+
+        elif 'interp-uniform' in ls_type:
+            # Traditional label smoothing, giving confidence to wrong classes uniformly (all)
+            _, alpha, nb_cls = ls_type.split('_')
+
+            def _apply_ls(labels):
+                labels.data.copy_((labels * (1. - float(alpha))) + (float(alpha) / float(nb_cls)))
+
+        else:
+            raise RuntimeError("unknown label smoothing type: '{}'".format(ls_type))
+        return _apply_ls
 
     def setup_replay_buffer(self):
         """Setup experiental memory unit"""
@@ -268,59 +300,6 @@ class Agent(object):
         ac = ac.clip(-self.max_ac, self.max_ac)
         return ac
 
-    def get_reward(self, curr_ob, ac, next_ob):
-        # Define the obeservation to get the reward of
-        ob = next_ob if self.hps.state_only else curr_ob
-        if not self.hps.pixels:
-            # Normalize observation
-            ob = self.normalize_clip_ob(ob)
-        # Craft surrogate reward
-        assert sum([isinstance(x, torch.Tensor) for x in [ob, ac]]) in [0, 2]
-        if not isinstance(ob, torch.Tensor):  # then ac is not neither
-            ob = torch.FloatTensor(ob)
-            ac = torch.FloatTensor(ac)
-        # Transfer to cpu
-        ob = ob.cpu()
-        ac = ac.cpu()
-        # Compure score
-        score = self.disc.D(ob, ac).detach().view(-1, 1)
-        sigscore = torch.sigmoid(score)  # squashed in [0, 1]
-        # Counterpart of GAN's minimax (also called "saturating") loss
-        # Numerics: 0 for non-expert-like states, goes to +inf for expert-like states
-        # compatible with envs with traj cutoffs for bad (non-expert-like) behavior
-        # e.g. walking simulations that get cut off when the robot falls over
-        minimax_reward = -torch.log(1. - torch.sigmoid(score) + 1e-12)
-        if self.hps.minimax_only:
-            reward = minimax_reward
-        else:
-            # Counterpart of GAN's non-saturating loss
-            # Recommended in the original GAN paper and later in (Fedus et al. 2017)
-            # Numerics: 0 for expert-like states, goes to -inf for non-expert-like states
-            # compatible with envs with traj cutoffs for good (expert-like) behavior
-            # e.g. mountain car, which gets cut off when the car reaches the destination
-            non_satur_reward = F.logsigmoid(score)
-            # Return the sum the two previous reward functions (as in AIRL, Fu et al. 2018)
-            # Numerics: might be better might be way worse
-            reward = non_satur_reward + minimax_reward
-        # Perform binning
-        num_bins = 3  # arbitrarily
-        binned = (sigscore // ((1 / num_bins) + 1e-8)).long().squeeze(-1)
-        # Note: the 1e-12 is here to avoid the edge case and keep the bins in {0, 1, 2}
-        return reward, binned
-
-    def get_isw(self, ob, ac):
-        if self.hps.d_trunc_is:
-            # Build prob estimates from novelty estimators
-            rnd_o_score = torch.exp(-self.rnd_o.get_novelty(ob, ac))
-            rnd_b_score = torch.exp(-self.rnd_b.get_novelty(ob, ac))
-            # Assemble truncated importance-sampling weights
-            isw = rnd_o_score / rnd_b_score
-            trunc_is_w = torch.clamp(isw, 0.01, 2.).unsqueeze(-1).detach()
-            # FIXME: self.hps.ceil unused
-        else:
-            trunc_is_w = 1.0
-        return trunc_is_w
-
     def train(self, update_critic, update_actor, rollout, iters_so_far):
         """Train the agent"""
 
@@ -368,11 +347,6 @@ class Agent(object):
             next_action = (self.targ_actr.act(next_state) + n_).clamp(-self.max_ac, self.max_ac)
         else:
             next_action = self.targ_actr.act(next_state)
-
-        if self.hps.d_trunc_is:
-            s_o = torch.FloatTensor(rollout['obs']).to(self.device)  # must be unnormalized
-            a_o = torch.FloatTensor(rollout['acs']).to(self.device)
-            trunc_is_w = self.get_isw(state, action)
 
         # Create data loader (iterable over 1 elt, but using a dataloader is cleaner)
         p_dataset = Dataset(batch)
@@ -596,20 +570,14 @@ class Agent(object):
             for p_chunk, e_chunk in zip(p_dataloader, self.e_dataloader):
                 self.update_disc(p_chunk, e_chunk)
 
-        if self.hps.d_trunc_is:
-            # Update RND network
-            self.rnd_o.train(s_o, a_o)
-            subsample = np.random.randint(self.hps.batch_size, size=self.hps.rollout_len)
-            self.rnd_b.train(state[subsample, ...], action[subsample, ...])
-
         # Aggregate the elements to return
         losses = {'actr': actr_loss.clone().cpu().data.numpy(),
                   'crit': crit_loss.clone().cpu().data.numpy()}
         gradns = {'actr': actr_gradn}
         if self.hps.clipped_double:
             losses.update({'twin': twin_loss.clone().cpu().data.numpy()})
-        if self.hps.d_trunc_is:
-            losses.update({'isw': trunc_is_w.clone().cpu().data.numpy()})
+        if self.hps.prioritized_replay:
+            losses.update({'iws': iws.clone().cpu().data.numpy()})
 
         lrnows = {'actr': self.actr_sched.get_last_lr(),
                   'crit': self.crit_sched.get_last_lr()}
@@ -629,9 +597,6 @@ class Agent(object):
         e_state = torch.FloatTensor(e_chunk['obs0']).to(self.device)
         e_action = torch.FloatTensor(e_chunk['acs']).to(self.device)
 
-        # Compute importance sampling ratio
-        trunc_is_w = self.get_isw(p_state, p_action)
-
         # Compute scores
         p_scores = self.disc.D(p_state, p_action)
         e_scores = self.disc.D(e_state, e_action)
@@ -641,18 +606,29 @@ class Agent(object):
         entropy = F.binary_cross_entropy_with_logits(input=scores, target=torch.sigmoid(scores))
         entropy_loss = -self.hps.ent_reg_scale * entropy
 
+        # Create labels
+        fake_labels = 0. * torch.ones_like(p_scores).to(self.device)
+        real_labels = 1. * torch.ones_like(e_scores).to(self.device)
+        # Parse and apply label smoothing
+        self.apply_ls_fake(fake_labels)
+        self.apply_ls_real(real_labels)
+
         if self.hps.use_purl:
             # Create positive-unlabeled binary classification (cross-entropy) losses
             beta = 0.0  # hard-coded, using standard value from the original paper
             p_e_loss = -self.hps.purl_eta * torch.log(1. - torch.sigmoid(e_scores) + 1e-12)
             p_e_loss += -torch.max(-beta * torch.ones_like(p_scores),
                                    (F.logsigmoid(e_scores) -
-                                    (trunc_is_w * (self.hps.purl_eta * F.logsigmoid(p_scores)))))
+                                    (self.hps.purl_eta * F.logsigmoid(p_scores))))
         else:
             # Create positive-negative binary classification (cross-entropy) losses
-            p_loss = - F.logsigmoid(p_scores)
-            e_loss = -torch.log(1. - torch.sigmoid(e_scores) + 1e-12)
-            p_e_loss = (trunc_is_w * p_loss) + e_loss
+            p_loss = F.binary_cross_entropy_with_logits(input=p_scores,
+                                                        target=fake_labels,
+                                                        reduction='none')
+            e_loss = F.binary_cross_entropy_with_logits(input=e_scores,
+                                                        target=real_labels,
+                                                        reduction='none')
+            p_e_loss = p_loss + e_loss
         # Averate out over the batch
         p_e_loss = p_e_loss.mean()
 
@@ -662,7 +638,7 @@ class Agent(object):
         if self.hps.grad_pen:
             # Create gradient penalty loss (coefficient from the original paper)
             grad_pen_in = [p_state, p_action, e_state, e_action]
-            grad_pen = 10. * self.disc.grad_pen(*grad_pen_in)
+            grad_pen = 10. * self.grad_pen(*grad_pen_in)
             d_loss += grad_pen
 
         # Update parameters
@@ -670,6 +646,77 @@ class Agent(object):
         d_loss.backward()
         average_gradients(self.disc, self.device)
         self.disc_opt.step()
+        return p_e_loss, entropy_loss, d_loss
+
+    def grad_pen(self, p_ob, p_ac, e_ob, e_ac):
+        """Gradient penalty regularizer (motivation from Wasserstein GANs (Gulrajani),
+        but empirically useful in JS-GANs (Lucic et al. 2017)) and later in (Karol et al. 2018).
+        """
+        # Assemble interpolated state-action pair
+        ob_eps = torch.rand(self.ob_dim).to(p_ob.device)
+        ac_eps = torch.rand(self.ac_dim).to(p_ob.device)
+        ob_interp = ob_eps * p_ob + ((1. - ob_eps) * e_ob)
+        ac_interp = ac_eps * p_ac + ((1. - ac_eps) * e_ac)
+        # Set `requires_grad=True` to later have access to
+        # gradients w.r.t. the inputs (not populated by default)
+        ob_interp = Variable(ob_interp, requires_grad=True)
+        ac_interp = Variable(ac_interp, requires_grad=True)
+        # Create the operation of interest
+        score = self.disc.D(ob_interp, ac_interp)
+        # Get the gradient of this operation with respect to its inputs
+        grads = autograd.grad(outputs=score,
+                              inputs=[ob_interp, ac_interp],
+                              only_inputs=True,
+                              grad_outputs=torch.ones(score.size()).to(p_ob.device),
+                              retain_graph=True,
+                              create_graph=True,
+                              allow_unused=self.hps.state_only)
+        assert len(list(grads)) == 2, "length must be exactly 2"
+        # Return the gradient penalty (try to induce 1-Lipschitzness)
+        if self.hps.state_only:
+            grads = grads[0]
+        grads_concat = torch.cat(list(grads), dim=-1)
+        return (grads_concat.norm(2, dim=-1) - 1.).pow(2).mean()
+
+    def get_reward(self, curr_ob, ac, next_ob):
+        # Define the obeservation to get the reward of
+        ob = next_ob if self.hps.state_only else curr_ob
+        if not self.hps.pixels:
+            # Normalize observation
+            ob = self.normalize_clip_ob(ob)
+        # Craft surrogate reward
+        assert sum([isinstance(x, torch.Tensor) for x in [ob, ac]]) in [0, 2]
+        if not isinstance(ob, torch.Tensor):  # then ac is not neither
+            ob = torch.FloatTensor(ob)
+            ac = torch.FloatTensor(ac)
+        # Transfer to cpu
+        ob = ob.cpu()
+        ac = ac.cpu()
+        # Compure score
+        score = self.disc.D(ob, ac).detach().view(-1, 1)
+        sigscore = torch.sigmoid(score)  # squashed in [0, 1]
+        # Counterpart of GAN's minimax (also called "saturating") loss
+        # Numerics: 0 for non-expert-like states, goes to +inf for expert-like states
+        # compatible with envs with traj cutoffs for bad (non-expert-like) behavior
+        # e.g. walking simulations that get cut off when the robot falls over
+        minimax_reward = -torch.log(1. - torch.sigmoid(score) + 1e-12)
+        if self.hps.minimax_only:
+            reward = minimax_reward
+        else:
+            # Counterpart of GAN's non-saturating loss
+            # Recommended in the original GAN paper and later in (Fedus et al. 2017)
+            # Numerics: 0 for expert-like states, goes to -inf for non-expert-like states
+            # compatible with envs with traj cutoffs for good (expert-like) behavior
+            # e.g. mountain car, which gets cut off when the car reaches the destination
+            non_satur_reward = F.logsigmoid(score)
+            # Return the sum the two previous reward functions (as in AIRL, Fu et al. 2018)
+            # Numerics: might be better might be way worse
+            reward = non_satur_reward + minimax_reward
+        # Perform binning
+        num_bins = 3  # arbitrarily
+        binned = (sigscore // ((1 / num_bins) + 1e-8)).long().squeeze(-1)
+        # Note: the 1e-12 is here to avoid the edge case and keep the bins in {0, 1, 2}
+        return reward, binned
 
     def update_target_net(self, iters_so_far):
         """Update the target networks"""

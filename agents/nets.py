@@ -5,8 +5,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.nn.utils as U
-from torch import autograd
-from torch.autograd import Variable
 
 
 # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> Core.
@@ -55,36 +53,6 @@ class Discriminator(nn.Module):
         # Perform initialization
         self.score_trunk.apply(init(weight_scale=math.sqrt(2) / math.sqrt(1 + self.leak**2)))
         self.score_head.apply(init())
-
-    def grad_pen(self, p_ob, p_ac, e_ob, e_ac):
-        """Gradient penalty regularizer (motivation from Wasserstein GANs (Gulrajani),
-        but empirically useful in JS-GANs (Lucic et al. 2017)) and later in (Karol et al. 2018).
-        """
-        # Assemble interpolated state-action pair
-        ob_eps = torch.rand(self.ob_dim).to(p_ob.device)
-        ac_eps = torch.rand(self.ac_dim).to(p_ob.device)
-        ob_interp = ob_eps * p_ob + ((1. - ob_eps) * e_ob)
-        ac_interp = ac_eps * p_ac + ((1. - ac_eps) * e_ac)
-        # Set `requires_grad=True` to later have access to
-        # gradients w.r.t. the inputs (not populated by default)
-        ob_interp = Variable(ob_interp, requires_grad=True)
-        ac_interp = Variable(ac_interp, requires_grad=True)
-        # Create the operation of interest
-        score = self.D(ob_interp, ac_interp)
-        # Get the gradient of this operation with respect to its inputs
-        grads = autograd.grad(outputs=score,
-                              inputs=[ob_interp, ac_interp],
-                              only_inputs=True,
-                              grad_outputs=torch.ones(score.size()).to(p_ob.device),
-                              retain_graph=True,
-                              create_graph=True,
-                              allow_unused=self.hps.state_only)
-        assert len(list(grads)) == 2, "length must be exactly 2"
-        # Return the gradient penalty (try to induce 1-Lipschitzness)
-        if self.hps.state_only:
-            grads = grads[0]
-        grads_concat = torch.cat(list(grads), dim=-1)
-        return (grads_concat.norm(2, dim=-1) - 1.).pow(2).mean()
 
     def D(self, ob, ac):
         return self.forward(ob, ac)

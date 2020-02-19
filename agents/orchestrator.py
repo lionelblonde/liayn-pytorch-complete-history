@@ -369,9 +369,9 @@ def learn(args,
         if rank == 0:
 
             wandb.log({"num_workers": np.array(world_size)})
-            if agent.hps.d_trunc_is:
+            if agent.hps.prioritized_replay:
                 quantiles = [0.1, 0.25, 0.5, 0.75, 0.9]
-                np.quantile(losses['isw'], quantiles)
+                np.quantile(losses['iws'], quantiles)
                 wandb.log({"q{}".format(q): np.quantile(losses['isw'], q)
                            for q in [0.1, 0.25, 0.5, 0.75, 0.9]},
                           step=timesteps_so_far)
