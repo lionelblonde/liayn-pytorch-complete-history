@@ -52,7 +52,8 @@ def argparser(description="DDPG Experiment"):
     parser.add_argument('--targ_up_freq', type=int, default=100, help='hard target nets update')
     boolean_flag(parser, 'n_step_returns', default=True)
     parser.add_argument('--lookahead', help='num lookahead steps', type=int, default=10)
-    boolean_flag(parser, 'sig_score_binning_aux_loss', default=False)
+    boolean_flag(parser, 'binned_aux_loss', default=False)
+    boolean_flag(parser, 'squared_aux_loss', default=False)
     parser.add_argument('--ss_aux_loss_scale', type=float, default=0.1)
     boolean_flag(parser, 'popart', default=False)
 

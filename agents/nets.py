@@ -64,13 +64,6 @@ class Discriminator(nn.Module):
         return score  # no sigmoid here
 
 
-class VDB(nn.Module):
-
-    def __init__(self, env, hps):
-        super(VDB, self).__init__()
-        raise NotImplementedError
-
-
 class Actor(nn.Module):
 
     def __init__(self, env, hps):
@@ -94,7 +87,7 @@ class Actor(nn.Module):
             ]))),
         ]))
         self.a_head = nn.Linear(200, ac_dim)
-        if self.hps.sig_score_binning_aux_loss:
+        if self.hps.binned_aux_loss or self.hps.squared_aux_loss:
             self.r_decoder = nn.Sequential(OrderedDict([
                 ('fc_block_1', nn.Sequential(OrderedDict([
                     ('fc', nn.Linear(300, 200)),
@@ -102,12 +95,13 @@ class Actor(nn.Module):
                     ('nl', nn.ReLU()),
                 ]))),
             ]))
-            self.r_head = nn.Linear(200, 3)  # bins
+
+            self.r_head = nn.Linear(200, 3 if self.hps.binned_aux_loss else 1)  # bins
         # Perform initialization
         self.s_encoder.apply(init(weight_scale=math.sqrt(2)))
         self.a_decoder.apply(init(weight_scale=math.sqrt(2)))
         self.a_head.apply(init(weight_scale=0.01))
-        if self.hps.sig_score_binning_aux_loss:
+        if self.hps.binned_aux_loss or self.hps.squared_aux_loss:
             self.r_decoder.apply(init(weight_scale=math.sqrt(2)))
             self.r_head.apply(init(weight_scale=0.01))
 
@@ -116,7 +110,7 @@ class Actor(nn.Module):
         return out[0]  # ac
 
     def ss_aux_loss(self, ob):
-        if self.hps.sig_score_binning_aux_loss:
+        if self.hps.binned_aux_loss or self.hps.squared_aux_loss:
             out = self.forward(ob)
             return out[1]  # aux
         else:
@@ -126,9 +120,10 @@ class Actor(nn.Module):
         x = self.s_encoder(ob)
         ac = float(self.ac_max) * torch.tanh(self.a_head(self.a_decoder(x)))
         out = [ac]
-        if self.hps.sig_score_binning_aux_loss:
+        if self.hps.binned_aux_loss or self.hps.squared_aux_loss:
             aux = self.r_head(self.r_decoder(x))
-            aux = F.log_softmax(aux, dim=1).exp()
+            if self.hps.binned_aux_loss:
+                aux = F.log_softmax(aux, dim=1).exp()
             out.append(aux)
         return out
 

@@ -31,7 +31,7 @@ CONDA = CONFIG['resources']['conda_env']
 # Define experiment type
 TYPE = 'sweep' if args.sweep else 'fixed'
 # Write out the boolean arguments (using the 'boolean_flag' function)
-BOOL_ARGS = ['cuda', 'pixels', 'sig_score_binning_aux_loss', 'popart',
+BOOL_ARGS = ['cuda', 'pixels', 'binned_aux_loss', 'squared_aux_loss', 'popart',
              'render', 'record', 'with_scheduler',
              'prioritized_replay', 'ranked', 'unreal',
              'n_step_returns', 'clipped_double', 'targ_actor_smoothing',
@@ -44,11 +44,12 @@ BOOL_ARGS = ['cuda', 'pixels', 'sig_score_binning_aux_loss', 'popart',
 BENCH = CONFIG['parameters']['benchmark']
 if BENCH == 'mujoco':
     # Define environments map
-    TOC = {'debug': ['InvertedDoublePendulum'],
+    TOC = {'debug': ['InvertedDoublePendulum',
+                     'Walker2d'],
            'easy': ['InvertedPendulum',
                     'InvertedDoublePendulum'],
-           'hard': ['InvertedPendulum',
-                    'InvertedDoublePendulum',
+           'hard': ['HalfCheetah',
+                    'Ant',
                     'Walker2d'],
            'insane': ['HalfCheetah',
                       'Ant']
@@ -65,7 +66,7 @@ if BENCH == 'mujoco':
                'Reacher': 'shared-EL7,mono-shared-EL7',
                'InvertedDoublePendulum': 'shared-EL7,mono-shared-EL7',
                'Hopper': 'shared-EL7,mono-shared-EL7',
-               'Walker2d': 'shared-EL7,mono-shared-EL7',  # 'mono-EL7'
+               'Walker2d': 'shared-EL7,mono-shared-EL7',
                'HalfCheetah': 'mono-EL7',
                'Ant': 'mono-EL7'}
         # Define per-environment ntasks map
@@ -74,14 +75,14 @@ if BENCH == 'mujoco':
                'InvertedDoublePendulum': '10',
                'Hopper': '20',
                'Walker2d': '40',
-               'HalfCheetah': '60',
-               'Ant': '60'}
+               'HalfCheetah': '40',
+               'Ant': '40'}
         # Define per-environment timeouts map
         PET = {'InvertedPendulum': '0-06:00:00',
                'Reacher': '0-06:00:00',
                'InvertedDoublePendulum': '0-06:00:00',
                'Hopper': '0-12:00:00',
-               'Walker2d': '0-12:00:00',  # 4-00:00:00
+               'Walker2d': '0-12:00:00',
                'HalfCheetah': '4-00:00:00',
                'Ant': '4-00:00:00'}
 else:
@@ -169,7 +170,8 @@ def get_hps(sweep):
             'targ_up_freq': np.random.choice([10, 1000]),
             'n_step_returns': CONFIG['parameters'].get('n_step_returns', False),
             'lookahead': np.random.choice([5, 10, 20, 40, 60]),
-            'sig_score_binning_aux_loss': CONFIG['parameters'].get('sig_score_binning_aux_loss', False),
+            'binned_aux_loss': CONFIG['parameters'].get('binned_aux_loss', False),
+            'squared_aux_loss': CONFIG['parameters'].get('squared_aux_loss', False),
             'ss_aux_loss_scale': np.random.choice([0.001, 0.01, 0.1]),
             'popart': CONFIG['parameters'].get('popart', False),
 
@@ -205,10 +207,10 @@ def get_hps(sweep):
             'grad_pen': CONFIG['parameters'].get('grad_pen', False),
             'historical_patching': CONFIG['parameters'].get('historical_patching', True),
             'fake_ls_type': np.random.choice(['"random-uniform_0.7_1.2"',
-                                              '"interp-uniform_0.1"',
+                                              '"soft_labels_0.1"',
                                               '"none"']),
             'real_ls_type': np.random.choice(['"random-uniform_0.7_1.2"',
-                                              '"interp-uniform_0.1_2"',
+                                              '"soft_labels_0.1"',
                                               '"none"']),
             # PU
             'use_purl': CONFIG['parameters'].get('use_purl', False),
@@ -248,14 +250,15 @@ def get_hps(sweep):
             'rollout_len': CONFIG['parameters'].get('rollout_len', 2),
             'batch_size': CONFIG['parameters'].get('batch_size', 128),
             'gamma': CONFIG['parameters'].get('gamma', 0.99),
-            'mem_size': CONFIG['parameters'].get('mem_size', 50000),
+            'mem_size': int(CONFIG['parameters'].get('mem_size', 100000)),
             'noise_type': CONFIG['parameters']['noise_type'],
             'pn_adapt_frequency': CONFIG['parameters'].get('pn_adapt_frequency', 50),
             'polyak': CONFIG['parameters'].get('polyak', 0.005),
             'targ_up_freq': CONFIG['parameters'].get('targ_up_freq', 100),
             'n_step_returns': CONFIG['parameters'].get('n_step_returns', False),
             'lookahead': CONFIG['parameters'].get('lookahead', 60),
-            'sig_score_binning_aux_loss': CONFIG['parameters'].get('sig_score_binning_aux_loss', False),
+            'binned_aux_loss': CONFIG['parameters'].get('binned_aux_loss', False),
+            'squared_aux_loss': CONFIG['parameters'].get('squared_aux_loss', False),
             'ss_aux_loss_scale': CONFIG['parameters'].get('ss_aux_loss_scale', 0.1),
             'popart': CONFIG['parameters'].get('popart', False),
 

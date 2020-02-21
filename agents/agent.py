@@ -1,6 +1,5 @@
 from collections import namedtuple
 import os.path as osp
-from copy import deepcopy
 
 import numpy as np
 import torch
@@ -38,6 +37,7 @@ class Agent(object):
         self.hps = hps
         assert self.hps.lookahead > 1 or not self.hps.n_step_returns
         assert self.hps.rollout_len <= self.hps.batch_size
+        assert sum([self.hps.binned_aux_loss, self.hps.squared_aux_loss]) in [0, 1], "not both"
 
         # Define demo dataset
         self.expert_dataset = expert_dataset
@@ -199,9 +199,10 @@ class Agent(object):
 
     def parse_label_smoothing_type(self, ls_type):
         """Parse the `label_smoothing_type` hyperparameter"""
+        logger.info("[INFO] parsing label smoothing type")
         if ls_type == 'none':
 
-            def _apply_ls(labels):
+            def _apply(labels):
                 pass
 
         elif 'random-uniform' in ls_type:
@@ -214,20 +215,30 @@ class Agent(object):
             # Additional material: https://github.com/soumith/ganhacks/issues/10
             _, lb, ub = ls_type.split('_')
 
-            def _apply_ls(labels):
+            def _apply(labels):
                 # Replace labels by uniform noise from the interval
                 labels.uniform_(float(lb), float(ub))
 
-        elif 'interp-uniform' in ls_type:
-            # Traditional label smoothing, giving confidence to wrong classes uniformly (all)
-            _, alpha, nb_cls = ls_type.split('_')
+        elif 'soft-labels' in ls_type:
+            # Traditional soft labels, giving confidence to wrong classes uniformly (all)
+            _, alpha = ls_type.split('_')
 
-            def _apply_ls(labels):
-                labels.data.copy_((labels * (1. - float(alpha))) + (float(alpha) / float(nb_cls)))
+            def _apply(labels):
+                labels.data.copy_((labels * (1. - float(alpha))) + (float(alpha) / 2.))
+
+        elif 'disturb-label' in ls_type:
+            # DisturbLabel paper: disturb the label of each sample with probability alpha.
+            # For each disturbed sample, the label is randomly drawn from a uniform distribution
+            # over the whole label set, regarless of the true label.
+            _, alpha = ls_type.split('_')
+
+            def _apply(labels):
+                flip = (labels.clone().detach().data.uniform_() <= float(alpha)).float()
+                labels.data.copy_(torch.abs(labels.data - flip.data))
 
         else:
             raise RuntimeError("unknown label smoothing type: '{}'".format(ls_type))
-        return _apply_ls
+        return _apply
 
     def setup_replay_buffer(self):
         """Setup experiental memory unit"""
@@ -300,7 +311,7 @@ class Agent(object):
         ac = ac.clip(-self.max_ac, self.max_ac)
         return ac
 
-    def train(self, update_critic, update_actor, rollout, iters_so_far):
+    def train(self, update_critic, update_actor, iters_so_far):
         """Train the agent"""
 
         # Create patcher if needed
@@ -323,7 +334,6 @@ class Agent(object):
             )
 
         if not self.hps.pixels:
-            batch['obs0_not_norm'] = deepcopy(batch['obs0'])
             # Standardize and clip observations
             batch['obs0'] = self.normalize_clip_ob(batch['obs0'])
             batch['obs1'] = self.normalize_clip_ob(batch['obs1'])
@@ -387,7 +397,7 @@ class Agent(object):
             if self.hps.prioritized_replay:
                 # Update priorities
                 new_priorities = np.abs(ce_losses.sum(dim=1).detach().cpu().numpy()) + 1e-6
-                self.replay_buffer.update_priorities(batch['idxs'], new_priorities)
+                self.replay_buffer.update_priorities(batch['idxs'].reshape(-1), new_priorities)
                 # Adjust with importance weights
                 ce_losses *= iws
 
@@ -398,14 +408,6 @@ class Agent(object):
             actr_loss = actr_loss.matmul(self.c51_supp).unsqueeze(-1)  # [batch_size, 1]
 
             actr_loss = actr_loss.mean()
-
-            if self.hps.sig_score_binning_aux_loss:
-                # Self-supervised auxiliary loss
-                ss_aux_loss = F.cross_entropy(input=self.actr.ss_aux_loss(state),
-                                              target=self.get_reward(state, action, next_state)[1])
-                ss_aux_loss *= self.hps.ss_aux_loss_scale
-                # Add to actor loss
-                actr_loss += ss_aux_loss
 
         elif self.hps.use_qr:
 
@@ -442,7 +444,7 @@ class Agent(object):
                 # Update priorities
                 new_priorities = np.abs(td_errors.sum(dim=2).mean(dim=1).detach().cpu().numpy())
                 new_priorities += 1e-6
-                self.replay_buffer.update_priorities(batch['idxs'], new_priorities)
+                self.replay_buffer.update_priorities(batch['idxs'].reshape(-1), new_priorities)
 
             # Sum over current quantile value (tau, N in paper) dimension, and
             # average over target quantile value (tau prime, N' in paper) dimension.
@@ -518,7 +520,7 @@ class Agent(object):
                     twin_huber_td_errors *= iws
                 # Update priorities
                 new_priorities = np.abs((q - targ_q).detach().cpu().numpy()) + 1e-6
-                self.replay_buffer.update_priorities(batch['idxs'], new_priorities)
+                self.replay_buffer.update_priorities(batch['idxs'].reshape(-1), new_priorities)
 
             crit_loss = huber_td_errors.mean()
             if self.hps.clipped_double:
@@ -527,15 +529,27 @@ class Agent(object):
             # Actor loss
             actr_loss = -self.crit.QZ(state, self.actr.act(state)).mean()
 
-            if self.hps.sig_score_binning_aux_loss:
-                # Self-supervised auxiliary loss
-                ss_aux_loss = F.cross_entropy(input=self.actr.ss_aux_loss(state),
-                                              target=self.get_reward(state, action, next_state)[1])
-                ss_aux_loss *= self.hps.ss_aux_loss_scale
-                # Add to actor loss
-                actr_loss += ss_aux_loss
-
         # ######################################################################
+
+        # Self-supervised auxiliary loss
+        if self.hps.binned_aux_loss or self.hps.squared_aux_loss:
+            ep_state = torch.cat([self.normalize_clip_ob(next(iter(self.e_dataloader))['obs0']),
+                                  state], dim=0)
+            ep_action = torch.cat([next(iter(self.e_dataloader))['acs'], action], dim=0)
+        if self.hps.binned_aux_loss:
+            ss_aux_loss = F.cross_entropy(
+                input=self.actr.ss_aux_loss(ep_state),
+                target=self.get_reward(ep_state, ep_action, next_state, normalize_clip_ob=False)[1]
+            )
+        elif self.hps.squared_aux_loss:
+            ss_aux_loss = F.mse_loss(
+                input=self.actr.ss_aux_loss(state),
+                target=self.get_reward(state, action, next_state, normalize_clip_ob=False)[0]
+            )
+        if self.hps.binned_aux_loss or self.hps.squared_aux_loss:
+            ss_aux_loss *= self.hps.ss_aux_loss_scale
+            # Add to actor loss
+            actr_loss += ss_aux_loss
 
         # Compute gradients
         self.actr_opt.zero_grad()
@@ -568,11 +582,12 @@ class Agent(object):
         # Update discriminator
         for _ in range(self.hps.d_update_ratio):
             for p_chunk, e_chunk in zip(p_dataloader, self.e_dataloader):
-                self.update_disc(p_chunk, e_chunk)
+                disc_loss = self.update_disc(p_chunk, e_chunk)
 
         # Aggregate the elements to return
         losses = {'actr': actr_loss.clone().cpu().data.numpy(),
-                  'crit': crit_loss.clone().cpu().data.numpy()}
+                  'crit': crit_loss.clone().cpu().data.numpy(),
+                  'disc': disc_loss.clone().cpu().data.numpy()}
         gradns = {'actr': actr_gradn}
         if self.hps.clipped_double:
             losses.update({'twin': twin_loss.clone().cpu().data.numpy()})
@@ -589,7 +604,7 @@ class Agent(object):
     def update_disc(self, p_chunk, e_chunk):
         """Update the discriminator network"""
         # Create tensors from the inputs
-        p_state = torch.FloatTensor(p_chunk['obs0_not_norm']).to(self.device)  # unnormalized
+        p_state = torch.FloatTensor(p_chunk['obs0']).to(self.device)  # already normalized
         p_action = torch.FloatTensor(p_chunk['acs']).to(self.device)
         if not self.hps.pixels:
             # Standardize and clip observations
@@ -609,6 +624,7 @@ class Agent(object):
         # Create labels
         fake_labels = 0. * torch.ones_like(p_scores).to(self.device)
         real_labels = 1. * torch.ones_like(e_scores).to(self.device)
+
         # Parse and apply label smoothing
         self.apply_ls_fake(fake_labels)
         self.apply_ls_real(real_labels)
@@ -646,7 +662,7 @@ class Agent(object):
         d_loss.backward()
         average_gradients(self.disc, self.device)
         self.disc_opt.step()
-        return p_e_loss, entropy_loss, d_loss
+        return p_e_loss
 
     def grad_pen(self, p_ob, p_ac, e_ob, e_ac):
         """Gradient penalty regularizer (motivation from Wasserstein GANs (Gulrajani),
@@ -678,10 +694,10 @@ class Agent(object):
         grads_concat = torch.cat(list(grads), dim=-1)
         return (grads_concat.norm(2, dim=-1) - 1.).pow(2).mean()
 
-    def get_reward(self, curr_ob, ac, next_ob):
+    def get_reward(self, curr_ob, ac, next_ob, normalize_clip_ob=True):
         # Define the obeservation to get the reward of
         ob = next_ob if self.hps.state_only else curr_ob
-        if not self.hps.pixels:
+        if not self.hps.pixels and normalize_clip_ob:
             # Normalize observation
             ob = self.normalize_clip_ob(ob)
         # Craft surrogate reward

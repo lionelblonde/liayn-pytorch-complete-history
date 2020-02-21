@@ -19,10 +19,6 @@ def rollout_generator(env, agent, rollout_len):
     t = 0
     rollout = defaultdict(list)
 
-    if not agent.hps.pixels:
-        # Warm-start running stats with expert observations
-        agent.rms_obs.update(agent.expert_dataset.data['obs0'])
-
     # Reset agent's noise processes and env
     agent.reset_noise()
     ob = np.array(env.reset())
@@ -289,12 +285,12 @@ def learn(args,
                 losses, gradns, lrnows = agent.train(
                     update_critic=update_critic,
                     update_actor=update_actor,
-                    rollout=rollout,
                     iters_so_far=iters_so_far
                 )
-                d['actr_gradns'].append(gradns['actr'])
                 d['actr_losses'].append(losses['actr'])
                 d['crit_losses'].append(losses['crit'])
+                d['disc_losses'].append(losses['disc'])
+                d['actr_gradns'].append(gradns['actr'])
                 if agent.hps.clipped_double:
                     d['twin_losses'].append(losses['twin'])
 
@@ -372,7 +368,7 @@ def learn(args,
             if agent.hps.prioritized_replay:
                 quantiles = [0.1, 0.25, 0.5, 0.75, 0.9]
                 np.quantile(losses['iws'], quantiles)
-                wandb.log({"q{}".format(q): np.quantile(losses['isw'], q)
+                wandb.log({"q{}".format(q): np.quantile(losses['iws'], q)
                            for q in [0.1, 0.25, 0.5, 0.75, 0.9]},
                           step=timesteps_so_far)
             if iters_so_far % args.eval_frequency == 0:
@@ -387,7 +383,8 @@ def learn(args,
                        'actr_gradn': np.mean(d['actr_gradns']),
                        'actr_lrnow': np.array(lrnows['actr']),
                        'crit_loss': np.mean(d['crit_losses']),
-                       'crit_lrnow': np.array(lrnows['crit'])},
+                       'crit_lrnow': np.array(lrnows['crit']),
+                       'disc_loss': np.mean(d['disc_losses'])},
                       step=timesteps_so_far)
             if agent.hps.clipped_double:
                 wandb.log({'twin_loss': np.mean(d['twin_losses']),
