@@ -17,7 +17,6 @@ def argparser(description="DDPG Experiment"):
     # Generic
     parser.add_argument('--uuid', type=str, default=None)
     boolean_flag(parser, 'cuda', default=False)
-    boolean_flag(parser, 'pixels', default=False)
     parser.add_argument('--checkpoint_dir', type=str, default='data/checkpoints')
     parser.add_argument('--log_dir', type=str, default='data/logs')
     boolean_flag(parser, 'render', help='render the interaction traces', default=False)
@@ -41,6 +40,7 @@ def argparser(description="DDPG Experiment"):
     parser.add_argument('--wd_scale', help='weight decay scale', type=float, default=0.001)
 
     # Algorithm
+    boolean_flag(parser, 'clip_obs', default=False)
     parser.add_argument('--rollout_len', help='number of interactions per iteration',
                         type=int, default=2)
     parser.add_argument('--batch_size', help='minibatch size', type=int, default=128)
@@ -55,7 +55,6 @@ def argparser(description="DDPG Experiment"):
     boolean_flag(parser, 'binned_aux_loss', default=False)
     boolean_flag(parser, 'squared_aux_loss', default=False)
     parser.add_argument('--ss_aux_loss_scale', type=float, default=0.1)
-    boolean_flag(parser, 'popart', default=False)
 
     # TD3
     boolean_flag(parser, 'clipped_double', default=False)

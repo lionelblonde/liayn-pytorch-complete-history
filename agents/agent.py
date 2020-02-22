@@ -13,7 +13,7 @@ from helpers import logger
 from helpers.console_util import log_env_info, log_module_info
 from helpers.dataset import Dataset
 from helpers.math_util import huber_quant_reg_loss
-from helpers.distributed_util import average_gradients, sync_with_root, RunMoms
+from helpers.distributed_util import average_gradients, sync_with_root
 from agents.memory import ReplayBuffer, PrioritizedReplayBuffer, UnrealReplayBuffer
 from agents.nets import Actor, Critic, Discriminator
 from agents.param_noise import AdaptiveParamNoise
@@ -144,26 +144,6 @@ class Agent(object):
         if not self.eval_mode:
             log_module_info(logger, 'disc', self.disc)
 
-        if not self.hps.pixels:
-            self.rms_obs = RunMoms(shape=self.ob_shape, use_mpi=True)
-
-        if self.hps.popart:
-            self.rms_ret = RunMoms(shape=(1,), use_mpi=True)
-
-    def norm_rets(self, x):
-        if self.hps.popart:
-            return ((x - torch.FloatTensor(self.rms_ret.mean)).to(self.device) /
-                    torch.FloatTensor(np.sqrt(self.rms_ret.var)).to(self.device) + 1e-12)
-        else:
-            return x
-
-    def denorm_rets(self, x):
-        if self.hps.popart:
-            return ((x * torch.FloatTensor(np.sqrt(self.rms_ret.var))).to(self.device) +
-                    torch.FloatTensor(self.rms_ret.mean).to(self.device))
-        else:
-            return x
-
     def parse_noise_type(self, noise_type):
         """Parse the `noise_type` hyperparameter"""
         ac_noise = None
@@ -272,28 +252,12 @@ class Agent(object):
         # Summarize replay buffer creation (relies on `__repr__` method)
         logger.info("[INFO] {} configured".format(self.replay_buffer))
 
-    def normalize_clip_ob(self, ob):
-        # Normalize with running mean and running std
-        if torch.is_tensor(ob):
-            ob = ((ob - torch.FloatTensor(self.rms_obs.mean)) /
-                  (torch.FloatTensor(np.sqrt(self.rms_obs.var)) + 1e-12))
-        else:
-            ob = ((ob - self.rms_obs.mean) /
-                  (np.sqrt(self.rms_obs.var) + 1e-12))
-        # Clip
-        if torch.is_tensor(ob):
-            ob = torch.clamp(ob, -5.0, 5.0)
-        else:
-            ob = np.clip(ob, -5.0, 5.0)
-        return ob
-
     def predict(self, ob, apply_noise):
         """Predict an action, with or without perturbation,
         and optionaly compute and return the associated QZ value.
         """
         # Create tensor from the state (`require_grad=False` by default)
-        ob = ob[None] if self.hps.pixels else self.normalize_clip_ob(ob[None])
-        ob = torch.FloatTensor(ob).to(self.device)
+        ob = torch.FloatTensor(ob[None]).to(self.device)
         if apply_noise and self.param_noise is not None:
             # Predict following a parameter-noise-perturbed actor
             ac = self.pnp_actr.act(ob)
@@ -317,7 +281,9 @@ class Agent(object):
         # Create patcher if needed
         patcher = None
         if self.hps.historical_patching:
-            patcher = lambda x, y, z: self.get_reward(x, y, z)[0].cpu().numpy()  # noqa
+
+            def patcher(x, y, z):
+                return self.get_reward(x, y, z)[0].cpu().numpy()
 
         # Get a batch of transitions from the replay buffer
         if self.hps.n_step_returns:
@@ -332,11 +298,6 @@ class Agent(object):
                 self.hps.batch_size,
                 patcher=patcher,
             )
-
-        if not self.hps.pixels:
-            # Standardize and clip observations
-            batch['obs0'] = self.normalize_clip_ob(batch['obs0'])
-            batch['obs1'] = self.normalize_clip_ob(batch['obs1'])
 
         # Create tensors from the inputs
         state = torch.FloatTensor(batch['obs0']).to(self.device)
@@ -366,7 +327,7 @@ class Agent(object):
 
         if self.hps.use_c51:
 
-            # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> C51-like.
+            # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> C51.
 
             # Compute QZ estimate
             z = self.crit.QZ(state, action).unsqueeze(-1)
@@ -411,7 +372,7 @@ class Agent(object):
 
         elif self.hps.use_qr:
 
-            # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> QR-like.
+            # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> QR.
 
             # Compute QZ estimate
             z = self.crit.QZ(state, action).unsqueeze(-1)
@@ -458,22 +419,14 @@ class Agent(object):
             # Actor loss
             actr_loss = -self.crit.QZ(state, self.actr.act(state)).mean()
 
-            if self.hps.sig_score_binning_aux_loss:
-                # Self-supervised auxiliary loss
-                ss_aux_loss = F.cross_entropy(input=self.actr.ss_aux_loss(state),
-                                              target=self.get_reward(state, action, next_state)[1])
-                ss_aux_loss *= self.hps.ss_aux_loss_scale
-                # Add to actor loss
-                actr_loss += ss_aux_loss
-
         else:
 
-            # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> VANILLA
+            # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> VANILLA.
 
             # Compute QZ estimate
-            q = self.denorm_rets(self.crit.QZ(state, action))
+            q = self.crit.QZ(state, action)
             if self.hps.clipped_double:
-                twin_q = self.denorm_rets(self.twin.QZ(state, action))
+                twin_q = self.twin.QZ(state, action)
 
             # Compute target QZ estimate
             q_prime = self.targ_crit.QZ(next_state, next_action)
@@ -482,31 +435,7 @@ class Agent(object):
                 twin_q_prime = self.targ_twin.QZ(next_state, next_action)
                 q_prime = (0.75 * torch.min(q_prime, twin_q_prime) +
                            0.25 * torch.max(q_prime, twin_q_prime))  # soft minimum from BCQ
-            targ_q = (reward +
-                      (self.hps.gamma ** td_len) * (1. - done) *
-                      self.denorm_rets(q_prime).detach())  # make q_prime unnormalized
-            # Normalize target QZ with running statistics
-            targ_q = self.norm_rets(targ_q)
-
-            if self.hps.popart:
-                # Apply Pop-Art, https://arxiv.org/pdf/1602.07714.pdf
-                # Save the pre-update running stats
-                old_mean = torch.FloatTensor(self.rms_ret.mean).to(self.device)
-                old_std = torch.FloatTensor(np.sqrt(self.rms_ret.var) + 1e-12).to(self.device)
-                # Update the running stats
-                self.rms_ret.update(targ_q)
-                # Get the post-update running statistics
-                new_mean = torch.FloatTensor(self.rms_ret.mean).to(self.device)
-                new_std = torch.FloatTensor(np.sqrt(self.rms_ret.var) + 1e-12).to(self.device)
-                # Preserve the output from before the change of normalization old->new
-                # for both online and target critic(s)
-                outs = [self.crit.out_params, self.targ_crit.out_params]
-                if self.hps.clipped_double:
-                    outs.extend([self.twin.out_params, self.targ_twin.out_params])
-                for out in outs:
-                    w, b = out
-                    w.data.copy_(w.data * old_std / new_std)
-                    b.data.copy_(((b.data * old_std) + old_mean - new_mean) / new_std)
+            targ_q = reward + (self.hps.gamma ** td_len) * (1. - done) * q_prime.detach()
 
             # Critic loss
             huber_td_errors = F.smooth_l1_loss(q, targ_q, reduction='none')
@@ -533,18 +462,18 @@ class Agent(object):
 
         # Self-supervised auxiliary loss
         if self.hps.binned_aux_loss or self.hps.squared_aux_loss:
-            ep_state = torch.cat([self.normalize_clip_ob(next(iter(self.e_dataloader))['obs0']),
-                                  state], dim=0)
-            ep_action = torch.cat([next(iter(self.e_dataloader))['acs'], action], dim=0)
+            ep_state = torch.cat([next(iter(self.e_dataloader))['obs0'], state])
+            ep_action = torch.cat([next(iter(self.e_dataloader))['acs'], action])
+            ep_next_state = torch.cat([next(iter(self.e_dataloader))['obs1'], next_state])
         if self.hps.binned_aux_loss:
             ss_aux_loss = F.cross_entropy(
                 input=self.actr.ss_aux_loss(ep_state),
-                target=self.get_reward(ep_state, ep_action, next_state, normalize_clip_ob=False)[1]
+                target=self.get_reward(ep_state, ep_action, ep_next_state)[1]
             )
         elif self.hps.squared_aux_loss:
             ss_aux_loss = F.mse_loss(
-                input=self.actr.ss_aux_loss(state),
-                target=self.get_reward(state, action, next_state, normalize_clip_ob=False)[0]
+                input=self.actr.ss_aux_loss(ep_state),
+                target=self.get_reward(ep_state, ep_action, ep_next_state)[0]
             )
         if self.hps.binned_aux_loss or self.hps.squared_aux_loss:
             ss_aux_loss *= self.hps.ss_aux_loss_scale
@@ -604,11 +533,8 @@ class Agent(object):
     def update_disc(self, p_chunk, e_chunk):
         """Update the discriminator network"""
         # Create tensors from the inputs
-        p_state = torch.FloatTensor(p_chunk['obs0']).to(self.device)  # already normalized
+        p_state = torch.FloatTensor(p_chunk['obs0']).to(self.device)
         p_action = torch.FloatTensor(p_chunk['acs']).to(self.device)
-        if not self.hps.pixels:
-            # Standardize and clip observations
-            e_chunk['obs0'] = self.normalize_clip_ob(e_chunk['obs0'])
         e_state = torch.FloatTensor(e_chunk['obs0']).to(self.device)
         e_action = torch.FloatTensor(e_chunk['acs']).to(self.device)
 
@@ -694,12 +620,9 @@ class Agent(object):
         grads_concat = torch.cat(list(grads), dim=-1)
         return (grads_concat.norm(2, dim=-1) - 1.).pow(2).mean()
 
-    def get_reward(self, curr_ob, ac, next_ob, normalize_clip_ob=True):
+    def get_reward(self, curr_ob, ac, next_ob):
         # Define the obeservation to get the reward of
         ob = next_ob if self.hps.state_only else curr_ob
-        if not self.hps.pixels and normalize_clip_ob:
-            # Normalize observation
-            ob = self.normalize_clip_ob(ob)
         # Craft surrogate reward
         assert sum([isinstance(x, torch.Tensor) for x in [ob, ac]]) in [0, 2]
         if not isinstance(ob, torch.Tensor):  # then ac is not neither

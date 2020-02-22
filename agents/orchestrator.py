@@ -32,14 +32,10 @@ def rollout_generator(env, agent, rollout_len):
         ac = np.clip(ac, env.action_space.low, env.action_space.high)
 
         if t > 0 and t % rollout_len == 0:
-            obs = np.array(rollout["obs"]).reshape(-1, *agent.ob_shape)
             out = {
-                "obs": obs,
+                "obs": np.array(rollout["obs"]).reshape(-1, *agent.ob_shape),
                 "acs": np.array(rollout["acs"]).reshape(-1, *agent.ac_shape),
             }
-            if not agent.hps.pixels:
-                # Update running stats
-                agent.rms_obs.update(obs)
             # Yield
             yield out
             # When going back in, clear the rollout

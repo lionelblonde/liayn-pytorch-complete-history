@@ -31,7 +31,7 @@ CONDA = CONFIG['resources']['conda_env']
 # Define experiment type
 TYPE = 'sweep' if args.sweep else 'fixed'
 # Write out the boolean arguments (using the 'boolean_flag' function)
-BOOL_ARGS = ['cuda', 'pixels', 'binned_aux_loss', 'squared_aux_loss', 'popart',
+BOOL_ARGS = ['cuda', 'clip_obs', 'binned_aux_loss', 'squared_aux_loss',
              'render', 'record', 'with_scheduler',
              'prioritized_replay', 'ranked', 'unreal',
              'n_step_returns', 'clipped_double', 'targ_actor_smoothing',
@@ -44,8 +44,7 @@ BOOL_ARGS = ['cuda', 'pixels', 'binned_aux_loss', 'squared_aux_loss', 'popart',
 BENCH = CONFIG['parameters']['benchmark']
 if BENCH == 'mujoco':
     # Define environments map
-    TOC = {'debug': ['InvertedDoublePendulum',
-                     'Walker2d'],
+    TOC = {'debug': ['InvertedDoublePendulum'],
            'easy': ['InvertedPendulum',
                     'InvertedDoublePendulum'],
            'hard': ['HalfCheetah',
@@ -135,7 +134,6 @@ def get_hps(sweep):
             # Generic
             'uuid': uuid,
             'cuda': CONFIG['parameters']['cuda'],
-            'pixels': CONFIG['parameters']['pixels'],
             'checkpoint_dir': CONFIG['logging']['checkpoint_dir'],
             'log_dir': CONFIG['logging']['log_dir'],
             'render': False,
@@ -157,6 +155,7 @@ def get_hps(sweep):
             'wd_scale': float(np.random.choice([1e-4, 3e-4, 1e-3])),
 
             # Algorithm
+            'clip_obs': CONFIG['parameters'].get('clip_obs', False),
             'rollout_len': np.random.choice([2, 5]),
             'batch_size': np.random.choice([32, 64, 128]),
             'gamma': np.random.choice([0.99, 0.995]),
@@ -173,7 +172,6 @@ def get_hps(sweep):
             'binned_aux_loss': CONFIG['parameters'].get('binned_aux_loss', False),
             'squared_aux_loss': CONFIG['parameters'].get('squared_aux_loss', False),
             'ss_aux_loss_scale': np.random.choice([0.001, 0.01, 0.1]),
-            'popart': CONFIG['parameters'].get('popart', False),
 
             # TD3
             'clipped_double': CONFIG['parameters'].get('clipped_double', False),
@@ -204,7 +202,7 @@ def get_hps(sweep):
             'ent_reg_scale': CONFIG['parameters'].get('ent_reg_scale', 0.),
             'd_update_ratio': CONFIG['parameters'].get('d_update_ratio', 2),
             'num_demos': CONFIG['parameters'].get('num_demos', 0),
-            'grad_pen': CONFIG['parameters'].get('grad_pen', False),
+            'grad_pen': CONFIG['parameters'].get('grad_pen', True),
             'historical_patching': CONFIG['parameters'].get('historical_patching', True),
             'fake_ls_type': np.random.choice(['"random-uniform_0.7_1.2"',
                                               '"soft_labels_0.1"',
@@ -225,7 +223,6 @@ def get_hps(sweep):
             # Generic
             'uuid': uuid,
             'cuda': CONFIG['parameters']['cuda'],
-            'pixels': CONFIG['parameters']['pixels'],
             'checkpoint_dir': CONFIG['logging']['checkpoint_dir'],
             'log_dir': CONFIG['logging']['log_dir'],
             'render': False,
@@ -247,6 +244,7 @@ def get_hps(sweep):
             'wd_scale': float(CONFIG['parameters'].get('wd_scale', 3e-4)),
 
             # Algorithm
+            'clip_obs': CONFIG['parameters'].get('clip_obs', False),
             'rollout_len': CONFIG['parameters'].get('rollout_len', 2),
             'batch_size': CONFIG['parameters'].get('batch_size', 128),
             'gamma': CONFIG['parameters'].get('gamma', 0.99),
@@ -260,7 +258,6 @@ def get_hps(sweep):
             'binned_aux_loss': CONFIG['parameters'].get('binned_aux_loss', False),
             'squared_aux_loss': CONFIG['parameters'].get('squared_aux_loss', False),
             'ss_aux_loss_scale': CONFIG['parameters'].get('ss_aux_loss_scale', 0.1),
-            'popart': CONFIG['parameters'].get('popart', False),
 
             # TD3
             'clipped_double': CONFIG['parameters'].get('clipped_double', False),
@@ -291,10 +288,10 @@ def get_hps(sweep):
             'ent_reg_scale': CONFIG['parameters'].get('ent_reg_scale', 0.),
             'd_update_ratio': CONFIG['parameters'].get('d_update_ratio', 2),
             'num_demos': CONFIG['parameters'].get('num_demos', 0),
-            'grad_pen': CONFIG['parameters'].get('grad_pen', False),
+            'grad_pen': CONFIG['parameters'].get('grad_pen', True),
             'historical_patching': CONFIG['parameters'].get('historical_patching', True),
-            'fake_ls_type': CONFIG['parameters']['fake_ls_type'],
-            'real_ls_type': CONFIG['parameters']['real_ls_type'],
+            'fake_ls_type': CONFIG['parameters'].get('fake_ls_type', 'none'),
+            'real_ls_type': CONFIG['parameters'].get('real_ls_type', 'random-uniform_0.7_1.2'),
 
             # PU
             'use_purl': CONFIG['parameters'].get('use_purl', False),
