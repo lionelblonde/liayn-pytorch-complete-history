@@ -38,6 +38,9 @@ class Agent(object):
         assert self.hps.lookahead > 1 or not self.hps.n_step_returns
         assert self.hps.rollout_len <= self.hps.batch_size
         assert sum([self.hps.binned_aux_loss, self.hps.squared_aux_loss]) in [0, 1], "not both"
+        assert self.hps.clip_norm >= 0
+        if self.hps.clip_norm <= 0:
+            logger.info("[WARN] clip_norm={} <= 0, hence disabled.".format(self.hps.clip_norm))
 
         # Define demo dataset
         self.expert_dataset = expert_dataset
@@ -461,19 +464,24 @@ class Agent(object):
         # ######################################################################
 
         # Self-supervised auxiliary loss
-        if self.hps.binned_aux_loss or self.hps.squared_aux_loss:
-            ep_state = torch.cat([next(iter(self.e_dataloader))['obs0'], state])
-            ep_action = torch.cat([next(iter(self.e_dataloader))['acs'], action])
-            ep_next_state = torch.cat([next(iter(self.e_dataloader))['obs1'], next_state])
         if self.hps.binned_aux_loss:
+            expert_batch = next(iter(self.e_dataloader))
+            indices = torch.randperm(self.hps.batch_size)  # subsample
+            size = self.hps.batch_size // 2
+            ep_state = torch.cat([expert_batch['obs0'][indices[:size]],
+                                  state[indices[:size]]], dim=0)
+            ep_action = torch.cat([expert_batch['acs'][indices[:size]],
+                                   action[indices[:size]]], dim=0)
+            ep_next_state = torch.cat([expert_batch['obs1'][indices[:size]],
+                                       next_state[indices[:size]]], dim=0)
             ss_aux_loss = F.cross_entropy(
                 input=self.actr.ss_aux_loss(ep_state),
                 target=self.get_reward(ep_state, ep_action, ep_next_state)[1]
             )
         elif self.hps.squared_aux_loss:
             ss_aux_loss = F.mse_loss(
-                input=self.actr.ss_aux_loss(ep_state),
-                target=self.get_reward(ep_state, ep_action, ep_next_state)[0]
+                input=self.actr.ss_aux_loss(state),
+                target=self.get_reward(state, action, next_state)[0]
             )
         if self.hps.binned_aux_loss or self.hps.squared_aux_loss:
             ss_aux_loss *= self.hps.ss_aux_loss_scale
@@ -484,7 +492,8 @@ class Agent(object):
         self.actr_opt.zero_grad()
         actr_loss.backward()
         average_gradients(self.actr, self.device)
-        actr_gradn = U.clip_grad_norm_(self.actr.parameters(), self.hps.clip_norm)
+        if self.hps.clip_norm > 0:
+            U.clip_grad_norm_(self.actr.parameters(), self.hps.clip_norm)
         self.crit_opt.zero_grad()
         crit_loss.backward()
         average_gradients(self.crit, self.device)
@@ -517,7 +526,6 @@ class Agent(object):
         losses = {'actr': actr_loss.clone().cpu().data.numpy(),
                   'crit': crit_loss.clone().cpu().data.numpy(),
                   'disc': disc_loss.clone().cpu().data.numpy()}
-        gradns = {'actr': actr_gradn}
         if self.hps.clipped_double:
             losses.update({'twin': twin_loss.clone().cpu().data.numpy()})
         if self.hps.prioritized_replay:
@@ -528,7 +536,7 @@ class Agent(object):
         if self.hps.clipped_double:
             lrnows.update({'twin': self.twin_sched.get_last_lr()})
 
-        return losses, gradns, lrnows
+        return losses, lrnows
 
     def update_disc(self, p_chunk, e_chunk):
         """Update the discriminator network"""

@@ -278,7 +278,7 @@ def learn(args,
                 update_critic = True
                 update_critic = not bool(training_step % args.d_update_ratio)
                 update_actor = update_critic and not bool(training_step % args.actor_update_delay)
-                losses, gradns, lrnows = agent.train(
+                losses, lrnows = agent.train(
                     update_critic=update_critic,
                     update_actor=update_actor,
                     iters_so_far=iters_so_far
@@ -286,7 +286,6 @@ def learn(args,
                 d['actr_losses'].append(losses['actr'])
                 d['crit_losses'].append(losses['crit'])
                 d['disc_losses'].append(losses['disc'])
-                d['actr_gradns'].append(gradns['actr'])
                 if agent.hps.clipped_double:
                     d['twin_losses'].append(losses['twin'])
 
@@ -298,7 +297,6 @@ def learn(args,
                                  'mean': np.mean(ac_np_mean),
                                  'mpimean': mpi_mean_reduce(ac_np_mean)}})
             stats.update({'actr': {'loss': np.mean(d['actr_losses']),
-                                   'gradn': np.mean(d['actr_gradns']),
                                    'lrnow': lrnows['actr'][0]}})
             stats.update({'crit': {'loss': np.mean(d['crit_losses']),
                                    'lrnow': lrnows['crit'][0]}})
@@ -376,7 +374,6 @@ def learn(args,
                            'pn_cur_std': np.mean(d['pn_cur_std'])},
                           step=timesteps_so_far)
             wandb.log({'actr_loss': np.mean(d['actr_losses']),
-                       'actr_gradn': np.mean(d['actr_gradns']),
                        'actr_lrnow': np.array(lrnows['actr']),
                        'crit_loss': np.mean(d['crit_losses']),
                        'crit_lrnow': np.array(lrnows['crit']),

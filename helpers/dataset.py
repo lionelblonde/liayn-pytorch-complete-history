@@ -43,8 +43,8 @@ class DemoDataset(Dataset):
 
     def __init__(self, expert_path, num_demos):
         self.num_demos = num_demos
-        self._data = defaultdict(list)
-        self._stats = defaultdict(list)
+        self.data = defaultdict(list)
+        self.stats = defaultdict(list)
         logger.info(">>>> loading demos")
         # Go over the demos, sorted in alphabetical order
         for i, f in enumerate(sorted(glob.glob(osp.join(expert_path, "*.h5")))):
@@ -63,19 +63,19 @@ class DemoDataset(Dataset):
                 # Add the demo's content
                 if k in STATS_KEYS:
                     logger.info("[INFO]      stat: {}{}".format(k.ljust(20, '-'), v))
-                    self._stats[k].append(v)
+                    self.stats[k].append(v)
                 else:
-                    self._data[k].append(v)
+                    self.data[k].append(v)
 
         # Transform structures into arrays
-        for k, v in self._stats.items():
-            self._stats[k] = np.array(v)
-        for k, v in self._data.items():
-            self._data[k] = np.concatenate(v, axis=0)
+        for k, v in self.stats.items():
+            self.stats[k] = np.array(v)
+        for k, v in self.data.items():
+            self.data[k] = np.concatenate(v, axis=0)
 
         # Log demos' statistics
-        rets_, lens_ = (self._stats['ep_env_rets'],
-                        self._stats['ep_lens'])
+        rets_, lens_ = (self.stats['ep_env_rets'],
+                        self.stats['ep_lens'])
         logger.info("[INFO] got {} transitions, from {} eps".format(len(self), self.num_demos))
         logger.info("[INFO] episodic return: {}({})".format(np.mean(rets_), np.std(rets_)))
         logger.info("[INFO] episodic length: {}({})".format(np.mean(lens_), np.std(lens_)))
