@@ -33,7 +33,9 @@ stems = ['InvertedPendulum-v2',
 
 for stem in stems:
     fname = stem + '.trajs_16.npz'
-    demo_dir = osp.join('/Users/lionelblonde/Downloads/expert-demos.old/more_demos', stem)
+    demo_dir = osp.join(os.environ['HOME'],
+                        'Downloads/expert-demos-full-archive/more_demos_npz',
+                        stem)
     expert_path = osp.join(demo_dir, fname)
     with np.load(expert_path, allow_pickle=True) as data:
         data_map = {}
@@ -41,20 +43,30 @@ for stem in stems:
             data_map[k] = v
             print(v[0].shape)
 
-    new_demo_dir = osp.join('/Users/lionelblonde/Downloads/new_demosxxxx', stem)
+    new_demo_dir = osp.join('/Users/lionelblonde/Downloads/new_demos_h5', stem)
     new_ext = '.h5'
 
     for i in range(16):
-        _data_map = {}
+        data_map_ = {}
         for k, v in data_map.items():
-            _data_map.update({k: v[i]})
+            if k == 'obs':
+                k = 'obs0'
+            elif k == 'next_obs':
+                k = 'obs1'
+            elif k == 'dones':
+                k = 'dones1'
+            elif k == 'pix_obs':
+                k = 'pix_obs0'
+            elif k == 'pix_next_obs':
+                k = 'pix_obs1'
+            data_map_.update({k: v[i]})
             print(k, v[i].shape)
         new_fname = stem + '_demo{}'.format(str(i).zfill(3))
         fname = new_fname + new_ext
         new_expert_path = osp.join(new_demo_dir, fname)
         print(new_expert_path)
         os.makedirs(new_demo_dir, exist_ok=True)
-        save_dict_h5py(_data_map, new_expert_path)
+        save_dict_h5py(data_map_, new_expert_path)
 
     retrieved_data_map = load_dict_h5py(new_expert_path)
 

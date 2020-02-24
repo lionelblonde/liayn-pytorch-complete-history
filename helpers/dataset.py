@@ -9,6 +9,7 @@ from helpers import logger
 
 
 STATS_KEYS = ['ep_lens', 'ep_env_rets']
+ALLOW_KEYS = ['obs0', 'acs', 'env_rews', 'dones1', 'obs1'] + STATS_KEYS
 
 
 def save_dict_h5py(data, fname):
@@ -55,12 +56,16 @@ class DemoDataset(Dataset):
             logger.info("[INFO] demo #{} loaded from: {}".format(str(i).zfill(3), f))
             # Load the demo from the file
             tmp = load_dict_h5py(f)
-            dims = {k: tmp[k].shape[1:] for k in tmp.keys() if k not in STATS_KEYS}
+            dims = {k: tmp[k].shape[1:] for k in tmp.keys()
+                    if k not in STATS_KEYS and k in ALLOW_KEYS}
             dims = ' | '.join(["{}={}".format(k, v) for k, v in dims.items()])
             logger.info("[INFO]      dims: {}".format(dims))
             # Collect the demo's content
             for k, v in tmp.items():
                 # Add the demo's content
+                if k not in ALLOW_KEYS:
+                    logger.info("[INFO]      not adding key: {}".format(k))
+                    continue
                 if k in STATS_KEYS:
                     logger.info("[INFO]      stat: {}{}".format(k.ljust(20, '-'), v))
                     self.stats[k].append(v)
