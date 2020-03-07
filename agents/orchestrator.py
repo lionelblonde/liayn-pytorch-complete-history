@@ -2,13 +2,12 @@ import time
 from copy import deepcopy
 import os
 import os.path as osp
-from collections import defaultdict, OrderedDict
+from collections import defaultdict
 
 import wandb
 import numpy as np
 
 from helpers import logger
-from helpers.distributed_util import mpi_mean_reduce
 # from helpers.distributed_util import sync_check
 from helpers.console_util import timed_cm_wrapper, log_iter_info
 from agents.agent import Agent
@@ -17,10 +16,9 @@ from agents.agent import Agent
 def rollout_generator(env, agent, rollout_len):
 
     t = 0
-    rollout = defaultdict(list)
-
-    # Reset agent's noise processes and env
+    # Reset agent's noise process
     agent.reset_noise()
+    # Reset agent's env
     ob = np.array(env.reset())
 
     while True:
@@ -32,37 +30,72 @@ def rollout_generator(env, agent, rollout_len):
         ac = np.clip(ac, env.action_space.low, env.action_space.high)
 
         if t > 0 and t % rollout_len == 0:
-            out = {
-                "obs": np.array(rollout["obs"]).reshape(-1, *agent.ob_shape),
-                "acs": np.array(rollout["acs"]).reshape(-1, *agent.ac_shape),
-            }
-            # Yield
-            yield out
-            # When going back in, clear the rollout
-            rollout.clear()
+            yield
 
         # Interact with env(s)
         new_ob, _, done, _ = env.step(ac)
 
-        # Store transition(s) in the replay buffer
-        rew = np.asscalar(agent.get_reward(ob, ac, new_ob)[0].cpu().numpy().flatten())
-        transition = {"obs0": ob,
-                      "acs": ac,
-                      "rews": rew,
-                      "obs1": new_ob,
-                      "dones1": done}
-        agent.replay_buffer.append(transition)
-
-        # Populate rollout
-        rollout["obs"].append(ob)
-        rollout["acs"].append(ac)
+        if agent.hps.wrap_absorb:
+            _ob = np.append(ob, 0)
+            _ac = np.append(ac, 0)
+            if done and not env._elapsed_steps == env._max_episode_steps:
+                # Wrap with an absorbing state
+                _new_ob = np.append(np.zeros(agent.ob_shape), 1)
+                _rew = agent.get_reward(_ob[None], _ac[None], _new_ob[None])[0]
+                _rew = np.asscalar(_rew.cpu().numpy().flatten())
+                transition = {
+                    "obs0": _ob,
+                    "acs": _ac,
+                    "obs1": _new_ob,
+                    "rews": _rew,
+                    "dones1": done,
+                }
+                agent.store_transition(transition)
+                # Add absorbing transition
+                _ob_a = np.append(np.zeros(agent.ob_shape), 1)
+                _ac_a = np.append(np.zeros(agent.ac_shape), 1)
+                _new_ob_a = np.append(np.zeros(agent.ob_shape), 1)
+                _rew_a = agent.get_reward(_ob_a[None], _ac_a[None], _new_ob_a[None])[0]
+                _rew_a = np.asscalar(_rew_a.cpu().numpy().flatten())
+                transition_a = {
+                    "obs0": _ob_a,
+                    "acs": _ac_a,
+                    "obs1": _new_ob_a,
+                    "rews": _rew_a,
+                    "dones1": done,
+                }
+                agent.store_transition(transition_a)
+            else:
+                _new_ob = np.append(new_ob, 0)
+                _rew = agent.get_reward(_ob[None], _ac[None], _new_ob[None])[0]
+                _rew = np.asscalar(_rew.cpu().numpy().flatten())
+                transition = {
+                    "obs0": _ob,
+                    "acs": _ac,
+                    "obs1": _new_ob,
+                    "rews": _rew,
+                    "dones1": done,
+                }
+                agent.store_transition(transition)
+        else:
+            rew = agent.get_reward(ob[None], ac[None], new_ob[None])[0]
+            rew = np.asscalar(rew.cpu().numpy().flatten())
+            transition = {
+                "obs0": ob,
+                "acs": ac,
+                "obs1": new_ob,
+                "rews": rew,
+                "dones1": done,
+            }
+            agent.store_transition(transition)
 
         # Set current state with the next
         ob = np.array(deepcopy(new_ob))
 
         if done:
-            # Reset agent's noise processes and env
+            # Reset agent's noise process
             agent.reset_noise()
+            # Reset agent's env
             ob = np.array(env.reset())
 
         t += 1
@@ -258,64 +291,50 @@ def learn(args,
 
         # Sample mini-batch in env with perturbed actor and store transitions
         with timed("interacting"):
-            rollout = roll_gen.__next__()
-            logger.info("[INFO] {} ".format("timesteps".ljust(20, '.')) +
-                        "{}".format(timesteps_so_far + args.rollout_len))
+            roll_gen.__next__()  # no need to get the returned rollout, stored in buffer
 
-        with timed("training"):
-            for training_step in range(args.training_steps_per_iter):
+        for training_step in range(args.training_steps_per_iter):
 
-                if agent.param_noise is not None:
-                    if training_step % args.pn_adapt_frequency == 0:
-                        # Adapt parameter noise
-                        agent.adapt_param_noise()
-                        # Store the action-space dist between perturbed and non-perturbed actors
-                        d['pn_dist'].append(agent.pn_dist)
-                        # Store the new std resulting from the adaption
-                        d['pn_cur_std'].append(agent.param_noise.cur_std)
-
-                # Train the actor-critic architecture
-                update_critic = True
-                update_critic = not bool(training_step % args.d_update_ratio)
-                update_actor = update_critic and not bool(training_step % args.actor_update_delay)
-                losses, lrnows = agent.train(
-                    update_critic=update_critic,
-                    update_actor=update_actor,
-                    iters_so_far=iters_so_far
-                )
-                d['actr_losses'].append(losses['actr'])
-                d['crit_losses'].append(losses['crit'])
-                d['disc_losses'].append(losses['disc'])
-                if agent.hps.clipped_double:
-                    d['twin_losses'].append(losses['twin'])
-
-            # Log statistics
-            stats = OrderedDict()
-            ac_np_mean = np.mean(rollout['acs'], axis=0)  # vector
-            stats.update({'ac': {'min': np.amin(ac_np_mean),
-                                 'max': np.amax(ac_np_mean),
-                                 'mean': np.mean(ac_np_mean),
-                                 'mpimean': mpi_mean_reduce(ac_np_mean)}})
-            stats.update({'actr': {'loss': np.mean(d['actr_losses']),
-                                   'lrnow': lrnows['actr'][0]}})
-            stats.update({'crit': {'loss': np.mean(d['crit_losses']),
-                                   'lrnow': lrnows['crit'][0]}})
-            if agent.hps.clipped_double:
-                stats.update({'twin': {'loss': np.mean(d['twin_losses']),
-                                       'lrnow': lrnows['twin'][0]}})
             if agent.param_noise is not None:
-                stats.update({'pn': {'pn_dist': np.mean(d['pn_dist']),
-                                     'pn_cur_std': np.mean(d['pn_cur_std'])}})
+                if training_step % args.pn_adapt_frequency == 0:
+                    # Adapt parameter noise
+                    agent.adapt_param_noise()
+                    # Store the action-space dist between perturbed and non-perturbed actors
+                    d['pn_dist'].append(agent.pn_dist)
+                    # Store the new std resulting from the adaption
+                    d['pn_cur_std'].append(agent.param_noise.cur_std)
 
-            num_entries = deepcopy(agent.replay_buffer.num_entries)
-            stats.update({'memory': {'num_entries': str(num_entries),
-                                     'capacity': str(agent.hps.mem_size),
-                                     'load': "{:.2%}".format(num_entries /
-                                                             agent.hps.mem_size)}})
-            for k, v in stats.items():
-                assert isinstance(v, dict)
-                v_ = {a: "{:.5f}".format(b) if not isinstance(b, str) else b for a, b in v.items()}
-                logger.info("[INFO] {} {}".format(k.ljust(20, '.'), v_))
+            # Sample a batch of transitions from the replay buffer
+            batch = agent.sample_batch()
+
+            with timed('actor and critic training'):
+                # Update the actor and critic
+                metrics, lrnows = agent.update_actor_critic(
+                    batch=batch,
+                    update_actor=not bool(training_step % args.actor_update_delay),  # from TD3
+                    iters_so_far=iters_so_far,
+                )
+                # Log training stats
+                d['actr_losses'].append(metrics['actr_loss'])
+                d['crit_losses'].append(metrics['crit_loss'])
+                if agent.hps.clipped_double:
+                    d['twin_losses'].append(metrics['twin_loss'])
+                if agent.hps.prioritized_replay:
+                    iws = metrics['iws']  # last one only
+
+                if agent.hps.kye_p_binning or agent.hps.kye_p_regress:
+                    agent.update_reward_control(
+                        batch=batch,
+                        iters_so_far=iters_so_far,
+                    )
+
+            with timed('discriminator training'):
+                # Update the discriminator
+                metrics = agent.update_discriminator(
+                    batch=batch,
+                )
+                # Log training stats
+                d['disc_losses'].append(metrics['disc_loss'])
 
         if eval_env is not None:
             assert rank == 0, "non-zero rank mpi worker forbidden here"
@@ -323,10 +342,6 @@ def learn(args,
             if iters_so_far % args.eval_frequency == 0:
 
                 with timed("evaluating"):
-
-                    # Use the running stats of the training environment to normalize
-                    if hasattr(eval_env, 'running_moments'):
-                        eval_env.running_moments = deepcopy(env.running_moments)
 
                     for eval_step in range(args.eval_steps_per_iter):
                         # Sample an episode w/ non-perturbed actor w/o storing anything
@@ -355,14 +370,18 @@ def learn(args,
                                                         caption="Evaluation (last episode)")},
                                   step=timesteps_so_far)
 
+        # Increment counters
+        iters_so_far += 1
+        timesteps_so_far += args.rollout_len
+
         # Log stats in dashboard
         if rank == 0:
 
             wandb.log({"num_workers": np.array(world_size)})
             if agent.hps.prioritized_replay:
                 quantiles = [0.1, 0.25, 0.5, 0.75, 0.9]
-                np.quantile(losses['iws'], quantiles)
-                wandb.log({"q{}".format(q): np.quantile(losses['iws'], q)
+                np.quantile(iws, quantiles)
+                wandb.log({"q{}".format(q): np.quantile(iws, q)
                            for q in [0.1, 0.25, 0.5, 0.75, 0.9]},
                           step=timesteps_so_far)
             if iters_so_far % args.eval_frequency == 0:
@@ -384,8 +403,5 @@ def learn(args,
                            'twin_lrnow': np.array(lrnows['twin'])},
                           step=timesteps_so_far)
 
-        # Increment counters
-        iters_so_far += 1
-        timesteps_so_far += args.rollout_len
         # Clear the iteration's running stats
         d.clear()

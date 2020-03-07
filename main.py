@@ -51,9 +51,12 @@ def train(args):
     env = make_env(args.env_id, worker_seed)
 
     # Create the expert demonstrations dataset from expert trajectories
-    expert_dataset = DemoDataset(expert_path=args.expert_path,
-                                 num_demos=args.num_demos)
-
+    expert_dataset = DemoDataset(
+        expert_path=args.expert_path,
+        num_demos=args.num_demos,
+        env=env,
+        wrap_absorb=args.wrap_absorb,
+    )
     # Create an evaluation environment not to mess up with training rollouts
     eval_env = None
     if rank == 0:

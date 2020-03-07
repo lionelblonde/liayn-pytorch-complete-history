@@ -3,7 +3,7 @@ from copy import deepcopy
 import os
 import os.path as osp
 import numpy as np
-from subprocess import check_output
+import subprocess
 import yaml
 
 from helpers import logger
@@ -31,13 +31,14 @@ CONDA = CONFIG['resources']['conda_env']
 # Define experiment type
 TYPE = 'sweep' if args.sweep else 'fixed'
 # Write out the boolean arguments (using the 'boolean_flag' function)
-BOOL_ARGS = ['cuda', 'clip_obs', 'binned_aux_loss', 'squared_aux_loss',
+BOOL_ARGS = ['cuda', 'clip_obs',
              'render', 'record', 'with_scheduler',
              'prioritized_replay', 'ranked', 'unreal',
              'n_step_returns', 'clipped_double', 'targ_actor_smoothing',
-             'state_only', 'minimax_only', 'grad_pen',
-             'historical_patching',
              'use_c51', 'use_qr', 'use_iqn',
+             'state_only', 'minimax_only', 'spectral_norm', 'grad_pen', 'wrap_absorb',
+             'historical_patching',
+             'kye_p_binning', 'kye_p_regress', 'kye_d_regress', 'kye_mixing',
              'use_purl']
 
 # Create the list of environments from the indicated benchmark
@@ -45,14 +46,15 @@ BENCH = CONFIG['parameters']['benchmark']
 if BENCH == 'mujoco':
     # Define environments map
     TOC = {'debug': ['Hopper-v3'],
+           'flareon': ['Hopper-v3',
+                       'Walker2d-v3'],
            'easy': ['InvertedPendulum-v2',
                     'Reacher-v2',
                     'InvertedDoublePendulum-v2'],
            'hard': ['Hopper-v3',
                     'Walker2d-v3',
                     'HalfCheetah-v3',
-                    'Ant-v3',
-                    'Humanoid-v3']
+                    'Ant-v3']
            }
     if args.envset == 'all':
         ENVS = TOC['easy'] + TOC['hard']
@@ -70,9 +72,9 @@ if BENCH == 'mujoco':
                'Ant': 'mono-EL7',
                'Humanoid': 'mono-EL7'}
         # Define per-environment ntasks map
-        PEC = {'InvertedPendulum': '10',
-               'Reacher': '10',
-               'InvertedDoublePendulum': '10',
+        PEC = {'InvertedPendulum': '20',
+               'Reacher': '20',
+               'InvertedDoublePendulum': '20',
                'Hopper': '40',
                'Walker2d': '40',
                'HalfCheetah': '40',
@@ -172,9 +174,6 @@ def get_hps(sweep):
             'targ_up_freq': np.random.choice([10, 1000]),
             'n_step_returns': CONFIG['parameters'].get('n_step_returns', False),
             'lookahead': np.random.choice([5, 10, 20, 40, 60]),
-            'binned_aux_loss': CONFIG['parameters'].get('binned_aux_loss', False),
-            'squared_aux_loss': CONFIG['parameters'].get('squared_aux_loss', False),
-            'ss_aux_loss_scale': np.random.choice([0.001, 0.01, 0.1]),
 
             # TD3
             'clipped_double': CONFIG['parameters'].get('clipped_double', False),
@@ -202,9 +201,8 @@ def get_hps(sweep):
             'd_lr': float(CONFIG['parameters'].get('d_lr', 1e-5)),
             'state_only': CONFIG['parameters'].get('state_only', True),
             'minimax_only': CONFIG['parameters'].get('minimax_only', True),
-            'ent_reg_scale': CONFIG['parameters'].get('ent_reg_scale', 0.),
-            'd_update_ratio': CONFIG['parameters'].get('d_update_ratio', 2),
-            'num_demos': CONFIG['parameters'].get('num_demos', 0),
+            'ent_reg_scale': CONFIG['parameters'].get('ent_reg_scale', 0.001),
+            'spectral_norm': CONFIG['parameters'].get('spectral_norm', True),
             'grad_pen': CONFIG['parameters'].get('grad_pen', True),
             'historical_patching': CONFIG['parameters'].get('historical_patching', True),
             'fake_ls_type': np.random.choice(['"random-uniform_0.7_1.2"',
@@ -213,6 +211,17 @@ def get_hps(sweep):
             'real_ls_type': np.random.choice(['"random-uniform_0.7_1.2"',
                                               '"soft_labels_0.1"',
                                               '"none"']),
+            'syn_rew_scale': CONFIG['parameters'].get('syn_rew_scale', 1.0),
+            'wrap_absorb': CONFIG['parameters'].get('wrap_absorb', False),
+
+            # KYE
+            'kye_p_binning': CONFIG['parameters'].get('kye_p_binning', False),
+            'kye_p_regress': CONFIG['parameters'].get('kye_p_regress', False),
+            'kye_p_scale': np.random.choice([0.01, 0.1, 0.5]),
+            'kye_d_regress': CONFIG['parameters'].get('kye_d_regress', False),
+            'kye_d_scale': np.random.choice([0.01, 0.1, 0.5]),
+            'kye_mixing': CONFIG['parameters'].get('kye_mixing', False),
+
             # PU
             'use_purl': CONFIG['parameters'].get('use_purl', False),
             'purl_eta': float(CONFIG['parameters'].get('purl_eta', 0.25)),
@@ -258,9 +267,6 @@ def get_hps(sweep):
             'targ_up_freq': CONFIG['parameters'].get('targ_up_freq', 100),
             'n_step_returns': CONFIG['parameters'].get('n_step_returns', False),
             'lookahead': CONFIG['parameters'].get('lookahead', 60),
-            'binned_aux_loss': CONFIG['parameters'].get('binned_aux_loss', False),
-            'squared_aux_loss': CONFIG['parameters'].get('squared_aux_loss', False),
-            'ss_aux_loss_scale': CONFIG['parameters'].get('ss_aux_loss_scale', 0.1),
 
             # TD3
             'clipped_double': CONFIG['parameters'].get('clipped_double', False),
@@ -288,13 +294,22 @@ def get_hps(sweep):
             'd_lr': float(CONFIG['parameters'].get('d_lr', 1e-5)),
             'state_only': CONFIG['parameters'].get('state_only', True),
             'minimax_only': CONFIG['parameters'].get('minimax_only', True),
-            'ent_reg_scale': CONFIG['parameters'].get('ent_reg_scale', 0.),
-            'd_update_ratio': CONFIG['parameters'].get('d_update_ratio', 2),
-            'num_demos': CONFIG['parameters'].get('num_demos', 0),
+            'ent_reg_scale': CONFIG['parameters'].get('ent_reg_scale', 0.001),
+            'spectral_norm': CONFIG['parameters'].get('spectral_norm', True),
             'grad_pen': CONFIG['parameters'].get('grad_pen', True),
             'historical_patching': CONFIG['parameters'].get('historical_patching', True),
             'fake_ls_type': CONFIG['parameters'].get('fake_ls_type', 'none'),
             'real_ls_type': CONFIG['parameters'].get('real_ls_type', 'random-uniform_0.7_1.2'),
+            'syn_rew_scale': CONFIG['parameters'].get('syn_rew_scale', 1.0),
+            'wrap_absorb': CONFIG['parameters'].get('wrap_absorb', False),
+
+            # KYE
+            'kye_p_binning': CONFIG['parameters'].get('kye_p_binning', False),
+            'kye_p_regress': CONFIG['parameters'].get('kye_p_regress', False),
+            'kye_p_scale': CONFIG['parameters'].get('kye_p_scale', 0.1),
+            'kye_d_regress': CONFIG['parameters'].get('kye_d_regress', False),
+            'kye_d_scale': CONFIG['parameters'].get('kye_d_scale', 0.1),
+            'kye_mixing': CONFIG['parameters'].get('kye_mixing', False),
 
             # PU
             'use_purl': CONFIG['parameters'].get('use_purl', False),
@@ -433,7 +448,8 @@ def run(args):
             f.write(job)
         if args.call and not CLUSTER == 'local':
             # Spawn the job!
-            check_output(["sbatch", job_name])
+            stdout = subprocess.run(["sbatch", job_name]).stdout
+            logger.info("[STDOUT]\n{}".format(stdout))
             logger.info(">>>>>>>>>>>>>>>>>>>> Job #{} submitted.".format(i))
     # Summarize the number of jobs spawned
     logger.info(">>>>>>>>>>>>>>>>>>>> {} jobs were spawned.".format(len(jobs)))
@@ -459,7 +475,8 @@ def run(args):
             yaml.dump(yaml_content, f, default_flow_style=False)
         if args.call:
             # Spawn all the jobs in the tmux session!
-            check_output(["tmuxp", "load", "-d", "{}".format(job_config)])
+            stdout = subprocess.run(["tmuxp", "load", "-d", "{}".format(job_config)]).stdout
+            logger.info("[STDOUT]\n{}".format(stdout))
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
-from collections import namedtuple
+from collections import namedtuple, defaultdict
 import os.path as osp
+import math
 
 import numpy as np
 import torch
@@ -15,7 +16,7 @@ from helpers.dataset import Dataset
 from helpers.math_util import huber_quant_reg_loss
 from helpers.distributed_util import average_gradients, sync_with_root
 from agents.memory import ReplayBuffer, PrioritizedReplayBuffer, UnrealReplayBuffer
-from agents.nets import Actor, Critic, Discriminator
+from agents.nets import Actor, Critic, Discriminator, KYEDiscriminator
 from agents.param_noise import AdaptiveParamNoise
 from agents.ac_noise import NormalAcNoise, OUAcNoise
 
@@ -37,7 +38,7 @@ class Agent(object):
         self.hps = hps
         assert self.hps.lookahead > 1 or not self.hps.n_step_returns
         assert self.hps.rollout_len <= self.hps.batch_size
-        assert sum([self.hps.binned_aux_loss, self.hps.squared_aux_loss]) in [0, 1], "not both"
+        assert sum([self.hps.kye_p_binning, self.hps.kye_p_regress]) in [0, 1], "not both"
         assert self.hps.clip_norm >= 0
         if self.hps.clip_norm <= 0:
             logger.info("[WARN] clip_norm={} <= 0, hence disabled.".format(self.hps.clip_norm))
@@ -65,7 +66,7 @@ class Agent(object):
             assert not self.hps.clipped_double
             qr_cum_density = np.array([((2 * i) + 1) / (2.0 * self.hps.num_tau)
                                        for i in range(self.hps.num_tau)])
-            qr_cum_density = torch.FloatTensor(qr_cum_density).to(self.device)
+            qr_cum_density = torch.Tensor(qr_cum_density).to(self.device)
             self.qr_cum_density = qr_cum_density.view(1, 1, -1, 1).expand(self.hps.batch_size,
                                                                           self.hps.num_tau,
                                                                           self.hps.num_tau,
@@ -104,7 +105,19 @@ class Agent(object):
             self.apnp_actr.load_state_dict(self.actr.state_dict())
 
         # Set up replay buffer
-        self.setup_replay_buffer()
+        if self.hps.wrap_absorb:
+            ob_dim = self.ob_dim + 1
+            ac_dim = self.ac_dim + 1
+        else:
+            ob_dim = self.ob_dim
+            ac_dim = self.ac_dim
+        self.replay_buffer = self.setup_replay_buffer({
+            "obs0": (ob_dim,),
+            "obs1": (ob_dim,),
+            "acs": (ac_dim,),
+            "rews": (1,),
+            "dones1": (1,),
+        })
 
         # Set up the optimizers
         self.actr_opt = torch.optim.Adam(self.actr.parameters(),
@@ -132,13 +145,22 @@ class Agent(object):
 
         if not self.eval_mode:
             # Set up demonstrations dataset
-            self.e_dataloader = DataLoader(self.expert_dataset, self.hps.batch_size, shuffle=True)
+            self.e_batch_size = min(len(self.expert_dataset), self.hps.batch_size)
+            self.e_dataloader = DataLoader(
+                self.expert_dataset,
+                self.e_batch_size,
+                shuffle=True,
+                drop_last=True,
+            )
+            assert len(self.e_dataloader) > 0
             # Create discriminator
-            self.disc = Discriminator(self.env, self.hps).to(self.device)
+            if self.hps.kye_d_regress:
+                self.disc = KYEDiscriminator(self.env, self.hps).to(self.device)
+            else:
+                self.disc = Discriminator(self.env, self.hps).to(self.device)
             sync_with_root(self.disc)
             # Create optimizer
-            self.disc_opt = torch.optim.Adam(self.disc.parameters(),
-                                             lr=self.hps.d_lr)
+            self.disc_opt = torch.optim.Adam(self.disc.parameters(), lr=self.hps.d_lr)
 
         log_module_info(logger, 'actr', self.actr)
         log_module_info(logger, 'crit', self.crit)
@@ -223,64 +245,57 @@ class Agent(object):
             raise RuntimeError("unknown label smoothing type: '{}'".format(ls_type))
         return _apply
 
-    def setup_replay_buffer(self):
+    def setup_replay_buffer(self, shapes):
         """Setup experiental memory unit"""
         logger.info(">>>> setting up replay buffer")
-        # Create the metadata
-        self.shapes = {"obs0": self.ob_shape,
-                       "acs": self.ac_shape,
-                       "rews": (1,),
-                       "dones1": (1,),
-                       "obs1": self.ob_shape}
         # Create the buffer
         if self.hps.prioritized_replay:
             if self.hps.unreal:  # Unreal prioritized experience replay
-                self.replay_buffer = UnrealReplayBuffer(
+                replay_buffer = UnrealReplayBuffer(
                     self.hps.mem_size,
-                    self.shapes,
+                    shapes,
                 )
             else:  # Vanilla prioritized experience replay
-                self.replay_buffer = PrioritizedReplayBuffer(
+                replay_buffer = PrioritizedReplayBuffer(
                     self.hps.mem_size,
-                    self.shapes,
+                    shapes,
                     alpha=self.hps.alpha,
                     beta=self.hps.beta,
                     ranked=self.hps.ranked,
                 )
         else:  # Vanilla experience replay
-            self.replay_buffer = ReplayBuffer(
+            replay_buffer = ReplayBuffer(
                 self.hps.mem_size,
-                self.shapes,
+                shapes,
             )
         # Summarize replay buffer creation (relies on `__repr__` method)
-        logger.info("[INFO] {} configured".format(self.replay_buffer))
+        logger.info("[INFO] {} configured".format(replay_buffer))
+        return replay_buffer
 
-    def predict(self, ob, apply_noise):
-        """Predict an action, with or without perturbation,
-        and optionaly compute and return the associated QZ value.
-        """
-        # Create tensor from the state (`require_grad=False` by default)
-        ob = torch.FloatTensor(ob[None]).to(self.device)
-        if apply_noise and self.param_noise is not None:
-            # Predict following a parameter-noise-perturbed actor
-            ac = self.pnp_actr.act(ob)
-        else:
-            # Predict following the non-perturbed actor
-            ac = self.actr.act(ob)
-        # Place on cpu and collapse into one dimension
-        ac = ac.cpu().detach().numpy().flatten()
-        if apply_noise and self.ac_noise is not None:
-            # Apply additive action noise once the action has been predicted,
-            # in combination with parameter noise, or not.
-            noise = self.ac_noise.generate()
-            assert noise.shape == ac.shape
-            ac += noise
-        ac = ac.clip(-self.max_ac, self.max_ac)
-        return ac
+    def store_transition(self, transition):
+        """Store the transition in memory and update running moments"""
+        # Store transition in the replay buffer
+        self.replay_buffer.append(transition)
+        # Update the running moments for all the networks (online and targets)
+        _state = transition['obs0']
+        if self.hps.wrap_absorb:
+            if np.all(np.equal(_state, np.append(np.zeros_like(_state[0:-1]), 1.))):
+                # logger.info("[INFO] absorbing -> not using it to update rms_obs")
+                return
+            _state = _state[0:-1]
+        self.actr.rms_obs.update(_state)
+        self.crit.rms_obs.update(_state)
+        self.targ_actr.rms_obs.update(_state)
+        self.targ_crit.rms_obs.update(_state)
+        if self.hps.clipped_double:
+            self.twin.rms_obs.update(_state)
+            self.targ_twin.rms_obs.update(_state)
+        if self.param_noise is not None:
+            self.pnp_actr.rms_obs.update(_state)
+            self.apnp_actr.rms_obs.update(_state)
 
-    def train(self, update_critic, update_actor, iters_so_far):
-        """Train the agent"""
-
+    def sample_batch(self):
+        """Sample a batch of transitions from the replay buffer"""
         # Create patcher if needed
         patcher = None
         if self.hps.historical_patching:
@@ -301,19 +316,76 @@ class Agent(object):
                 self.hps.batch_size,
                 patcher=patcher,
             )
+        return batch
+
+    def predict(self, ob, apply_noise):
+        """Predict an action, with or without perturbation,
+        and optionaly compute and return the associated QZ value.
+        """
+        # Create tensor from the state (`require_grad=False` by default)
+        ob = torch.Tensor(ob[None]).to(self.device)
+        if apply_noise and self.param_noise is not None:
+            # Predict following a parameter-noise-perturbed actor
+            ac = self.pnp_actr.act(ob)
+        else:
+            # Predict following the non-perturbed actor
+            ac = self.actr.act(ob)
+        # Place on cpu and collapse into one dimension
+        ac = ac.cpu().detach().numpy().flatten()
+        if apply_noise and self.ac_noise is not None:
+            # Apply additive action noise once the action has been predicted,
+            # in combination with parameter noise, or not.
+            noise = self.ac_noise.generate()
+            assert noise.shape == ac.shape
+            ac += noise
+        ac = ac.clip(-self.max_ac, self.max_ac)
+        return ac
+
+    def remove_absorbing(self, x):
+        non_absorbing_rows = []
+        for j, row in enumerate([x[i, :] for i in range(x.shape[0])]):
+            if torch.all(torch.eq(row, torch.cat([torch.zeros_like(row[0:-1]),
+                                                  torch.Tensor([1.]).to(self.device)], dim=-1))):
+                # logger.info("[INFO] removing absorbing row (#{})".format(j))
+                pass
+            else:
+                non_absorbing_rows.append(j)
+        return x[non_absorbing_rows, :], non_absorbing_rows
+
+    def update_actor_critic(self, batch, update_actor, iters_so_far):
+        """Train the actor and critic networks"""
+
+        # Container for all the metrics
+        metrics = defaultdict(list)
 
         # Create tensors from the inputs
-        state = torch.FloatTensor(batch['obs0']).to(self.device)
-        action = torch.FloatTensor(batch['acs']).to(self.device)
-        reward = torch.FloatTensor(batch['rews']).to(self.device)
-        next_state = torch.FloatTensor(batch['obs1']).to(self.device)
-        done = torch.FloatTensor(batch['dones1'].astype('float32')).to(self.device)
+        state = torch.Tensor(batch['obs0']).to(self.device)
+        action = torch.Tensor(batch['acs']).to(self.device)
+        reward = torch.Tensor(batch['rews']).to(self.device)
+        next_state = torch.Tensor(batch['obs1']).to(self.device)
+        done = torch.Tensor(batch['dones1'].astype('float32')).to(self.device)
         if self.hps.prioritized_replay:
-            iws = torch.FloatTensor(batch['iws']).to(self.device)
+            iws = torch.Tensor(batch['iws']).to(self.device)
         if self.hps.n_step_returns:
-            td_len = torch.FloatTensor(batch['td_len']).to(self.device)
+            td_len = torch.Tensor(batch['td_len']).to(self.device)
         else:
             td_len = torch.ones_like(done).to(self.device)
+
+        if self.hps.wrap_absorb:
+            _, indices_a = self.remove_absorbing(state)
+            _, indices_b = self.remove_absorbing(next_state)
+            indices = sorted(list(set(indices_a) & set(indices_b)))  # intersection
+            state = state[indices, 0:-1]
+            action = action[indices, 0:-1]
+            reward = reward[indices, :]
+            next_state = next_state[indices, 0:-1]
+            done = done[indices, :]
+            if self.hps.prioritized_replay:
+                iws = iws[indices, :]
+            if self.hps.n_step_returns:
+                td_len = td_len[indices, :]
+            else:
+                td_len = torch.ones_like(done).to(self.device)
 
         if self.hps.targ_actor_smoothing:
             n_ = action.clone().detach().data.normal_(0, self.hps.td3_std).to(self.device)
@@ -321,10 +393,6 @@ class Agent(object):
             next_action = (self.targ_actr.act(next_state) + n_).clamp(-self.max_ac, self.max_ac)
         else:
             next_action = self.targ_actr.act(next_state)
-
-        # Create data loader (iterable over 1 elt, but using a dataloader is cleaner)
-        p_dataset = Dataset(batch)
-        p_dataloader = DataLoader(p_dataset, self.hps.batch_size, shuffle=True)
 
         # Compute losses
 
@@ -461,34 +529,15 @@ class Agent(object):
             # Actor loss
             actr_loss = -self.crit.QZ(state, self.actr.act(state)).mean()
 
-        # ######################################################################
+        # Log metrics
+        metrics['actr_loss'].append(actr_loss)
+        metrics['crit_loss'].append(crit_loss)
+        if self.hps.clipped_double:
+            metrics['twin_loss'].append(twin_loss)
+        if self.hps.prioritized_replay:
+            metrics['iws'].append(iws)
 
-        # Self-supervised auxiliary loss
-        if self.hps.binned_aux_loss:
-            expert_batch = next(iter(self.e_dataloader))
-            indices = torch.randperm(self.hps.batch_size)  # subsample
-            size = self.hps.batch_size // 2
-            ep_state = torch.cat([expert_batch['obs0'][indices[:size]],
-                                  state[indices[:size]]], dim=0)
-            ep_action = torch.cat([expert_batch['acs'][indices[:size]],
-                                   action[indices[:size]]], dim=0)
-            ep_next_state = torch.cat([expert_batch['obs1'][indices[:size]],
-                                       next_state[indices[:size]]], dim=0)
-            ss_aux_loss = F.cross_entropy(
-                input=self.actr.ss_aux_loss(ep_state),
-                target=self.get_reward(ep_state, ep_action, ep_next_state)[1]
-            )
-        elif self.hps.squared_aux_loss:
-            ss_aux_loss = F.mse_loss(
-                input=self.actr.ss_aux_loss(state),
-                target=self.get_reward(state, action, next_state)[0]
-            )
-        if self.hps.binned_aux_loss or self.hps.squared_aux_loss:
-            ss_aux_loss *= self.hps.ss_aux_loss_scale
-            # Add to actor loss
-            actr_loss += ss_aux_loss
-
-        # Compute gradients
+        # Update parameters
         self.actr_opt.zero_grad()
         actr_loss.backward()
         average_gradients(self.actr, self.device)
@@ -501,110 +550,255 @@ class Agent(object):
             self.twin_opt.zero_grad()
             twin_loss.backward()
             average_gradients(self.twin, self.device)
-
-        # Perform model updates
-        if update_critic:
-            # Update critic
-            self.crit_opt.step()
-            self.crit_sched.step(iters_so_far)
-            if self.hps.clipped_double:
-                # Update twin critic
-                self.twin_opt.step()
-                self.twin_sched.step(iters_so_far)
-            if update_actor:
-                # Update actor
-                self.actr_opt.step()
-                self.actr_sched.step(iters_so_far)
-                # Update target nets
-                self.update_target_net(iters_so_far)
-        # Update discriminator
-        for _ in range(self.hps.d_update_ratio):
-            for p_chunk, e_chunk in zip(p_dataloader, self.e_dataloader):
-                disc_loss = self.update_disc(p_chunk, e_chunk)
-
-        # Aggregate the elements to return
-        losses = {'actr': actr_loss.clone().cpu().data.numpy(),
-                  'crit': crit_loss.clone().cpu().data.numpy(),
-                  'disc': disc_loss.clone().cpu().data.numpy()}
+        self.crit_opt.step()
+        self.crit_sched.step(iters_so_far)
         if self.hps.clipped_double:
-            losses.update({'twin': twin_loss.clone().cpu().data.numpy()})
-        if self.hps.prioritized_replay:
-            losses.update({'iws': iws.clone().cpu().data.numpy()})
+            self.twin_opt.step()
+            self.twin_sched.step(iters_so_far)
+        if update_actor:
+            self.actr_opt.step()
+            self.actr_sched.step(iters_so_far)
+            # Update target nets
+            self.update_target_net(iters_so_far)  # not an error
+
+        metrics = {k: torch.stack(v).mean().cpu().data.numpy() for k, v in metrics.items()}
 
         lrnows = {'actr': self.actr_sched.get_last_lr(),
                   'crit': self.crit_sched.get_last_lr()}
         if self.hps.clipped_double:
             lrnows.update({'twin': self.twin_sched.get_last_lr()})
 
-        return losses, lrnows
+        return metrics, lrnows
 
-    def update_disc(self, p_chunk, e_chunk):
-        """Update the discriminator network"""
-        # Create tensors from the inputs
-        p_state = torch.FloatTensor(p_chunk['obs0']).to(self.device)
-        p_action = torch.FloatTensor(p_chunk['acs']).to(self.device)
-        e_state = torch.FloatTensor(e_chunk['obs0']).to(self.device)
-        e_action = torch.FloatTensor(e_chunk['acs']).to(self.device)
+    def update_reward_control(self, batch, iters_so_far):
+        """Update the policy and value networks"""
 
-        # Compute scores
-        p_scores = self.disc.D(p_state, p_action)
-        e_scores = self.disc.D(e_state, e_action)
+        # Transfer to device
+        _state = batch['obs0'].to(self.device)
+        state = batch['obs0'].to(self.device)
+        next_state = batch['obs1'].to(self.device)
+        action = batch['acs'].to(self.device)
+        if self.hps.wrap_absorb:
+            _, indices_a = self.remove_absorbing(state)
+            _, indices_b = self.remove_absorbing(next_state)
+            indices = sorted(list(set(indices_a) & set(indices_b)))  # intersection
+            _state = _state[indices, 0:-1]
+            state = state[indices, :]
+            next_state = next_state[indices, :]
+            action = action[indices, :]
 
-        # Create entropy loss
-        scores = torch.cat([p_scores, e_scores], dim=0)
-        entropy = F.binary_cross_entropy_with_logits(input=scores, target=torch.sigmoid(scores))
-        entropy_loss = -self.hps.ent_reg_scale * entropy
+        if self.hps.kye_mixing:
+            # Get a minibatch of expert data
+            e_batch = next(iter(self.e_dataloader))
+            _state_e = e_batch['obs0']
+            state_e = e_batch['obs0']
+            next_state_e = e_batch['obs1']
+            action_e = e_batch['acs']
+            if self.hps.wrap_absorb:
+                _, indices_a = self.remove_absorbing(state_e)
+                _, indices_b = self.remove_absorbing(next_state_e)
+                indices = sorted(list(set(indices_a) & set(indices_b)))  # intersection
+                _state_e = _state_e[indices, 0:-1]
+                state_e = state_e[indices, :]
+                next_state_e = next_state_e[indices, :]
+                action_e = action_e[indices, :]
 
-        # Create labels
-        fake_labels = 0. * torch.ones_like(p_scores).to(self.device)
-        real_labels = 1. * torch.ones_like(e_scores).to(self.device)
+        if self.hps.kye_p_binning:
+            aux_loss = F.cross_entropy(
+                input=self.actr.auxo(_state),
+                target=self.get_reward(state, action, next_state)[1]
+            )
+            if self.hps.kye_mixing:
+                aux_loss += F.cross_entropy(
+                    input=self.actr.auxo(_state_e),
+                    target=self.get_reward(state_e, action_e, next_state_e)[1]
+                )
+        elif self.hps.kye_p_regress:
+            aux_loss = F.smooth_l1_loss(
+                input=self.actr.auxo(_state),
+                target=self.get_reward(state, action, next_state)[0]
+            )
+            if self.hps.kye_mixing:
+                aux_loss += F.smooth_l1_loss(
+                    input=self.actr.auxo(_state_e),
+                    target=self.get_reward(state_e, action_e, next_state_e)[0]
+                )
 
-        # Parse and apply label smoothing
-        self.apply_ls_fake(fake_labels)
-        self.apply_ls_real(real_labels)
-
-        if self.hps.use_purl:
-            # Create positive-unlabeled binary classification (cross-entropy) losses
-            beta = 0.0  # hard-coded, using standard value from the original paper
-            p_e_loss = -self.hps.purl_eta * torch.log(1. - torch.sigmoid(e_scores) + 1e-12)
-            p_e_loss += -torch.max(-beta * torch.ones_like(p_scores),
-                                   (F.logsigmoid(e_scores) -
-                                    (self.hps.purl_eta * F.logsigmoid(p_scores))))
-        else:
-            # Create positive-negative binary classification (cross-entropy) losses
-            p_loss = F.binary_cross_entropy_with_logits(input=p_scores,
-                                                        target=fake_labels,
-                                                        reduction='none')
-            e_loss = F.binary_cross_entropy_with_logits(input=e_scores,
-                                                        target=real_labels,
-                                                        reduction='none')
-            p_e_loss = p_loss + e_loss
-        # Averate out over the batch
-        p_e_loss = p_e_loss.mean()
-
-        # Aggregated loss
-        d_loss = p_e_loss + entropy_loss
-
-        if self.hps.grad_pen:
-            # Create gradient penalty loss (coefficient from the original paper)
-            grad_pen_in = [p_state, p_action, e_state, e_action]
-            grad_pen = 10. * self.grad_pen(*grad_pen_in)
-            d_loss += grad_pen
+        aux_loss *= self.hps.kye_p_scale
 
         # Update parameters
-        self.disc_opt.zero_grad()
-        d_loss.backward()
-        average_gradients(self.disc, self.device)
-        self.disc_opt.step()
-        return p_e_loss
+        self.actr_opt.zero_grad()
+        aux_loss.backward()
+        average_gradients(self.actr, self.device)
+        if self.hps.clip_norm > 0:
+            U.clip_grad_norm_(self.actr.parameters(), self.hps.clip_norm)
+        self.actr_opt.step()
+
+    def update_discriminator(self, batch):
+        """Update the discriminator network"""
+
+        # Container for all the metrics
+        metrics = defaultdict(list)
+
+        # Create DataLoader object to iterate over transitions in rollouts
+        d_keys = ['obs0', 'acs']
+        d_dataset = Dataset({k: batch[k] for k in d_keys})
+        d_dataloader = DataLoader(
+            d_dataset,
+            self.e_batch_size,
+            shuffle=True,
+            drop_last=True,
+        )
+
+        for e_batch in self.e_dataloader:
+
+            # Get a minibatch of policy data
+            d_batch = next(iter(d_dataloader))
+
+            # Transfer to device
+            p_state = d_batch['obs0'].to(self.device)
+            p_action = d_batch['acs'].to(self.device)
+            e_state = e_batch['obs0'].to(self.device)
+            e_action = e_batch['acs'].to(self.device)
+
+            # Update running moments
+            _state = torch.cat([p_state, e_state], dim=0)
+            if self.hps.wrap_absorb:
+                _state = self.remove_absorbing(_state)[0][:, 0:-1]
+            self.disc.rms_obs.update(_state)
+
+            # Compute scores
+            p_scores = self.disc.D(p_state, p_action)
+            e_scores = self.disc.D(e_state, e_action)
+
+            # Create entropy loss
+            scores = torch.cat([p_scores, e_scores], dim=0)
+            entropy = F.binary_cross_entropy_with_logits(input=scores, target=torch.sigmoid(scores))
+            entropy_loss = -self.hps.ent_reg_scale * entropy
+
+            # Create labels
+            fake_labels = 0. * torch.ones_like(p_scores).to(self.device)
+            real_labels = 1. * torch.ones_like(e_scores).to(self.device)
+
+            # Parse and apply label smoothing
+            self.apply_ls_fake(fake_labels)
+            self.apply_ls_real(real_labels)
+
+            if self.hps.use_purl:
+                # Create positive-unlabeled binary classification (cross-entropy) losses
+                beta = 0.0  # hard-coded, using standard value from the original paper
+                p_e_loss = -self.hps.purl_eta * torch.log(1. - torch.sigmoid(e_scores) + 1e-8)
+                p_e_loss += -torch.max(-beta * torch.ones_like(p_scores),
+                                       (F.logsigmoid(e_scores) -
+                                        (self.hps.purl_eta * F.logsigmoid(p_scores))))
+            else:
+                # Create positive-negative binary classification (cross-entropy) losses
+                p_loss = F.binary_cross_entropy_with_logits(input=p_scores,
+                                                            target=fake_labels,
+                                                            reduction='none')
+                e_loss = F.binary_cross_entropy_with_logits(input=e_scores,
+                                                            target=real_labels,
+                                                            reduction='none')
+                p_e_loss = p_loss + e_loss
+            # Averate out over the batch
+            p_e_loss = p_e_loss.mean()
+
+            # Aggregated loss
+            d_loss = p_e_loss + entropy_loss
+
+            # Log metrics
+            metrics['entropy_loss'].append(entropy_loss)
+            metrics['p_e_loss'].append(p_e_loss)
+
+            if self.hps.grad_pen:
+                # Create gradient penalty loss (coefficient from the original paper)
+                grad_pen_in = [p_state, p_action, e_state, e_action]
+                grad_pen = 10. * self.grad_pen(*grad_pen_in)
+                d_loss += grad_pen
+                # Log metrics
+                metrics['grad_pen'].append(grad_pen)
+
+            if self.hps.kye_d_regress:
+                # Compute gradient of the feature exctractor for d_loss
+                self.disc_opt.zero_grad()
+                d_loss.backward(retain_graph=True)
+                if self.hps.spectral_norm:
+                    grads_d_loss = self.disc.ob_encoder.fc_block.fc.weight_orig.grad
+                else:
+                    grads_d_loss = self.disc.ob_encoder.fc_block.fc.weight.grad
+                grads_d_loss = grads_d_loss.mean(dim=0)
+                self.disc_opt.zero_grad()
+                # Create and add auxiliary loss
+                if self.hps.wrap_absorb:
+                    _, p_indices = self.remove_absorbing(p_state)
+                    _p_state = p_state[p_indices, 0:-1]
+                    p_state = p_state[p_indices, :]
+                    p_action = p_action[p_indices, :]
+                else:
+                    _p_state = p_state
+                aux_loss = F.smooth_l1_loss(
+                    input=self.disc.auxo(p_state, p_action),
+                    target=self.policy.sample(_p_state)
+                )
+                if self.hps.kye_mixing:
+                    if self.hps.wrap_absorb:
+                        _, e_indices = self.remove_absorbing(e_state)
+                        _e_state = e_state[e_indices, 0:-1]
+                        e_state = e_state[e_indices, :]
+                        e_action = e_action[e_indices, :]
+                    else:
+                        _e_state = e_state
+                    aux_loss += F.smooth_l1_loss(
+                        input=self.disc.auxo(e_state, e_action),
+                        target=self.policy.sample(_e_state)
+                    )
+                # Compute gradient of the feature exctractor for aux_loss
+                self.disc_opt.zero_grad()
+                aux_loss.backward(retain_graph=True)
+                if self.hps.spectral_norm:
+                    grads_aux_loss = self.disc.ob_encoder.fc_block.fc.weight_orig.grad
+                else:
+                    grads_aux_loss = self.disc.ob_encoder.fc_block.fc.weight.grad
+                grads_aux_loss = grads_aux_loss.mean(dim=0)
+                self.disc_opt.zero_grad()
+                # Compute the angle between the two computed gradients
+                angle = torch.acos(torch.dot(grads_d_loss, grads_aux_loss) /
+                                   (torch.norm(grads_d_loss) * torch.norm(grads_aux_loss)))
+                angle = angle.detach()
+                angle = angle / math.pi * 180.
+                # Log metrics
+                metrics['aux_loss'].append(aux_loss)
+                metrics['angle'].append(angle)
+                # Assemble losses
+                aux_loss *= self.hps.kye_d_scale
+                d_loss += aux_loss
+                # Log metrics
+                metrics['aux_loss_scaled'].append(aux_loss)
+
+            metrics['disc_loss'].append(d_loss)
+
+            # Update parameters
+            self.disc_opt.zero_grad()
+            d_loss.backward()
+            average_gradients(self.disc, self.device)
+            self.disc_opt.step()
+
+        metrics = {k: torch.stack(v).mean().cpu().data.numpy() for k, v in metrics.items()}
+        return metrics
 
     def grad_pen(self, p_ob, p_ac, e_ob, e_ac):
         """Gradient penalty regularizer (motivation from Wasserstein GANs (Gulrajani),
         but empirically useful in JS-GANs (Lucic et al. 2017)) and later in (Karol et al. 2018).
         """
         # Assemble interpolated state-action pair
-        ob_eps = torch.rand(self.ob_dim).to(p_ob.device)
-        ac_eps = torch.rand(self.ac_dim).to(p_ob.device)
+        if self.hps.wrap_absorb:
+            ob_dim = self.ob_dim + 1
+            ac_dim = self.ac_dim + 1
+        else:
+            ob_dim = self.ob_dim
+            ac_dim = self.ac_dim
+        ob_eps = torch.rand(ob_dim).to(p_ob.device)
+        ac_eps = torch.rand(ac_dim).to(p_ob.device)
         ob_interp = ob_eps * p_ob + ((1. - ob_eps) * e_ob)
         ac_interp = ac_eps * p_ac + ((1. - ac_eps) * e_ac)
         # Set `requires_grad=True` to later have access to
@@ -634,8 +828,8 @@ class Agent(object):
         # Craft surrogate reward
         assert sum([isinstance(x, torch.Tensor) for x in [ob, ac]]) in [0, 2]
         if not isinstance(ob, torch.Tensor):  # then ac is not neither
-            ob = torch.FloatTensor(ob)
-            ac = torch.FloatTensor(ac)
+            ob = torch.Tensor(ob)
+            ac = torch.Tensor(ac)
         # Transfer to cpu
         ob = ob.cpu()
         ac = ac.cpu()
@@ -646,7 +840,7 @@ class Agent(object):
         # Numerics: 0 for non-expert-like states, goes to +inf for expert-like states
         # compatible with envs with traj cutoffs for bad (non-expert-like) behavior
         # e.g. walking simulations that get cut off when the robot falls over
-        minimax_reward = -torch.log(1. - torch.sigmoid(score) + 1e-12)
+        minimax_reward = -torch.log(1. - torch.sigmoid(score) + 1e-8)
         if self.hps.minimax_only:
             reward = minimax_reward
         else:
@@ -661,9 +855,12 @@ class Agent(object):
             reward = non_satur_reward + minimax_reward
         # Perform binning
         num_bins = 3  # arbitrarily
-        binned = (sigscore // ((1 / num_bins) + 1e-8)).long().squeeze(-1)
-        # Note: the 1e-12 is here to avoid the edge case and keep the bins in {0, 1, 2}
-        return reward, binned
+        binned = (torch.abs(sigscore - 1e-8) // (1 / num_bins)).long().squeeze(-1)
+        for i in range(binned.size(0)):
+            if binned.view(-1)[i] > 2. or binned.view(-1)[i] < 0.:
+                # This should never happen, flag, but don't rupt
+                logger.info("[WARN] binned.view(-1)[{}]={}.".format(i, binned.view(-1)[i]))
+        return self.hps.syn_rew_scale * reward, binned
 
     def update_target_net(self, iters_so_far):
         """Update the target networks"""
@@ -692,7 +889,7 @@ class Agent(object):
 
         # Perturb separate copy of the policy to adjust the scale for the next 'real' perturbation
         batch = self.replay_buffer.sample(self.hps.batch_size, patcher=None)
-        state = torch.FloatTensor(batch['obs0']).to(self.device)
+        state = torch.Tensor(batch['obs0']).to(self.device)
         # Update the perturbable params
         for p in self.actr.perturbable_params:
             param = (self.actr.state_dict()[p]).clone()
@@ -705,8 +902,9 @@ class Agent(object):
             self.apnp_actr.state_dict()[p].data.copy_(param.data)
 
         # Compute distance between actor and adaptive-parameter-noise-perturbed actor predictions
+        if self.hps.wrap_absorb:
+            state = self.remove_absorbing(state)[0][:, 0:-1]
         self.pn_dist = torch.sqrt(F.mse_loss(self.actr.act(state), self.apnp_actr.act(state)))
-
         self.pn_dist = self.pn_dist.cpu().data.numpy()
 
         # Adapt the parameter noise

@@ -52,9 +52,6 @@ def argparser(description="DDPG Experiment"):
     parser.add_argument('--targ_up_freq', type=int, default=100, help='hard target nets update')
     boolean_flag(parser, 'n_step_returns', default=True)
     parser.add_argument('--lookahead', help='num lookahead steps', type=int, default=10)
-    boolean_flag(parser, 'binned_aux_loss', default=False)
-    boolean_flag(parser, 'squared_aux_loss', default=False)
-    parser.add_argument('--ss_aux_loss_scale', type=float, default=0.1)
 
     # TD3
     boolean_flag(parser, 'clipped_double', default=False)
@@ -85,15 +82,24 @@ def argparser(description="DDPG Experiment"):
     parser.add_argument('--d_lr', type=float, default=1e-5)
     boolean_flag(parser, 'state_only', default=True)
     boolean_flag(parser, 'minimax_only', default=True)
-    parser.add_argument('--ent_reg_scale', type=float, default=0.)
-    parser.add_argument('--d_update_ratio', type=int, default=1,
-                        help='number of discriminator update per generator update')
+    parser.add_argument('--ent_reg_scale', type=float, default=0.001)
     parser.add_argument('--num_demos', help='number of expert demo trajs for imitation',
                         type=int, default=None)
+    boolean_flag(parser, 'spectral_norm', help='whether to use spectral norm', default=True)
     boolean_flag(parser, 'grad_pen', help='whether to use gradient penalty', default=True)
     boolean_flag(parser, 'historical_patching', default=True)
     parser.add_argument('--fake_ls_type', type=str, default='none')
     parser.add_argument('--real_ls_type', type=str, default='random-uniform_0.7_1.2')
+    parser.add_argument('--syn_rew_scale', type=float, default=1.0)
+    boolean_flag(parser, 'wrap_absorb', default=False)
+
+    # KYE
+    boolean_flag(parser, 'kye_p_binning', default=False)
+    boolean_flag(parser, 'kye_p_regress', default=False)
+    parser.add_argument('--kye_p_scale', type=float, default=0.1)
+    boolean_flag(parser, 'kye_d_regress', default=False)
+    parser.add_argument('--kye_d_scale', type=float, default=0.1)
+    boolean_flag(parser, 'kye_mixing', default=True)
 
     # PU
     boolean_flag(parser, 'use_purl', default=False)

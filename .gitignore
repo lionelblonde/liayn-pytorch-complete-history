@@ -141,5 +141,4 @@ dmypy.json
 data/
 spawn/
 tmux/
-tasks/
 wandb/
