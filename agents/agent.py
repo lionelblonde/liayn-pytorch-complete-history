@@ -574,10 +574,10 @@ class Agent(object):
         """Update the policy and value networks"""
 
         # Transfer to device
-        _state = batch['obs0'].to(self.device)
-        state = batch['obs0'].to(self.device)
-        next_state = batch['obs1'].to(self.device)
-        action = batch['acs'].to(self.device)
+        _state = torch.Tensor(batch['obs0']).to(self.device)
+        state = torch.Tensor(batch['obs0']).to(self.device)
+        next_state = torch.Tensor(batch['obs1']).to(self.device)
+        action = torch.Tensor(batch['acs']).to(self.device)
         if self.hps.wrap_absorb:
             _, indices_a = self.remove_absorbing(state)
             _, indices_b = self.remove_absorbing(next_state)
@@ -738,7 +738,7 @@ class Agent(object):
                     _p_state = p_state
                 aux_loss = F.smooth_l1_loss(
                     input=self.disc.auxo(p_state, p_action),
-                    target=self.policy.sample(_p_state)
+                    target=self.actr.act(_p_state)
                 )
                 if self.hps.kye_mixing:
                     if self.hps.wrap_absorb:
@@ -750,7 +750,7 @@ class Agent(object):
                         _e_state = e_state
                     aux_loss += F.smooth_l1_loss(
                         input=self.disc.auxo(e_state, e_action),
-                        target=self.policy.sample(_e_state)
+                        target=self.actr.act(_e_state)
                     )
                 # Compute gradient of the feature exctractor for aux_loss
                 self.disc_opt.zero_grad()

@@ -370,10 +370,6 @@ def learn(args,
                                                         caption="Evaluation (last episode)")},
                                   step=timesteps_so_far)
 
-        # Increment counters
-        iters_so_far += 1
-        timesteps_so_far += args.rollout_len
-
         # Log stats in dashboard
         if rank == 0:
 
@@ -402,6 +398,10 @@ def learn(args,
                 wandb.log({'twin_loss': np.mean(d['twin_losses']),
                            'twin_lrnow': np.array(lrnows['twin'])},
                           step=timesteps_so_far)
+
+        # Increment counters
+        iters_so_far += 1
+        timesteps_so_far += args.rollout_len
 
         # Clear the iteration's running stats
         d.clear()

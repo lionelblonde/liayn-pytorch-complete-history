@@ -26,8 +26,8 @@ parameters:
   eval_frequency: 10
 
   # Optimization
-  actor_lr: 1e-4
-  critic_lr: 1e-4
+  actor_lr: 1.0e-4
+  critic_lr: 1.0e-4
   with_scheduler: false
   clip_norm: 0.
   wd_scale: 0.
@@ -66,7 +66,7 @@ parameters:
   num_tau: 200
 
   # Adversarial imitation
-  d_lr: 1e-4
+  d_lr: 1.0e-4
   state_only: false
   minimax_only: true
   ent_reg_scale: 0.001
@@ -82,7 +82,7 @@ parameters:
   kye_p_binning: false
   kye_p_regress: false
   kye_p_scale: 0.2
-  kye_d_regress: false
+  kye_d_regress: true
   kye_d_scale: 0.2
   kye_mixing: true
 

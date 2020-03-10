@@ -3,7 +3,8 @@ name: 'training spawner with single fixed hp set'
 resources:
   conda_env: 'pytorch'
   wandb_project: 'vaporeon'
-  cluster: 'baobab'
+  num_workers: 4
+  cluster: 'local'
 
 logging:
   checkpoint_dir: 'data/checkpoints'
@@ -14,7 +15,7 @@ parameters:
   # Generic
   task: 'train'
   cuda: false
-  num_seeds: 5
+  num_seeds: 4
   benchmark: 'mujoco'
 
   # Training
@@ -25,8 +26,8 @@ parameters:
   eval_frequency: 10
 
   # Optimization
-  actor_lr: 1e-4
-  critic_lr: 1e-4
+  actor_lr: 1.0e-4
+  critic_lr: 1.0e-4
   with_scheduler: false
   clip_norm: 0.
   wd_scale: 0.
@@ -65,7 +66,7 @@ parameters:
   num_tau: 200
 
   # Adversarial imitation
-  d_lr: 1e-4
+  d_lr: 1.0e-4
   state_only: false
   minimax_only: true
   ent_reg_scale: 0.001
