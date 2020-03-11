@@ -293,6 +293,7 @@ class Agent(object):
         if self.param_noise is not None:
             self.pnp_actr.rms_obs.update(_state)
             self.apnp_actr.rms_obs.update(_state)
+        self.disc.rms_obs.update(_state)  # only with agent samples, no expert ones
 
     def sample_batch(self):
         """Sample a batch of transitions from the replay buffer"""
@@ -661,12 +662,6 @@ class Agent(object):
             e_state = e_batch['obs0'].to(self.device)
             e_action = e_batch['acs'].to(self.device)
 
-            # Update running moments
-            _state = torch.cat([p_state, e_state], dim=0)
-            if self.hps.wrap_absorb:
-                _state = self.remove_absorbing(_state)[0][:, 0:-1]
-            self.disc.rms_obs.update(_state)
-
             # Compute scores
             p_scores = self.disc.D(p_state, p_action)
             e_scores = self.disc.D(e_state, e_action)
@@ -700,7 +695,7 @@ class Agent(object):
                                                             target=real_labels,
                                                             reduction='none')
                 p_e_loss = p_loss + e_loss
-            # Averate out over the batch
+            # Average out over the batch
             p_e_loss = p_e_loss.mean()
 
             # Aggregated loss
@@ -719,7 +714,7 @@ class Agent(object):
                 metrics['grad_pen'].append(grad_pen)
 
             if self.hps.kye_d_regress:
-                # Compute gradient of the feature exctractor for d_loss
+                # Compute gradient of the feature extractor for d_loss
                 self.disc_opt.zero_grad()
                 d_loss.backward(retain_graph=True)
                 if self.hps.spectral_norm:

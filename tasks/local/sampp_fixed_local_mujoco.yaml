@@ -21,7 +21,7 @@ parameters:
   # Training
   save_frequency: 1000
   num_timesteps: 1e7
-  training_steps_per_iter: 2
+  training_steps_per_iter: 25
   eval_steps_per_iter: 10
   eval_frequency: 10
 
@@ -29,13 +29,13 @@ parameters:
   actor_lr: 1.0e-4
   critic_lr: 1.0e-4
   with_scheduler: false
-  clip_norm: 0.
+  clip_norm: 40.0
   wd_scale: 0.
 
   # Algorithm
   clip_obs: true
-  rollout_len: 2
-  batch_size: 256
+  rollout_len: 5
+  batch_size: 128
   gamma: 0.99
   mem_size: 100000
   noise_type: '"adaptive-param_0.2, normal_0.2"'

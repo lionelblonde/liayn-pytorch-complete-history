@@ -223,8 +223,6 @@ def learn(args,
           experiment_name,
           expert_dataset):
 
-    assert args.training_steps_per_iter % args.actor_update_delay == 0, "must be a multiple"
-
     # Create an agent
     agent = Agent(env=env,
                   device=device,

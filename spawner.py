@@ -46,7 +46,7 @@ BENCH = CONFIG['parameters']['benchmark']
 if BENCH == 'mujoco':
     # Define environments map
     TOC = {
-        'debug': ['HalfCheetah-v3'],
+        'debug': ['Hopper-v3'],
         'flareon': ['InvertedPendulum-v2',
                     'InvertedDoublePendulum-v2',
                     'Hopper-v3'],
