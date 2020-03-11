@@ -45,17 +45,17 @@ BOOL_ARGS = ['cuda', 'clip_obs',
 BENCH = CONFIG['parameters']['benchmark']
 if BENCH == 'mujoco':
     # Define environments map
-    TOC = {'debug': ['Hopper-v3'],
-           'flareon': ['Hopper-v3',
-                       'Walker2d-v3'],
-           'easy': ['InvertedPendulum-v2',
-                    'Reacher-v2',
-                    'InvertedDoublePendulum-v2'],
-           'hard': ['Hopper-v3',
-                    'Walker2d-v3',
+    TOC = {
+        'debug': ['HalfCheetah-v3'],
+        'flareon': ['InvertedPendulum-v2',
+                    'InvertedDoublePendulum-v2',
+                    'Hopper-v3'],
+        'glaceon': ['Walker2d-v3',
                     'HalfCheetah-v3',
-                    'Ant-v3']
-           }
+                    'Ant-v3',
+                    'Humanoid-v3'],
+        'humanoid': ['Humanoid-v3'],
+    }
     if args.envset == 'all':
         ENVS = TOC['easy'] + TOC['hard']
     else:

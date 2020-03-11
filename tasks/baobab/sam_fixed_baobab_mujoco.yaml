@@ -83,7 +83,7 @@ parameters:
   kye_p_scale: 0.2
   kye_d_regress: false
   kye_d_scale: 0.2
-  kye_mixing: true
+  kye_mixing: false
 
   # PU
   use_purl: false

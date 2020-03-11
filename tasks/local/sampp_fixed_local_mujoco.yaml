@@ -79,12 +79,12 @@ parameters:
   wrap_absorb: true
 
   # KYE
-  kye_p_binning: false
+  kye_p_binning: true
   kye_p_regress: false
   kye_p_scale: 0.2
-  kye_d_regress: true
+  kye_d_regress: false
   kye_d_scale: 0.2
-  kye_mixing: true
+  kye_mixing: false
 
   # PU
   use_purl: false
