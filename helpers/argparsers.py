@@ -79,6 +79,8 @@ def argparser(description="DDPG Experiment"):
     parser.add_argument('--num_tau', type=int, default=200)
 
     # Adversarial imitation
+    parser.add_argument('--g_steps', type=int, default=3)
+    parser.add_argument('--d_steps', type=int, default=1)
     parser.add_argument('--d_lr', type=float, default=1e-5)
     boolean_flag(parser, 'state_only', default=True)
     boolean_flag(parser, 'minimax_only', default=True)
@@ -94,10 +96,9 @@ def argparser(description="DDPG Experiment"):
     boolean_flag(parser, 'wrap_absorb', default=False)
 
     # KYE
-    boolean_flag(parser, 'kye_p_binning', default=False)
-    boolean_flag(parser, 'kye_p_regress', default=False)
+    boolean_flag(parser, 'kye_p', default=False)
     parser.add_argument('--kye_p_scale', type=float, default=0.1)
-    boolean_flag(parser, 'kye_d_regress', default=False)
+    boolean_flag(parser, 'kye_d', default=False)
     parser.add_argument('--kye_d_scale', type=float, default=0.1)
     boolean_flag(parser, 'kye_mixing', default=True)
 

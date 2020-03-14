@@ -194,7 +194,7 @@ class Actor(nn.Module):
             ]))),
         ]))
         self.a_head = nn.Linear(200, ac_dim)
-        if self.hps.kye_p_binning or self.hps.kye_p_regress:
+        if self.hps.kye_p:
             self.r_decoder = nn.Sequential(OrderedDict([
                 ('fc_block_1', nn.Sequential(OrderedDict([
                     ('fc', nn.Linear(300, 200)),
@@ -202,12 +202,12 @@ class Actor(nn.Module):
                     ('nl', nn.ReLU()),
                 ]))),
             ]))
-            self.r_head = nn.Linear(200, 3 if self.hps.kye_p_binning else 1)  # bins
+            self.r_head = nn.Linear(200, 1)
         # Perform initialization
         self.s_encoder.apply(init(weight_scale=math.sqrt(2)))
         self.a_decoder.apply(init(weight_scale=math.sqrt(2)))
         self.a_head.apply(init(weight_scale=0.01))
-        if self.hps.kye_p_binning or self.hps.kye_p_regress:
+        if self.hps.kye_p:
             self.r_decoder.apply(init(weight_scale=math.sqrt(2)))
             self.r_head.apply(init(weight_scale=0.01))
 
@@ -216,7 +216,7 @@ class Actor(nn.Module):
         return out[0]  # ac
 
     def auxo(self, ob):
-        if self.hps.kye_p_binning or self.hps.kye_p_regress:
+        if self.hps.kye_p:
             out = self.forward(ob)
             return out[1]  # aux
         else:
@@ -227,10 +227,8 @@ class Actor(nn.Module):
         x = self.s_encoder(ob)
         ac = float(self.ac_max) * torch.tanh(self.a_head(self.a_decoder(x)))
         out = [ac]
-        if self.hps.kye_p_binning or self.hps.kye_p_regress:
+        if self.hps.kye_p:
             aux = self.r_head(self.r_decoder(x))
-            if self.hps.kye_p_binning:
-                aux = F.log_softmax(aux, dim=1).exp()
             out.append(aux)
         return out
 

@@ -38,7 +38,7 @@ BOOL_ARGS = ['cuda', 'clip_obs',
              'use_c51', 'use_qr', 'use_iqn',
              'state_only', 'minimax_only', 'spectral_norm', 'grad_pen', 'wrap_absorb',
              'historical_patching',
-             'kye_p_binning', 'kye_p_regress', 'kye_d_regress', 'kye_mixing',
+             'kye_p', 'kye_d', 'kye_mixing',
              'use_purl']
 
 # Create the list of environments from the indicated benchmark
@@ -204,6 +204,8 @@ def get_hps(sweep):
             'num_tau': np.random.choice([100, 200]),
 
             # Adversarial imitation
+            'g_steps': CONFIG['parameters'].get('g_steps', 3),
+            'd_steps': CONFIG['parameters'].get('d_steps', 1),
             'd_lr': float(CONFIG['parameters'].get('d_lr', 1e-5)),
             'state_only': CONFIG['parameters'].get('state_only', True),
             'minimax_only': CONFIG['parameters'].get('minimax_only', True),
@@ -221,10 +223,9 @@ def get_hps(sweep):
             'wrap_absorb': CONFIG['parameters'].get('wrap_absorb', False),
 
             # KYE
-            'kye_p_binning': CONFIG['parameters'].get('kye_p_binning', False),
-            'kye_p_regress': CONFIG['parameters'].get('kye_p_regress', False),
+            'kye_p': CONFIG['parameters'].get('kye_p', False),
             'kye_p_scale': np.random.choice([0.01, 0.1, 0.5]),
-            'kye_d_regress': CONFIG['parameters'].get('kye_d_regress', False),
+            'kye_d': CONFIG['parameters'].get('kye_d', False),
             'kye_d_scale': np.random.choice([0.01, 0.1, 0.5]),
             'kye_mixing': CONFIG['parameters'].get('kye_mixing', False),
 
@@ -297,6 +298,8 @@ def get_hps(sweep):
             'num_tau': CONFIG['parameters'].get('num_tau', 200),
 
             # Adversarial imitation
+            'g_steps': CONFIG['parameters'].get('g_steps', 3),
+            'd_steps': CONFIG['parameters'].get('d_steps', 1),
             'd_lr': float(CONFIG['parameters'].get('d_lr', 1e-5)),
             'state_only': CONFIG['parameters'].get('state_only', True),
             'minimax_only': CONFIG['parameters'].get('minimax_only', True),
@@ -310,10 +313,9 @@ def get_hps(sweep):
             'wrap_absorb': CONFIG['parameters'].get('wrap_absorb', False),
 
             # KYE
-            'kye_p_binning': CONFIG['parameters'].get('kye_p_binning', False),
-            'kye_p_regress': CONFIG['parameters'].get('kye_p_regress', False),
+            'kye_p': CONFIG['parameters'].get('kye_p', False),
             'kye_p_scale': CONFIG['parameters'].get('kye_p_scale', 0.1),
-            'kye_d_regress': CONFIG['parameters'].get('kye_d_regress', False),
+            'kye_d': CONFIG['parameters'].get('kye_d', False),
             'kye_d_scale': CONFIG['parameters'].get('kye_d_scale', 0.1),
             'kye_mixing': CONFIG['parameters'].get('kye_mixing', False),
 

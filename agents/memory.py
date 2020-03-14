@@ -113,6 +113,13 @@ class ReplayBuffer(object):
             la_batch['dones1'].append(la_is_trimmed)
             la_batch['td_len'].append(td_len)
 
+            if 'obs0_orig' in la_transitions.keys():
+                la_batch['obs0_orig'].append(la_transitions['obs0_orig'][0])
+            if 'obs1_orig' in la_transitions.keys():
+                la_batch['obs1_orig'].append(la_transitions['obs1_orig'][td_len - 1])
+            if 'acs_orig' in la_transitions.keys():
+                la_batch['acs_orig'].append(la_transitions['acs_orig'][0])
+
             # # This block: sanity checker
             # from helpers import logger
             # logger.info("\n\n")

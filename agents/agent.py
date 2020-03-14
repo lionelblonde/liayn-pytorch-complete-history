@@ -38,7 +38,6 @@ class Agent(object):
         self.hps = hps
         assert self.hps.lookahead > 1 or not self.hps.n_step_returns
         assert self.hps.rollout_len <= self.hps.batch_size
-        assert sum([self.hps.kye_p_binning, self.hps.kye_p_regress]) in [0, 1], "not both"
         assert self.hps.clip_norm >= 0
         if self.hps.clip_norm <= 0:
             logger.info("[WARN] clip_norm={} <= 0, hence disabled.".format(self.hps.clip_norm))
@@ -111,13 +110,21 @@ class Agent(object):
         else:
             ob_dim = self.ob_dim
             ac_dim = self.ac_dim
-        self.replay_buffer = self.setup_replay_buffer({
-            "obs0": (ob_dim,),
-            "obs1": (ob_dim,),
-            "acs": (ac_dim,),
-            "rews": (1,),
-            "dones1": (1,),
-        })
+        shapes = {
+            'obs0': (ob_dim,),
+            'obs1': (ob_dim,),
+            'acs': (ac_dim,),
+            'rews': (1,),
+            'dones1': (1,),
+        }
+        if self.hps.wrap_absorb:
+            shapes.update({
+                'obs0_orig': (self.ob_dim,),
+                'obs1_orig': (self.ob_dim,),
+                'acs_orig': (self.ac_dim,),
+            })
+        print(shapes)
+        self.replay_buffer = self.setup_replay_buffer(shapes)
 
         # Set up the optimizers
         self.actr_opt = torch.optim.Adam(self.actr.parameters(),
@@ -154,7 +161,7 @@ class Agent(object):
             )
             assert len(self.e_dataloader) > 0
             # Create discriminator
-            if self.hps.kye_d_regress:
+            if self.hps.kye_d:
                 self.disc = KYEDiscriminator(self.env, self.hps).to(self.device)
             else:
                 self.disc = Discriminator(self.env, self.hps).to(self.device)
@@ -302,7 +309,7 @@ class Agent(object):
         if self.hps.historical_patching:
 
             def patcher(x, y, z):
-                return self.get_reward(x, y, z)[0].cpu().numpy()
+                return self.get_reward(x, y, z).cpu().numpy()
 
         # Get a batch of transitions from the replay buffer
         if self.hps.n_step_returns:
@@ -360,10 +367,15 @@ class Agent(object):
         metrics = defaultdict(list)
 
         # Create tensors from the inputs
-        state = torch.Tensor(batch['obs0']).to(self.device)
-        action = torch.Tensor(batch['acs']).to(self.device)
+        if self.hps.wrap_absorb:
+            state = torch.Tensor(batch['obs0_orig']).to(self.device)
+            action = torch.Tensor(batch['acs_orig']).to(self.device)
+            next_state = torch.Tensor(batch['obs1_orig']).to(self.device)
+        else:
+            state = torch.Tensor(batch['obs0']).to(self.device)
+            action = torch.Tensor(batch['acs']).to(self.device)
+            next_state = torch.Tensor(batch['obs1']).to(self.device)
         reward = torch.Tensor(batch['rews']).to(self.device)
-        next_state = torch.Tensor(batch['obs1']).to(self.device)
         done = torch.Tensor(batch['dones1'].astype('float32')).to(self.device)
         if self.hps.prioritized_replay:
             iws = torch.Tensor(batch['iws']).to(self.device)
@@ -371,22 +383,6 @@ class Agent(object):
             td_len = torch.Tensor(batch['td_len']).to(self.device)
         else:
             td_len = torch.ones_like(done).to(self.device)
-
-        if self.hps.wrap_absorb:
-            _, indices_a = self.remove_absorbing(state)
-            _, indices_b = self.remove_absorbing(next_state)
-            indices = sorted(list(set(indices_a) & set(indices_b)))  # intersection
-            state = state[indices, 0:-1]
-            action = action[indices, 0:-1]
-            reward = reward[indices, :]
-            next_state = next_state[indices, 0:-1]
-            done = done[indices, :]
-            if self.hps.prioritized_replay:
-                iws = iws[indices, :]
-            if self.hps.n_step_returns:
-                td_len = td_len[indices, :]
-            else:
-                td_len = torch.ones_like(done).to(self.device)
 
         if self.hps.targ_actor_smoothing:
             n_ = action.clone().detach().data.normal_(0, self.hps.td3_std).to(self.device)
@@ -571,7 +567,7 @@ class Agent(object):
 
         return metrics, lrnows
 
-    def update_reward_control(self, batch, iters_so_far):
+    def update_reward_control(self, batch):
         """Update the policy and value networks"""
 
         # Transfer to device
@@ -588,9 +584,12 @@ class Agent(object):
             next_state = next_state[indices, :]
             action = action[indices, :]
 
+        aux_loss = F.smooth_l1_loss(
+            input=self.actr.auxo(_state),
+            target=self.get_reward(state, action, next_state)
+        )
         if self.hps.kye_mixing:
-            # Get a minibatch of expert data
-            e_batch = next(iter(self.e_dataloader))
+            e_batch = next(iter(self.e_dataloader))  # get a minibatch of expert data
             _state_e = e_batch['obs0']
             state_e = e_batch['obs0']
             next_state_e = e_batch['obs1']
@@ -603,28 +602,10 @@ class Agent(object):
                 state_e = state_e[indices, :]
                 next_state_e = next_state_e[indices, :]
                 action_e = action_e[indices, :]
-
-        if self.hps.kye_p_binning:
-            aux_loss = F.cross_entropy(
-                input=self.actr.auxo(_state),
-                target=self.get_reward(state, action, next_state)[1]
+            aux_loss += F.smooth_l1_loss(
+                input=self.actr.auxo(_state_e),
+                target=self.get_reward(state_e, action_e, next_state_e)
             )
-            if self.hps.kye_mixing:
-                aux_loss += F.cross_entropy(
-                    input=self.actr.auxo(_state_e),
-                    target=self.get_reward(state_e, action_e, next_state_e)[1]
-                )
-        elif self.hps.kye_p_regress:
-            aux_loss = F.smooth_l1_loss(
-                input=self.actr.auxo(_state),
-                target=self.get_reward(state, action, next_state)[0]
-            )
-            if self.hps.kye_mixing:
-                aux_loss += F.smooth_l1_loss(
-                    input=self.actr.auxo(_state_e),
-                    target=self.get_reward(state_e, action_e, next_state_e)[0]
-                )
-
         aux_loss *= self.hps.kye_p_scale
 
         # Update parameters
@@ -713,7 +694,7 @@ class Agent(object):
                 # Log metrics
                 metrics['grad_pen'].append(grad_pen)
 
-            if self.hps.kye_d_regress:
+            if self.hps.kye_d:
                 # Compute gradient of the feature extractor for d_loss
                 self.disc_opt.zero_grad()
                 d_loss.backward(retain_graph=True)
@@ -830,7 +811,6 @@ class Agent(object):
         ac = ac.cpu()
         # Compure score
         score = self.disc.D(ob, ac).detach().view(-1, 1)
-        sigscore = torch.sigmoid(score)  # squashed in [0, 1]
         # Counterpart of GAN's minimax (also called "saturating") loss
         # Numerics: 0 for non-expert-like states, goes to +inf for expert-like states
         # compatible with envs with traj cutoffs for bad (non-expert-like) behavior
@@ -848,14 +828,7 @@ class Agent(object):
             # Return the sum the two previous reward functions (as in AIRL, Fu et al. 2018)
             # Numerics: might be better might be way worse
             reward = non_satur_reward + minimax_reward
-        # Perform binning
-        num_bins = 3  # arbitrarily
-        binned = (torch.abs(sigscore - 1e-8) // (1 / num_bins)).long().squeeze(-1)
-        for i in range(binned.size(0)):
-            if binned.view(-1)[i] > 2. or binned.view(-1)[i] < 0.:
-                # This should never happen, flag, but don't rupt
-                logger.info("[WARN] binned.view(-1)[{}]={}.".format(i, binned.view(-1)[i]))
-        return self.hps.syn_rew_scale * reward, binned
+        return self.hps.syn_rew_scale * reward
 
     def update_target_net(self, iters_so_far):
         """Update the target networks"""

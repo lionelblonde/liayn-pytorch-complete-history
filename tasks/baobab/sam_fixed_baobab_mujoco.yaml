@@ -25,20 +25,20 @@ parameters:
   eval_frequency: 10
 
   # Optimization
-  actor_lr: 1.0e-4
-  critic_lr: 1.0e-4
+  actor_lr: 2.5e-4
+  critic_lr: 2.5e-4
   with_scheduler: false
-  clip_norm: 0.
+  clip_norm: 40.0
   wd_scale: 0.
 
   # Algorithm
   clip_obs: true
   rollout_len: 2
-  batch_size: 256
+  batch_size: 64
   gamma: 0.99
   mem_size: 100000
   noise_type: '"adaptive-param_0.2, normal_0.2"'
-  pn_adapt_frequency: 10
+  pn_adapt_frequency: 50
   polyak: 0.005
   targ_up_freq: 100
   n_step_returns: true
@@ -65,9 +65,11 @@ parameters:
   num_tau: 200
 
   # Adversarial imitation
-  d_lr: 1.0e-4
+  g_steps: 3
+  d_steps: 1
+  d_lr: 2.5e-4
   state_only: false
-  minimax_only: true
+  minimax_only: false
   ent_reg_scale: 0.001
   spectral_norm: true
   grad_pen: true
@@ -78,10 +80,9 @@ parameters:
   wrap_absorb: true
 
   # KYE
-  kye_p_binning: false
-  kye_p_regress: false
+  kye_p: false
   kye_p_scale: 0.2
-  kye_d_regress: false
+  kye_d: false
   kye_d_scale: 0.2
   kye_mixing: false
 
