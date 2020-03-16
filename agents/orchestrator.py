@@ -249,7 +249,7 @@ def learn(args,
 
     # Create collections
     d = defaultdict(list)
-    b_eval = deque(maxlen=40)
+    b_eval = deque(maxlen=100)
 
     # Set up model save directory
     if rank == 0:

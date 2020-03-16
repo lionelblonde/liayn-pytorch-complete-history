@@ -134,6 +134,9 @@ class DemoDataset(Dataset):
                                                             np.zeros((ep_len, 1))], axis=-1))
                     self.data['obs1'].append(np.concatenate([tmp['obs1'],
                                                              np.zeros((ep_len, 1))], axis=-1))
+
+                self.data['obs0_orig'].append(tmp['obs0'])
+
             else:
                 self.data['obs0'].append(tmp['obs0'])
                 self.data['acs'].append(tmp['acs'])

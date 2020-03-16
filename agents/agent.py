@@ -366,7 +366,7 @@ class Agent(object):
         # Container for all the metrics
         metrics = defaultdict(list)
 
-        # Create tensors from the inputs
+        # Transfer to device
         if self.hps.wrap_absorb:
             state = torch.Tensor(batch['obs0_orig']).to(self.device)
             action = torch.Tensor(batch['acs_orig']).to(self.device)
@@ -571,15 +571,18 @@ class Agent(object):
         """Update the policy and value networks"""
 
         # Transfer to device
-        _state = torch.Tensor(batch['obs0']).to(self.device)
+        if self.hps.wrap_absorb:
+            _state = torch.Tensor(batch['obs0_orig']).to(self.device)
+        else:
+            _state = torch.Tensor(batch['obs0']).to(self.device)
         state = torch.Tensor(batch['obs0']).to(self.device)
         next_state = torch.Tensor(batch['obs1']).to(self.device)
         action = torch.Tensor(batch['acs']).to(self.device)
         if self.hps.wrap_absorb:
-            _, indices_a = self.remove_absorbing(state)
-            _, indices_b = self.remove_absorbing(next_state)
-            indices = sorted(list(set(indices_a) & set(indices_b)))  # intersection
-            _state = _state[indices, 0:-1]
+            _, indices = self.remove_absorbing(state)
+            if len(indices) == 0:
+                return
+            _state = _state[indices]
             state = state[indices, :]
             next_state = next_state[indices, :]
             action = action[indices, :]
@@ -590,15 +593,18 @@ class Agent(object):
         )
         if self.hps.kye_mixing:
             e_batch = next(iter(self.e_dataloader))  # get a minibatch of expert data
-            _state_e = e_batch['obs0']
+            if self.hps.wrap_absorb:
+                _state_e = e_batch['obs0_orig']
+            else:
+                _state_e = e_batch['obs0']
             state_e = e_batch['obs0']
             next_state_e = e_batch['obs1']
             action_e = e_batch['acs']
             if self.hps.wrap_absorb:
-                _, indices_a = self.remove_absorbing(state_e)
-                _, indices_b = self.remove_absorbing(next_state_e)
-                indices = sorted(list(set(indices_a) & set(indices_b)))  # intersection
-                _state_e = _state_e[indices, 0:-1]
+                _, indices = self.remove_absorbing(state_e)
+                if len(indices) == 0:
+                    return
+                _state_e = _state_e[indices]
                 state_e = state_e[indices, :]
                 next_state_e = next_state_e[indices, :]
                 action_e = action_e[indices, :]

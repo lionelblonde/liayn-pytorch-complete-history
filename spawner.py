@@ -50,10 +50,10 @@ if BENCH == 'mujoco':
         'flareon': ['InvertedPendulum-v2',
                     'InvertedDoublePendulum-v2',
                     'Hopper-v3'],
-        'glaceon': ['Walker2d-v3',
+        'glaceon': ['Hopper-v3',
+                    'Walker2d-v3',
                     'HalfCheetah-v3',
-                    'Ant-v3',
-                    'Humanoid-v3'],
+                    'Ant-v3'],
         'humanoid': ['Humanoid-v3'],
     }
     if args.envset == 'all':
