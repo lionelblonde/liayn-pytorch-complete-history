@@ -249,7 +249,7 @@ def learn(args,
 
     # Create collections
     d = defaultdict(list)
-    b_eval = deque(maxlen=100)
+    b_eval = deque(maxlen=10)
 
     # Set up model save directory
     if rank == 0:
@@ -351,40 +351,41 @@ def learn(args,
                         # Sample an episode w/ non-perturbed actor w/o storing anything
                         eval_ep = eval_ep_gen.__next__()
                         # Aggregate data collected during the evaluation to the buffers
-                        d['eval_ep_len'].append(eval_ep['ep_len'])
-                        d['eval_ep_env_ret'].append(eval_ep['ep_env_ret'])
+                        d['eval_len'].append(eval_ep['ep_len'])
+                        d['eval_env_ret'].append(eval_ep['ep_env_ret'])
 
-                # Log evaluation stats
-                eval_len = np.mean(d['eval_ep_len'])
-                eval_env_ret = np.mean(d['eval_ep_env_ret'])
-                b_eval.append(eval_env_ret)
-                avg_eval_env_ret = np.mean(b_eval)
-                logger.record_tabular('eval_len', eval_len)
-                logger.record_tabular('eval_env_ret', eval_env_ret)
-                logger.info("[CSV] dumping eval stats in .csv file")
-                logger.dump_tabular()
-
-                if args.record:
-                    # Record the last episode in a video
-                    frames = np.split(eval_ep['obs_render'], 1, axis=-1)
-                    frames = np.concatenate(np.array(frames), axis=0)
-                    frames = np.array([np.squeeze(a, axis=0)
-                                       for a in np.split(frames, frames.shape[0], axis=0)])
-                    frames = np.transpose(frames, (0, 3, 1, 2))  # from nwhc to ncwh
-
-                    wandb.log({'video': wandb.Video(frames.astype(np.uint8),
-                                                    fps=25,
-                                                    format='gif',
-                                                    caption="Evaluation (last episode)")},
-                              step=timesteps_so_far)
+                    b_eval.append(np.mean(d['eval_env_ret']))
 
         # Increment counters
         iters_so_far += 1
         timesteps_so_far += args.rollout_len
 
-        # Log stats in dashboard
         if rank == 0:
 
+            # Log stats in csv
+            if (iters_so_far - 1) % args.eval_frequency == 0:
+                logger.record_tabular('timestep', timesteps_so_far)
+                logger.record_tabular('eval_len', np.mean(d['eval_len']))
+                logger.record_tabular('eval_env_ret', np.mean(d['eval_env_ret']))
+                logger.record_tabular('avg_eval_env_ret', np.mean(b_eval))
+                logger.info("dumping stats in .csv file")
+                logger.dump_tabular()
+
+            if ((iters_so_far - 1) % args.eval_frequency == 0) and args.record:
+                # Record the last episode in a video
+                frames = np.split(eval_ep['obs_render'], 1, axis=-1)
+                frames = np.concatenate(np.array(frames), axis=0)
+                frames = np.array([np.squeeze(a, axis=0)
+                                   for a in np.split(frames, frames.shape[0], axis=0)])
+                frames = np.transpose(frames, (0, 3, 1, 2))  # from nwhc to ncwh
+
+                wandb.log({'video': wandb.Video(frames.astype(np.uint8),
+                                                fps=25,
+                                                format='gif',
+                                                caption="Evaluation (last episode)")},
+                          step=timesteps_so_far)
+
+            # Log stats in dashboard
             wandb.log({"num_workers": np.array(world_size)})
             if agent.hps.prioritized_replay:
                 quantiles = [0.1, 0.25, 0.5, 0.75, 0.9]
@@ -411,9 +412,9 @@ def learn(args,
                           step=timesteps_so_far)
 
             if (iters_so_far - 1) % args.eval_frequency == 0:
-                wandb.log({'eval_len': eval_len,
-                           'eval_env_ret': eval_env_ret,
-                           'avg_eval_env_ret': avg_eval_env_ret},
+                wandb.log({'eval_len': np.mean(d['eval_len']),
+                           'eval_env_ret': np.mean(d['eval_env_ret']),
+                           'avg_eval_env_ret': np.mean(b_eval)},
                           step=timesteps_so_far)
 
         # Clear the iteration's running stats
