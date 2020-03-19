@@ -329,9 +329,8 @@ def learn(args,
                         d['twin_losses'].append(metrics['twin_loss'])
                     if agent.hps.prioritized_replay:
                         iws = metrics['iws']  # last one only
-
                     if agent.hps.kye_p:
-                        agent.update_reward_control(batch)
+                        d['angles_p'].append(metrics['angle'])
 
                 for _ in range(agent.hps.d_steps):
                     # Sample a batch of transitions from the replay buffer
@@ -340,6 +339,8 @@ def learn(args,
                     metrics = agent.update_discriminator(batch)
                     # Log training stats
                     d['disc_losses'].append(metrics['disc_loss'])
+                    if agent.hps.kye_d:
+                        d['angles_d'].append(metrics['angle'])
 
         if eval_env is not None:
             assert rank == 0, "non-zero rank mpi worker forbidden here"
@@ -368,6 +369,10 @@ def learn(args,
                 logger.record_tabular('eval_len', np.mean(d['eval_len']))
                 logger.record_tabular('eval_env_ret', np.mean(d['eval_env_ret']))
                 logger.record_tabular('avg_eval_env_ret', np.mean(b_eval))
+                if agent.hps.kye_p:
+                    logger.record_tabular('angle_p', np.mean(d['angles_p']))
+                if agent.hps.kye_d:
+                    logger.record_tabular('angle_d', np.mean(d['angles_d']))
                 logger.info("dumping stats in .csv file")
                 logger.dump_tabular()
 
@@ -403,8 +408,11 @@ def learn(args,
                        'crit_lrnow': np.array(lrnows['crit']),
                        'disc_loss': np.mean(d['disc_losses'])},
                       step=timesteps_so_far)
+            if agent.hps.kye_p:
+                wandb.log({'angle_p': np.mean(d['angles_p'])},
+                          step=timesteps_so_far)
             if agent.hps.kye_d:
-                wandb.log({'angle': np.mean(d['angles'])},
+                wandb.log({'angle_d': np.mean(d['angles_d'])},
                           step=timesteps_so_far)
             if agent.hps.clipped_double:
                 wandb.log({'twin_loss': np.mean(d['twin_losses']),

@@ -16,7 +16,7 @@ from helpers.dataset import Dataset
 from helpers.math_util import huber_quant_reg_loss
 from helpers.distributed_util import average_gradients, sync_with_root
 from agents.memory import ReplayBuffer, PrioritizedReplayBuffer, UnrealReplayBuffer
-from agents.nets import Actor, Critic, Discriminator, KYEDiscriminator
+from agents.nets import Actor, Critic, Discriminator
 from agents.param_noise import AdaptiveParamNoise
 from agents.ac_noise import NormalAcNoise, OUAcNoise
 
@@ -161,10 +161,7 @@ class Agent(object):
             )
             assert len(self.e_dataloader) > 0
             # Create discriminator
-            if self.hps.kye_d:
-                self.disc = KYEDiscriminator(self.env, self.hps).to(self.device)
-            else:
-                self.disc = Discriminator(self.env, self.hps).to(self.device)
+            self.disc = Discriminator(self.env, self.hps).to(self.device)
             sync_with_root(self.disc)
             # Create optimizer
             self.disc_opt = torch.optim.Adam(self.disc.parameters(), lr=self.hps.d_lr)
@@ -527,12 +524,82 @@ class Agent(object):
             actr_loss = -self.crit.QZ(state, self.actr.act(state)).mean()
 
         # Log metrics
-        metrics['actr_loss'].append(actr_loss)
         metrics['crit_loss'].append(crit_loss)
         if self.hps.clipped_double:
             metrics['twin_loss'].append(twin_loss)
         if self.hps.prioritized_replay:
             metrics['iws'].append(iws)
+
+        if self.hps.kye_p:
+
+            # Compute gradient of the feature extractor for d_loss
+            self.actr_opt.zero_grad()
+            actr_loss.backward(retain_graph=True)
+            grads_actr_loss = self.actr.s_encoder.fc_block.fc.weight.grad.mean(dim=0)
+            self.actr_opt.zero_grad()
+
+            # Sub-optimal potential re-definitions here
+            # but easier to debut and with little over-head
+            if self.hps.wrap_absorb:
+                _state = torch.Tensor(batch['obs0_orig']).to(self.device)
+            else:
+                _state = torch.Tensor(batch['obs0']).to(self.device)
+            state = torch.Tensor(batch['obs0']).to(self.device)
+            next_state = torch.Tensor(batch['obs1']).to(self.device)
+            action = torch.Tensor(batch['acs']).to(self.device)
+            if self.hps.wrap_absorb:
+                _, indices = self.remove_absorbing(state)
+                _state = _state[indices]
+                state = state[indices, :]
+                next_state = next_state[indices, :]
+                action = action[indices, :]
+
+            aux_loss = F.smooth_l1_loss(
+                input=self.actr.auxo(_state),
+                target=self.get_reward(state, action, next_state)
+            )
+            if self.hps.kye_mixing:
+                e_batch = next(iter(self.e_dataloader))  # get a minibatch of expert data
+                if self.hps.wrap_absorb:
+                    _state_e = e_batch['obs0_orig']
+                else:
+                    _state_e = e_batch['obs0']
+                state_e = e_batch['obs0']
+                next_state_e = e_batch['obs1']
+                action_e = e_batch['acs']
+                if self.hps.wrap_absorb:
+                    _, indices = self.remove_absorbing(state_e)
+                    _state_e = _state_e[indices]
+                    state_e = state_e[indices, :]
+                    next_state_e = next_state_e[indices, :]
+                    action_e = action_e[indices, :]
+                aux_loss += F.smooth_l1_loss(
+                    input=self.actr.auxo(_state_e),
+                    target=self.get_reward(state_e, action_e, next_state_e)
+                )
+
+            # Compute gradient of the feature exctractor for aux_loss
+            self.actr_opt.zero_grad()
+            aux_loss.backward(retain_graph=True)
+            grads_aux_loss = self.actr.s_encoder.fc_block.fc.weight.grad.mean(dim=0)
+            self.actr_opt.zero_grad()
+
+            # Calculate the angle between the two computed gradients
+            angle = torch.acos(torch.dot(grads_actr_loss, grads_aux_loss) /
+                               (torch.norm(grads_actr_loss) * torch.norm(grads_aux_loss)))
+            angle = angle.detach()
+            angle = angle / math.pi * 180.
+            # Log metrics
+            metrics['aux_loss'].append(aux_loss)
+            metrics['angle'].append(angle)
+
+            # Assemble losses
+            aux_loss *= self.hps.kye_p_scale
+            actr_loss += aux_loss
+            # Log metrics
+            metrics['aux_loss_scaled'].append(aux_loss)
+
+        metrics['actr_loss'].append(actr_loss)
 
         # Update parameters
         self.actr_opt.zero_grad()
@@ -567,61 +634,6 @@ class Agent(object):
 
         return metrics, lrnows
 
-    def update_reward_control(self, batch):
-        """Update the policy and value networks"""
-
-        # Transfer to device
-        if self.hps.wrap_absorb:
-            _state = torch.Tensor(batch['obs0_orig']).to(self.device)
-        else:
-            _state = torch.Tensor(batch['obs0']).to(self.device)
-        state = torch.Tensor(batch['obs0']).to(self.device)
-        next_state = torch.Tensor(batch['obs1']).to(self.device)
-        action = torch.Tensor(batch['acs']).to(self.device)
-        if self.hps.wrap_absorb:
-            _, indices = self.remove_absorbing(state)
-            if len(indices) == 0:
-                return
-            _state = _state[indices]
-            state = state[indices, :]
-            next_state = next_state[indices, :]
-            action = action[indices, :]
-
-        aux_loss = F.smooth_l1_loss(
-            input=self.actr.auxo(_state),
-            target=self.get_reward(state, action, next_state)
-        )
-        if self.hps.kye_mixing:
-            e_batch = next(iter(self.e_dataloader))  # get a minibatch of expert data
-            if self.hps.wrap_absorb:
-                _state_e = e_batch['obs0_orig']
-            else:
-                _state_e = e_batch['obs0']
-            state_e = e_batch['obs0']
-            next_state_e = e_batch['obs1']
-            action_e = e_batch['acs']
-            if self.hps.wrap_absorb:
-                _, indices = self.remove_absorbing(state_e)
-                if len(indices) == 0:
-                    return
-                _state_e = _state_e[indices]
-                state_e = state_e[indices, :]
-                next_state_e = next_state_e[indices, :]
-                action_e = action_e[indices, :]
-            aux_loss += F.smooth_l1_loss(
-                input=self.actr.auxo(_state_e),
-                target=self.get_reward(state_e, action_e, next_state_e)
-            )
-        aux_loss *= self.hps.kye_p_scale
-
-        # Update parameters
-        self.actr_opt.zero_grad()
-        aux_loss.backward()
-        average_gradients(self.actr, self.device)
-        if self.hps.clip_norm > 0:
-            U.clip_grad_norm_(self.actr.parameters(), self.hps.clip_norm)
-        self.actr_opt.step()
-
     def update_discriminator(self, batch):
         """Update the discriminator network"""
 
@@ -629,7 +641,11 @@ class Agent(object):
         metrics = defaultdict(list)
 
         # Create DataLoader object to iterate over transitions in rollouts
-        d_keys = ['obs0', 'acs']
+        d_keys = ['obs0']
+        if self.hps.state_only:
+            d_keys.append('obs1')
+        else:
+            d_keys.append('acs')
         d_dataset = Dataset({k: batch[k] for k in d_keys})
         d_dataloader = DataLoader(
             d_dataset,
@@ -644,14 +660,18 @@ class Agent(object):
             d_batch = next(iter(d_dataloader))
 
             # Transfer to device
-            p_state = d_batch['obs0'].to(self.device)
-            p_action = d_batch['acs'].to(self.device)
-            e_state = e_batch['obs0'].to(self.device)
-            e_action = e_batch['acs'].to(self.device)
+            p_input_a = d_batch['obs0'].to(self.device)
+            e_input_a = e_batch['obs0'].to(self.device)
+            if self.hps.state_only:
+                p_input_b = d_batch['obs1'].to(self.device)
+                e_input_b = e_batch['obs1'].to(self.device)
+            else:
+                p_input_b = d_batch['acs'].to(self.device)
+                e_input_b = e_batch['acs'].to(self.device)
 
             # Compute scores
-            p_scores = self.disc.D(p_state, p_action)
-            e_scores = self.disc.D(e_state, e_action)
+            p_scores = self.disc.D(p_input_a, p_input_b)
+            e_scores = self.disc.D(e_input_a, e_input_b)
 
             # Create entropy loss
             scores = torch.cat([p_scores, e_scores], dim=0)
@@ -694,56 +714,59 @@ class Agent(object):
 
             if self.hps.grad_pen:
                 # Create gradient penalty loss (coefficient from the original paper)
-                grad_pen_in = [p_state, p_action, e_state, e_action]
-                grad_pen = 10. * self.grad_pen(*grad_pen_in)
+                grad_pen = 10. * self.grad_pen(p_input_a, p_input_b)
                 d_loss += grad_pen
                 # Log metrics
                 metrics['grad_pen'].append(grad_pen)
 
             if self.hps.kye_d:
+
                 # Compute gradient of the feature extractor for d_loss
                 self.disc_opt.zero_grad()
                 d_loss.backward(retain_graph=True)
                 if self.hps.spectral_norm:
-                    grads_d_loss = self.disc.ob_encoder.fc_block.fc.weight_orig.grad
+                    grads_d_loss = self.disc.d_encoder.fc_block.fc.weight_orig.grad
                 else:
-                    grads_d_loss = self.disc.ob_encoder.fc_block.fc.weight.grad
+                    grads_d_loss = self.disc.d_encoder.fc_block.fc.weight.grad
                 grads_d_loss = grads_d_loss.mean(dim=0)
                 self.disc_opt.zero_grad()
+
                 # Create and add auxiliary loss
                 if self.hps.wrap_absorb:
-                    _, p_indices = self.remove_absorbing(p_state)
-                    _p_state = p_state[p_indices, 0:-1]
-                    p_state = p_state[p_indices, :]
-                    p_action = p_action[p_indices, :]
+                    _, p_indices = self.remove_absorbing(p_input_a)
+                    _p_input_a = p_input_a[p_indices, 0:-1]
+                    p_input_a = p_input_a[p_indices, :]
+                    p_input_b = p_input_b[p_indices, :]
                 else:
-                    _p_state = p_state
+                    _p_input_a = p_input_a
                 aux_loss = F.smooth_l1_loss(
-                    input=self.disc.auxo(p_state, p_action),
-                    target=self.actr.act(_p_state)
+                    input=self.disc.auxo(p_input_a, p_input_b),
+                    target=self.actr.act(_p_input_a)
                 )
                 if self.hps.kye_mixing:
                     if self.hps.wrap_absorb:
-                        _, e_indices = self.remove_absorbing(e_state)
-                        _e_state = e_state[e_indices, 0:-1]
-                        e_state = e_state[e_indices, :]
-                        e_action = e_action[e_indices, :]
+                        _, e_indices = self.remove_absorbing(e_input_a)
+                        _e_input_a = e_input_a[e_indices, 0:-1]
+                        e_input_a = e_input_a[e_indices, :]
+                        e_input_b = e_input_b[e_indices, :]
                     else:
-                        _e_state = e_state
+                        _e_input_a = e_input_a
                     aux_loss += F.smooth_l1_loss(
-                        input=self.disc.auxo(e_state, e_action),
-                        target=self.actr.act(_e_state)
+                        input=self.disc.auxo(e_input_a, e_input_b),
+                        target=self.actr.act(_e_input_a)
                     )
+
                 # Compute gradient of the feature exctractor for aux_loss
                 self.disc_opt.zero_grad()
                 aux_loss.backward(retain_graph=True)
                 if self.hps.spectral_norm:
-                    grads_aux_loss = self.disc.ob_encoder.fc_block.fc.weight_orig.grad
+                    grads_aux_loss = self.disc.d_encoder.fc_block.fc.weight_orig.grad
                 else:
-                    grads_aux_loss = self.disc.ob_encoder.fc_block.fc.weight.grad
+                    grads_aux_loss = self.disc.d_encoder.fc_block.fc.weight.grad
                 grads_aux_loss = grads_aux_loss.mean(dim=0)
                 self.disc_opt.zero_grad()
-                # Compute the angle between the two computed gradients
+
+                # Calculate the angle between the two computed gradients
                 angle = torch.acos(torch.dot(grads_d_loss, grads_aux_loss) /
                                    (torch.norm(grads_d_loss) * torch.norm(grads_aux_loss)))
                 angle = angle.detach()
@@ -751,6 +774,7 @@ class Agent(object):
                 # Log metrics
                 metrics['aux_loss'].append(aux_loss)
                 metrics['angle'].append(angle)
+
                 # Assemble losses
                 aux_loss *= self.hps.kye_d_scale
                 d_loss += aux_loss
@@ -768,55 +792,44 @@ class Agent(object):
         metrics = {k: torch.stack(v).mean().cpu().data.numpy() for k, v in metrics.items()}
         return metrics
 
-    def grad_pen(self, p_ob, p_ac, e_ob, e_ac):
-        """Gradient penalty regularizer (motivation from Wasserstein GANs (Gulrajani),
-        but empirically useful in JS-GANs (Lucic et al. 2017)) and later in (Karol et al. 2018).
-        """
-        # Assemble interpolated state-action pair
-        if self.hps.wrap_absorb:
-            ob_dim = self.ob_dim + 1
-            ac_dim = self.ac_dim + 1
-        else:
-            ob_dim = self.ob_dim
-            ac_dim = self.ac_dim
-        ob_eps = torch.rand(ob_dim).to(p_ob.device)
-        ac_eps = torch.rand(ac_dim).to(p_ob.device)
-        ob_interp = ob_eps * p_ob + ((1. - ob_eps) * e_ob)
-        ac_interp = ac_eps * p_ac + ((1. - ac_eps) * e_ac)
+    def grad_pen(self, input_a, input_b):
+        """Define the gradient penalty regularizer"""
         # Set `requires_grad=True` to later have access to
         # gradients w.r.t. the inputs (not populated by default)
-        ob_interp = Variable(ob_interp, requires_grad=True)
-        ac_interp = Variable(ac_interp, requires_grad=True)
-        # Create the operation of interest
-        score = self.disc.D(ob_interp, ac_interp)
+        input_a = Variable(input_a, requires_grad=True)
+        input_b = Variable(input_b, requires_grad=True)
+        # Compute the score
+        score = self.disc.D(input_a, input_b)
         # Get the gradient of this operation with respect to its inputs
         grads = autograd.grad(outputs=score,
-                              inputs=[ob_interp, ac_interp],
+                              inputs=[input_a, input_b],
                               only_inputs=True,
-                              grad_outputs=torch.ones(score.size()).to(p_ob.device),
+                              grad_outputs=torch.ones(score.size()).to(self.device),
                               retain_graph=True,
                               create_graph=True,
                               allow_unused=self.hps.state_only)
         assert len(list(grads)) == 2, "length must be exactly 2"
         # Return the gradient penalty (try to induce 1-Lipschitzness)
-        if self.hps.state_only:
-            grads = grads[0]
         grads_concat = torch.cat(list(grads), dim=-1)
         return (grads_concat.norm(2, dim=-1) - 1.).pow(2).mean()
 
-    def get_reward(self, curr_ob, ac, next_ob):
-        # Define the obeservation to get the reward of
-        ob = next_ob if self.hps.state_only else curr_ob
+    def get_reward(self, state, action, next_state):
+        # Define the discriminator inputs
+        input_a = state
+        if self.hps.state_only:
+            input_b = next_state
+        else:
+            input_b = action
         # Craft surrogate reward
-        assert sum([isinstance(x, torch.Tensor) for x in [ob, ac]]) in [0, 2]
-        if not isinstance(ob, torch.Tensor):  # then ac is not neither
-            ob = torch.Tensor(ob)
-            ac = torch.Tensor(ac)
+        assert sum([isinstance(x, torch.Tensor) for x in [input_a, input_b]]) in [0, 2]
+        if not isinstance(input_a, torch.Tensor):  # then the other is not neither
+            input_a = torch.Tensor(input_a)
+            input_b = torch.Tensor(input_b)
         # Transfer to cpu
-        ob = ob.cpu()
-        ac = ac.cpu()
+        input_a = input_a.cpu()
+        input_b = input_b.cpu()
         # Compure score
-        score = self.disc.D(ob, ac).detach().view(-1, 1)
+        score = self.disc.D(input_a, input_b).detach().view(-1, 1)
         # Counterpart of GAN's minimax (also called "saturating") loss
         # Numerics: 0 for non-expert-like states, goes to +inf for expert-like states
         # compatible with envs with traj cutoffs for bad (non-expert-like) behavior
