@@ -1,0 +1,91 @@
+name: 'training spawner with single fixed hp set'
+
+resources:
+  conda_env: 'pytorch'
+  wandb_project: 'vaporeon'
+  cluster: 'baobab'
+
+logging:
+  checkpoint_dir: 'data/checkpoints'
+  log_dir: 'data/logs'
+  record: false
+
+parameters:
+  # Generic
+  task: 'train'
+  cuda: false
+  num_seeds: 5
+  benchmark: 'mujoco'
+
+  # Training
+  save_frequency: 1000
+  num_timesteps: 1e7
+  training_steps_per_iter: 2
+  eval_steps_per_iter: 10
+  eval_frequency: 10
+
+  # Optimization
+  actor_lr: 2.5e-4
+  critic_lr: 2.5e-4
+  with_scheduler: false
+  clip_norm: 40.0
+  wd_scale: 0.
+
+  # Algorithm
+  clip_obs: true
+  rollout_len: 2
+  batch_size: 64
+  gamma: 0.99
+  mem_size: 100000
+  noise_type: '"adaptive-param_0.2, ou_0.2"'
+  pn_adapt_frequency: 50
+  polyak: 0.005
+  targ_up_freq: 100
+  n_step_returns: true
+  lookahead: 10
+
+  # TD3
+  clipped_double: true
+  targ_actor_smoothing: true
+  td3_std: 0.2
+  td3_c: 0.5
+  actor_update_delay: 2
+
+  # Prioritized replay
+  prioritized_replay: false
+  alpha: 0.3
+  beta: 1.
+  ranked: false
+  unreal: false
+
+  # Distributional RL
+  use_c51: false
+  use_qr: false
+  c51_num_atoms: 51
+  num_tau: 200
+
+  # Adversarial imitation
+  g_steps: 1
+  d_steps: 1
+  d_lr: 5.0e-4
+  state_only: true
+  minimax_only: true
+  ent_reg_scale: 0.001
+  spectral_norm: true
+  grad_pen: true
+  historical_patching: true
+  fake_ls_type: '"none"'
+  real_ls_type: '"none"'
+  syn_rew_scale: 1.
+  wrap_absorb: true
+
+  # KYE
+  kye_p: false
+  kye_p_scale: 0.2
+  kye_d: false
+  kye_d_scale: 0.2
+  kye_mixing: false
+
+  # PU
+  use_purl: false
+  purl_eta: 0.25
