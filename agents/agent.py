@@ -714,7 +714,7 @@ class Agent(object):
 
             if self.hps.grad_pen:
                 # Create gradient penalty loss (coefficient from the original paper)
-                grad_pen = 10. * self.grad_pen(p_input_a, p_input_b)
+                grad_pen = 10. * self.grad_pen(p_input_a, p_input_b, e_input_a, e_input_b)
                 d_loss += grad_pen
                 # Log metrics
                 metrics['grad_pen'].append(grad_pen)
@@ -792,17 +792,22 @@ class Agent(object):
         metrics = {k: torch.stack(v).mean().cpu().data.numpy() for k, v in metrics.items()}
         return metrics
 
-    def grad_pen(self, input_a, input_b):
+    def grad_pen(self, p_input_a, p_input_b, e_input_a, e_input_b):
         """Define the gradient penalty regularizer"""
+        # Assemble interpolated inputs
+        eps_a = torch.rand_like(p_input_a)  # default device is input device
+        eps_b = torch.rand_like(p_input_b)  # default device is input device
+        input_a_i = eps_a * p_input_a + ((1. - eps_a) * e_input_a)
+        input_b_i = eps_b * p_input_b + ((1. - eps_b) * e_input_b)
         # Set `requires_grad=True` to later have access to
         # gradients w.r.t. the inputs (not populated by default)
-        input_a = Variable(input_a, requires_grad=True)
-        input_b = Variable(input_b, requires_grad=True)
-        # Compute the score
-        score = self.disc.D(input_a, input_b)
+        input_a_i = Variable(input_a_i, requires_grad=True)
+        input_b_i = Variable(input_b_i, requires_grad=True)
+        # Create the operation of interest
+        score = self.disc.D(input_a_i, input_b_i)
         # Get the gradient of this operation with respect to its inputs
         grads = autograd.grad(outputs=score,
-                              inputs=[input_a, input_b],
+                              inputs=[input_a_i, input_b_i],
                               only_inputs=True,
                               grad_outputs=torch.ones(score.size()).to(self.device),
                               retain_graph=True,
