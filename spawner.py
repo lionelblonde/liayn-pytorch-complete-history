@@ -31,11 +31,11 @@ CONDA = CONFIG['resources']['conda_env']
 # Define experiment type
 TYPE = 'sweep' if args.sweep else 'fixed'
 # Write out the boolean arguments (using the 'boolean_flag' function)
-BOOL_ARGS = ['cuda', 'clip_obs',
-             'render', 'record', 'with_scheduler',
+BOOL_ARGS = ['cuda', 'render', 'record', 'with_scheduler',
              'prioritized_replay', 'ranked', 'unreal',
-             'n_step_returns', 'clipped_double', 'targ_actor_smoothing',
-             'use_c51', 'use_qr', 'use_iqn',
+             'n_step_returns', 'ret_norm', 'popart',
+             'clipped_double', 'targ_actor_smoothing',
+             'use_c51', 'use_qr',
              'state_only', 'minimax_only', 'spectral_norm', 'grad_pen', 'wrap_absorb',
              'historical_patching',
              'kye_p', 'kye_d', 'kye_mixing',
@@ -55,11 +55,14 @@ if BENCH == 'mujoco':
                     'HalfCheetah-v3',
                     'Ant-v3'],
         'humanoid': ['Humanoid-v3'],
+        'suite': ['InvertedPendulum-v2',
+                  'InvertedDoublePendulum-v2',
+                  'Hopper-v3',
+                  'Walker2d-v3',
+                  'HalfCheetah-v3',
+                  'Ant-v3'],
     }
-    if args.envset == 'all':
-        ENVS = TOC['easy'] + TOC['hard']
-    else:
-        ENVS = TOC[args.envset]
+    ENVS = TOC[args.envset]
 
     if CLUSTER == 'baobab':
         # Define per-environement partitions map
@@ -166,7 +169,6 @@ def get_hps(sweep):
             'wd_scale': float(np.random.choice([1e-4, 3e-4, 1e-3])),
 
             # Algorithm
-            'clip_obs': CONFIG['parameters'].get('clip_obs', False),
             'rollout_len': np.random.choice([2, 5]),
             'batch_size': np.random.choice([32, 64, 128]),
             'gamma': np.random.choice([0.99, 0.995]),
@@ -180,6 +182,8 @@ def get_hps(sweep):
             'targ_up_freq': np.random.choice([10, 1000]),
             'n_step_returns': CONFIG['parameters'].get('n_step_returns', False),
             'lookahead': np.random.choice([5, 10, 20, 40, 60]),
+            'ret_norm': CONFIG['parameters'].get('ret_norm', False),
+            'popart': CONFIG['parameters'].get('popart', False),
 
             # TD3
             'clipped_double': CONFIG['parameters'].get('clipped_double', False),
@@ -263,7 +267,6 @@ def get_hps(sweep):
             'wd_scale': float(CONFIG['parameters'].get('wd_scale', 3e-4)),
 
             # Algorithm
-            'clip_obs': CONFIG['parameters'].get('clip_obs', False),
             'rollout_len': CONFIG['parameters'].get('rollout_len', 2),
             'batch_size': CONFIG['parameters'].get('batch_size', 128),
             'gamma': CONFIG['parameters'].get('gamma', 0.99),
@@ -273,7 +276,9 @@ def get_hps(sweep):
             'polyak': CONFIG['parameters'].get('polyak', 0.005),
             'targ_up_freq': CONFIG['parameters'].get('targ_up_freq', 100),
             'n_step_returns': CONFIG['parameters'].get('n_step_returns', False),
-            'lookahead': CONFIG['parameters'].get('lookahead', 60),
+            'lookahead': CONFIG['parameters'].get('lookahead', 10),
+            'ret_norm': CONFIG['parameters'].get('ret_norm', False),
+            'popart': CONFIG['parameters'].get('popart', False),
 
             # TD3
             'clipped_double': CONFIG['parameters'].get('clipped_double', False),

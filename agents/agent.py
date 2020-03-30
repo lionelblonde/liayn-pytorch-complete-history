@@ -14,7 +14,7 @@ from helpers import logger
 from helpers.console_util import log_env_info, log_module_info
 from helpers.dataset import Dataset
 from helpers.math_util import huber_quant_reg_loss
-from helpers.distributed_util import average_gradients, sync_with_root
+from helpers.distributed_util import average_gradients, sync_with_root, RunMoms
 from agents.memory import ReplayBuffer, PrioritizedReplayBuffer, UnrealReplayBuffer
 from agents.nets import Actor, Critic, Discriminator
 from agents.param_noise import AdaptiveParamNoise
@@ -117,13 +117,16 @@ class Agent(object):
             'rews': (1,),
             'dones1': (1,),
         }
+
+        shapes.update({'elapsed_steps': (1,),
+                       'max_episode_steps': (1,)})  # FIXME
+
         if self.hps.wrap_absorb:
             shapes.update({
                 'obs0_orig': (self.ob_dim,),
                 'obs1_orig': (self.ob_dim,),
                 'acs_orig': (self.ac_dim,),
             })
-        print(shapes)
         self.replay_buffer = self.setup_replay_buffer(shapes)
 
         # Set up the optimizers
@@ -166,12 +169,33 @@ class Agent(object):
             # Create optimizer
             self.disc_opt = torch.optim.Adam(self.disc.parameters(), lr=self.hps.d_lr)
 
+        assert self.hps.ret_norm or not self.hps.popart
+        assert not (self.hps.use_c51 and self.hps.ret_norm)
+        assert not (self.hps.use_qr and self.hps.ret_norm)
+        if self.hps.ret_norm:
+            # Create return normalizer that maintains running statistics
+            self.rms_ret = RunMoms(shape=(1,), use_mpi=False)  # Careful, set to False here
+
         log_module_info(logger, 'actr', self.actr)
         log_module_info(logger, 'crit', self.crit)
         if self.hps.clipped_double:
             log_module_info(logger, 'twin', self.crit)
         if not self.eval_mode:
             log_module_info(logger, 'disc', self.disc)
+
+    def norm_rets(self, x):
+        """Standardize if return normalization is used, do nothing otherwise"""
+        if self.hps.ret_norm:
+            return self.rms_ret.standardize(x)
+        else:
+            return x
+
+    def denorm_rets(self, x):
+        """Standardize if return denormalization is used, do nothing otherwise"""
+        if self.hps.ret_norm:
+            return self.rms_ret.destandardize(x)
+        else:
+            return x
 
     def parse_noise_type(self, noise_type):
         """Parse the `noise_type` hyperparameter"""
@@ -430,10 +454,8 @@ class Agent(object):
             crit_loss = ce_losses.mean()
 
             # Actor loss
-            actr_loss = -self.crit.QZ(state, self.actr.act(state))  # [batch_size, num_atoms]
-            actr_loss = actr_loss.matmul(self.c51_supp).unsqueeze(-1)  # [batch_size, 1]
-
-            actr_loss = actr_loss.mean()
+            _actr_loss = -self.crit.QZ(state, self.actr.act(state))  # [batch_size, num_atoms]
+            _actr_loss = _actr_loss.matmul(self.c51_supp).unsqueeze(-1)  # [batch_size, 1]
 
         elif self.hps.use_qr:
 
@@ -482,16 +504,16 @@ class Agent(object):
             crit_loss = crit_loss.mean()
 
             # Actor loss
-            actr_loss = -self.crit.QZ(state, self.actr.act(state)).mean()
+            _actr_loss = -self.crit.QZ(state, self.actr.act(state))
 
         else:
 
             # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> VANILLA.
 
             # Compute QZ estimate
-            q = self.crit.QZ(state, action)
+            q = self.denorm_rets(self.crit.QZ(state, action))
             if self.hps.clipped_double:
-                twin_q = self.twin.QZ(state, action)
+                twin_q = self.denorm_rets(self.twin.QZ(state, action))
 
             # Compute target QZ estimate
             q_prime = self.targ_crit.QZ(next_state, next_action)
@@ -500,7 +522,34 @@ class Agent(object):
                 twin_q_prime = self.targ_twin.QZ(next_state, next_action)
                 q_prime = (0.75 * torch.min(q_prime, twin_q_prime) +
                            0.25 * torch.max(q_prime, twin_q_prime))  # soft minimum from BCQ
-            targ_q = reward + (self.hps.gamma ** td_len) * (1. - done) * q_prime.detach()
+            targ_q = (reward +
+                      (self.hps.gamma ** td_len) * (1. - done) *
+                      self.denorm_rets(q_prime).detach())
+            targ_q = self.norm_rets(targ_q)
+
+            if self.hps.ret_norm:
+                if self.hps.popart:
+                    # Apply Pop-Art, https://arxiv.org/pdf/1602.07714.pdf
+                    # Save the pre-update running stats
+                    old_mean = torch.Tensor(self.rms_ret.mean).to(self.device)
+                    old_std = torch.Tensor(self.rms_ret.std).to(self.device)
+                    # Update the running stats
+                    self.rms_ret.update(targ_q)
+                    # Get the post-update running statistics
+                    new_mean = torch.Tensor(self.rms_ret.mean).to(self.device)
+                    new_std = torch.Tensor(self.rms_ret.std).to(self.device)
+                    # Preserve the output from before the change of normalization old->new
+                    # for both online and target critic(s)
+                    outs = [self.crit.out_params, self.targ_crit.out_params]
+                    if self.hps.clipped_double:
+                        outs.extend([self.twin.out_params, self.targ_twin.out_params])
+                    for out in outs:
+                        w, b = out
+                        w.data.copy_(w.data * old_std / new_std)
+                        b.data.copy_(((b.data * old_std) + old_mean - new_mean) / new_std)
+                else:
+                    # Update the running stats
+                    self.rms_ret.update(targ_q)
 
             # Critic loss
             huber_td_errors = F.smooth_l1_loss(q, targ_q, reduction='none')
@@ -521,7 +570,29 @@ class Agent(object):
                 twin_loss = twin_huber_td_errors.mean()
 
             # Actor loss
-            actr_loss = -self.crit.QZ(state, self.actr.act(state)).mean()
+            _actr_loss = -self.crit.QZ(state, self.actr.act(state))
+
+        actr_loss = _actr_loss.mean()
+
+        # FIXME block
+
+        # state_ = Variable(state, requires_grad=True)
+        # action_ = self.actr.act(state_)
+        # qvalue = self.crit.QZ(state_, action_)
+        # grads = autograd.grad(outputs=qvalue,
+        #                       inputs=[state_, action_],
+        #                       only_inputs=True,
+        #                       grad_outputs=torch.ones(qvalue.size()).to(self.device),
+        #                       retain_graph=True,
+        #                       create_graph=True,
+        #                       allow_unused=False)
+        # grads_concat = torch.cat(list(grads), dim=-1)
+        # qgns = grads_concat.norm(2, dim=-1).pow(2)
+
+        # metrics['elapsed_steps'].append(torch.Tensor(batch['elapsed_steps']))
+        # metrics['qgns'].append(qgns)
+
+        # # FIXME block
 
         # Log metrics
         metrics['crit_loss'].append(crit_loss)
@@ -529,14 +600,9 @@ class Agent(object):
             metrics['twin_loss'].append(twin_loss)
         if self.hps.prioritized_replay:
             metrics['iws'].append(iws)
+        metrics['actr_loss'].append(actr_loss)
 
         if self.hps.kye_p:
-
-            # Compute gradient of the feature extractor for d_loss
-            self.actr_opt.zero_grad()
-            actr_loss.backward(retain_graph=True)
-            grads_actr_loss = self.actr.s_encoder.fc_block.fc.weight.grad.mean(dim=0)
-            self.actr_opt.zero_grad()
 
             # Sub-optimal potential re-definitions here
             # but easier to debut and with little over-head
@@ -554,9 +620,10 @@ class Agent(object):
                 next_state = next_state[indices, :]
                 action = action[indices, :]
 
-            aux_loss = F.smooth_l1_loss(
+            _aux_loss = F.smooth_l1_loss(
                 input=self.actr.auxo(_state),
-                target=self.get_reward(state, action, next_state)
+                target=self.get_reward(state, action, next_state),
+                reduction='none',
             )
             if self.hps.kye_mixing:
                 e_batch = next(iter(self.e_dataloader))  # get a minibatch of expert data
@@ -573,33 +640,50 @@ class Agent(object):
                     state_e = state_e[indices, :]
                     next_state_e = next_state_e[indices, :]
                     action_e = action_e[indices, :]
-                aux_loss += F.smooth_l1_loss(
+                _aux_loss += F.smooth_l1_loss(
                     input=self.actr.auxo(_state_e),
-                    target=self.get_reward(state_e, action_e, next_state_e)
+                    target=self.get_reward(state_e, action_e, next_state_e),
+                    reduction='none',
                 )
 
-            # Compute gradient of the feature exctractor for aux_loss
-            self.actr_opt.zero_grad()
-            aux_loss.backward(retain_graph=True)
-            grads_aux_loss = self.actr.s_encoder.fc_block.fc.weight.grad.mean(dim=0)
-            self.actr_opt.zero_grad()
-
-            # Calculate the angle between the two computed gradients
-            angle = torch.acos(torch.dot(grads_actr_loss, grads_aux_loss) /
-                               (torch.norm(grads_actr_loss) * torch.norm(grads_aux_loss)))
-            angle = angle.detach()
-            angle = angle / math.pi * 180.
-            # Log metrics
-            metrics['aux_loss'].append(aux_loss)
-            metrics['angle'].append(angle)
+            # Init collections of gradients
+            grads_a_list = []
+            grads_b_list = []
+            for i in range(_state.size(0)):
+                # Compute the gradients of the shared weights for the main task
+                grads_a = autograd.grad(outputs=[_actr_loss[i, ...]],
+                                        inputs=[self.actr.s_encoder.fc_block.fc.weight],
+                                        only_inputs=True,
+                                        grad_outputs=[torch.ones_like(_actr_loss[i, ...])],
+                                        retain_graph=True,
+                                        create_graph=True,
+                                        allow_unused=True)
+                # Compute the gradients of the shared weights for the auxiliary task
+                grads_b = autograd.grad(outputs=[_aux_loss[i, ...]],
+                                        inputs=[self.actr.s_encoder.fc_block.fc.weight],
+                                        only_inputs=True,
+                                        grad_outputs=[torch.ones_like(_aux_loss[i, ...])],
+                                        retain_graph=True,
+                                        create_graph=True,
+                                        allow_unused=True)
+                grads_a_list.append(grads_a[0])
+                grads_b_list.append(grads_b[0])
+            grads_a = torch.stack(grads_a_list, dim=0).sum(dim=-1)
+            grads_b = torch.stack(grads_b_list, dim=0).sum(dim=-1)
+            cos_sims = F.cosine_similarity(grads_a, grads_b).unsqueeze(-1)
+            cos_sims = cos_sims.detach()  # safety measure
+            metrics['cos_sim'].append(cos_sims.mean())
 
             # Assemble losses
-            aux_loss *= self.hps.kye_p_scale
-            actr_loss += aux_loss
-            # Log metrics
-            metrics['aux_loss_scaled'].append(aux_loss)
 
-        metrics['actr_loss'].append(actr_loss)
+            assert _aux_loss.shape == cos_sims.shape, "shape mismatch"
+            _aux_loss *= torch.max(torch.zeros_like(cos_sims), cos_sims)
+            _aux_loss *= self.hps.kye_p_scale
+
+            aux_loss = _aux_loss.mean()
+            metrics['aux_loss'].append(aux_loss)
+
+            actr_loss += aux_loss
 
         # Update parameters
         self.actr_opt.zero_grad()
@@ -646,6 +730,9 @@ class Agent(object):
             d_keys.append('obs1')
         else:
             d_keys.append('acs')
+
+        d_keys.extend(['elapsed_steps', 'max_episode_steps'])  # FIXME
+
         d_dataset = Dataset({k: batch[k] for k in d_keys})
         d_dataloader = DataLoader(
             d_dataset,
@@ -701,9 +788,9 @@ class Agent(object):
                 e_loss = F.binary_cross_entropy_with_logits(input=e_scores,
                                                             target=real_labels,
                                                             reduction='none')
-                p_e_loss = p_loss + e_loss
+                _p_e_loss = p_loss + e_loss  # leave different name
             # Average out over the batch
-            p_e_loss = p_e_loss.mean()
+            p_e_loss = _p_e_loss.mean()
 
             # Aggregated loss
             d_loss = p_e_loss + entropy_loss
@@ -711,25 +798,17 @@ class Agent(object):
             # Log metrics
             metrics['entropy_loss'].append(entropy_loss)
             metrics['p_e_loss'].append(p_e_loss)
+            metrics['disc_loss'].append(d_loss)
 
             if self.hps.grad_pen:
                 # Create gradient penalty loss (coefficient from the original paper)
-                grad_pen = 10. * self.grad_pen(p_input_a, p_input_b, e_input_a, e_input_b)
+                inputs = [p_input_a, p_input_b, e_input_a, e_input_b]
+                grad_pen = 10. * self.grad_pen(*inputs)
                 d_loss += grad_pen
                 # Log metrics
                 metrics['grad_pen'].append(grad_pen)
 
             if self.hps.kye_d:
-
-                # Compute gradient of the feature extractor for d_loss
-                self.disc_opt.zero_grad()
-                d_loss.backward(retain_graph=True)
-                if self.hps.spectral_norm:
-                    grads_d_loss = self.disc.d_encoder.fc_block.fc.weight_orig.grad
-                else:
-                    grads_d_loss = self.disc.d_encoder.fc_block.fc.weight.grad
-                grads_d_loss = grads_d_loss.mean(dim=0)
-                self.disc_opt.zero_grad()
 
                 # Create and add auxiliary loss
                 if self.hps.wrap_absorb:
@@ -739,9 +818,10 @@ class Agent(object):
                     p_input_b = p_input_b[p_indices, :]
                 else:
                     _p_input_a = p_input_a
-                aux_loss = F.smooth_l1_loss(
+                _aux_loss = F.smooth_l1_loss(
                     input=self.disc.auxo(p_input_a, p_input_b),
-                    target=self.actr.act(_p_input_a)
+                    target=self.actr.act(_p_input_a),
+                    reduction='none',
                 )
                 if self.hps.kye_mixing:
                     if self.hps.wrap_absorb:
@@ -751,37 +831,55 @@ class Agent(object):
                         e_input_b = e_input_b[e_indices, :]
                     else:
                         _e_input_a = e_input_a
-                    aux_loss += F.smooth_l1_loss(
+                    _aux_loss += F.smooth_l1_loss(
                         input=self.disc.auxo(e_input_a, e_input_b),
-                        target=self.actr.act(_e_input_a)
+                        target=self.actr.act(_e_input_a),
+                        reduction='none',
                     )
+                _aux_loss = _aux_loss.mean(dim=-1, keepdim=True)
 
-                # Compute gradient of the feature exctractor for aux_loss
-                self.disc_opt.zero_grad()
-                aux_loss.backward(retain_graph=True)
-                if self.hps.spectral_norm:
-                    grads_aux_loss = self.disc.d_encoder.fc_block.fc.weight_orig.grad
-                else:
-                    grads_aux_loss = self.disc.d_encoder.fc_block.fc.weight.grad
-                grads_aux_loss = grads_aux_loss.mean(dim=0)
-                self.disc_opt.zero_grad()
-
-                # Calculate the angle between the two computed gradients
-                angle = torch.acos(torch.dot(grads_d_loss, grads_aux_loss) /
-                                   (torch.norm(grads_d_loss) * torch.norm(grads_aux_loss)))
-                angle = angle.detach()
-                angle = angle / math.pi * 180.
-                # Log metrics
-                metrics['aux_loss'].append(aux_loss)
-                metrics['angle'].append(angle)
+                # Init collections of gradients
+                grads_a_list = []
+                grads_b_list = []
+                for i in range(_p_input_a.size(0)):
+                    # Compute the gradients of the shared weights for the main task
+                    if self.hps.spectral_norm:
+                        inputs = self.disc.d_encoder.fc_block.fc.weight_orig
+                    else:
+                        inputs = self.disc.d_encoder.fc_block.fc.weight
+                    grads_a = autograd.grad(outputs=[_p_e_loss[i, ...]],  # without entropy loss
+                                            inputs=[inputs],
+                                            only_inputs=True,
+                                            grad_outputs=[torch.ones_like(_p_e_loss[i, ...])],
+                                            retain_graph=True,
+                                            create_graph=True,
+                                            allow_unused=True)
+                    # Compute the gradients of the shared weights for the auxiliary task
+                    grads_b = autograd.grad(outputs=[_aux_loss[i, ...]],
+                                            inputs=[inputs],
+                                            only_inputs=True,
+                                            grad_outputs=[torch.ones_like(_aux_loss[i, ...])],
+                                            retain_graph=True,
+                                            create_graph=True,
+                                            allow_unused=True)
+                    grads_a_list.append(grads_a[0])
+                    grads_b_list.append(grads_b[0])
+                grads_a = torch.stack(grads_a_list, dim=0).sum(dim=-1)
+                grads_b = torch.stack(grads_b_list, dim=0).sum(dim=-1)
+                cos_sims = F.cosine_similarity(grads_a, grads_b).unsqueeze(-1)
+                cos_sims = cos_sims.detach()  # safety measure
+                metrics['cos_sim'].append(cos_sims.mean())
 
                 # Assemble losses
-                aux_loss *= self.hps.kye_d_scale
-                d_loss += aux_loss
-                # Log metrics
-                metrics['aux_loss_scaled'].append(aux_loss)
 
-            metrics['disc_loss'].append(d_loss)
+                assert _aux_loss.shape == cos_sims.shape, "shape mismatch"
+                _aux_loss *= torch.max(torch.zeros_like(cos_sims), cos_sims)
+                _aux_loss *= self.hps.kye_d_scale
+
+                aux_loss = _aux_loss.mean()
+                metrics['aux_loss'].append(aux_loss)
+
+                d_loss += aux_loss
 
             # Update parameters
             self.disc_opt.zero_grad()

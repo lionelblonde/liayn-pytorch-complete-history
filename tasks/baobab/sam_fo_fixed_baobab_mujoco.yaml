@@ -32,7 +32,6 @@ parameters:
   wd_scale: 0.
 
   # Algorithm
-  clip_obs: true
   rollout_len: 2
   batch_size: 64
   gamma: 0.99
@@ -43,6 +42,8 @@ parameters:
   targ_up_freq: 100
   n_step_returns: true
   lookahead: 10
+  ret_norm: false
+  popart: false
 
   # TD3
   clipped_double: true

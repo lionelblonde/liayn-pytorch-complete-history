@@ -211,3 +211,9 @@ class RunMoms(object):
         mean = torch.Tensor(self.mean).to(x)
         std = torch.Tensor(self.std).to(x)
         return (x - mean) / std
+
+    def destandardize(self, x):
+        assert isinstance(x, torch.Tensor)
+        mean = torch.Tensor(self.mean).to(x)
+        std = torch.Tensor(self.std).to(x)
+        return (x * std) + mean

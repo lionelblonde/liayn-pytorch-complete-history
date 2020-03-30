@@ -36,17 +36,20 @@ def plot(args):
     dest_dir = "plots/batchplots_{}".format(hash_.hexdigest()[:20])
     os.makedirs(dest_dir, exist_ok=False)
     # Palette
+    curves = [
+        (39, 181, 234),
+        (107, 64, 216),
+        (239, 65, 70),
+        (244, 172, 54),
+        (104, 222, 122),
+    ]
     palette = {
         'grid': (231, 234, 236),
         'face': (245, 249, 249),
         'axes': (200, 200, 208),
         'font': (108, 108, 126),
         'symbol': (64, 68, 82),
-        'curves': [(244, 172, 54),
-                   (239, 65, 70),
-                   (104, 222, 122),
-                   (39, 181, 234),
-                   (107, 64, 216)],
+        'curves': curves,
     }
     for k, v in palette.items():
         if k != 'curves':
@@ -90,7 +93,7 @@ def plot(args):
             # Extract the expriment name from the file's full path
             experiment_name = fname.split('/')[-2]
             # Remove what comes after the uuid
-            key = experiment_name.split('.')[0] + "." + experiment_name.split('.')[2]
+            key = experiment_name.split('.')[0] + "." + experiment_name.split('.')[1]
             env = experiment_name.split('.')[1]
             experiment_map[env].append(key)
             # Load data from the CSV file

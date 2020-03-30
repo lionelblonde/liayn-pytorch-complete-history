@@ -40,7 +40,6 @@ def argparser(description="DDPG Experiment"):
     parser.add_argument('--wd_scale', help='weight decay scale', type=float, default=0.001)
 
     # Algorithm
-    boolean_flag(parser, 'clip_obs', default=False)
     parser.add_argument('--rollout_len', help='number of interactions per iteration',
                         type=int, default=2)
     parser.add_argument('--batch_size', help='minibatch size', type=int, default=128)
@@ -52,6 +51,8 @@ def argparser(description="DDPG Experiment"):
     parser.add_argument('--targ_up_freq', type=int, default=100, help='hard target nets update')
     boolean_flag(parser, 'n_step_returns', default=True)
     parser.add_argument('--lookahead', help='num lookahead steps', type=int, default=10)
+    boolean_flag(parser, 'ret_norm', default=False)
+    boolean_flag(parser, 'popart', default=False)
 
     # TD3
     boolean_flag(parser, 'clipped_double', default=False)
