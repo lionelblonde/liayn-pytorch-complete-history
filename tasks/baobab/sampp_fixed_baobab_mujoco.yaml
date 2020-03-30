@@ -82,9 +82,9 @@ parameters:
 
   # KYE
   kye_p: true
-  kye_p_scale: 0.2
+  kye_p_scale: 1.
   kye_d: false
-  kye_d_scale: 0.2
+  kye_d_scale: 1.
   kye_mixing: false
 
   # PU

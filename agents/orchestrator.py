@@ -434,15 +434,15 @@ def learn(args,
                        'crit_lrnow': np.array(lrnows['crit']),
                        'disc_loss': np.mean(d['disc_losses'])},
                       step=timesteps_so_far)
+            if agent.hps.clipped_double:
+                wandb.log({'twin_loss': np.mean(d['twin_losses']),
+                           'twin_lrnow': np.array(lrnows['twin'])},
+                          step=timesteps_so_far)
             if agent.hps.kye_p:
                 wandb.log({'cos_sim_p': np.mean(d['cos_sims_p'])},
                           step=timesteps_so_far)
             if agent.hps.kye_d:
                 wandb.log({'cos_sim_d': np.mean(d['cos_sims_d'])},
-                          step=timesteps_so_far)
-            if agent.hps.clipped_double:
-                wandb.log({'twin_loss': np.mean(d['twin_losses']),
-                           'twin_lrnow': np.array(lrnows['twin'])},
                           step=timesteps_so_far)
 
             if (iters_so_far - 1) % args.eval_frequency == 0:

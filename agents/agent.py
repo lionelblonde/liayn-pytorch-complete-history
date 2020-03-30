@@ -615,7 +615,7 @@ class Agent(object):
             action = torch.Tensor(batch['acs']).to(self.device)
             if self.hps.wrap_absorb:
                 _, indices = self.remove_absorbing(state)
-                _state = _state[indices]
+                _state = _state[indices, :]
                 state = state[indices, :]
                 next_state = next_state[indices, :]
                 action = action[indices, :]
@@ -625,26 +625,6 @@ class Agent(object):
                 target=self.get_reward(state, action, next_state),
                 reduction='none',
             )
-            if self.hps.kye_mixing:
-                e_batch = next(iter(self.e_dataloader))  # get a minibatch of expert data
-                if self.hps.wrap_absorb:
-                    _state_e = e_batch['obs0_orig']
-                else:
-                    _state_e = e_batch['obs0']
-                state_e = e_batch['obs0']
-                next_state_e = e_batch['obs1']
-                action_e = e_batch['acs']
-                if self.hps.wrap_absorb:
-                    _, indices = self.remove_absorbing(state_e)
-                    _state_e = _state_e[indices]
-                    state_e = state_e[indices, :]
-                    next_state_e = next_state_e[indices, :]
-                    action_e = action_e[indices, :]
-                _aux_loss += F.smooth_l1_loss(
-                    input=self.actr.auxo(_state_e),
-                    target=self.get_reward(state_e, action_e, next_state_e),
-                    reduction='none',
-                )
 
             # Init collections of gradients
             grads_a_list = []
@@ -682,6 +662,27 @@ class Agent(object):
 
             aux_loss = _aux_loss.mean()
             metrics['aux_loss'].append(aux_loss)
+
+            if self.hps.kye_mixing:
+                # Add mixing auxiliary loss
+                e_batch = next(iter(self.e_dataloader))  # get a minibatch of expert data
+                if self.hps.wrap_absorb:
+                    _state_e = e_batch['obs0_orig']
+                else:
+                    _state_e = e_batch['obs0']
+                state_e = e_batch['obs0']
+                next_state_e = e_batch['obs1']
+                action_e = e_batch['acs']
+                if self.hps.wrap_absorb:
+                    _, indices = self.remove_absorbing(state_e)
+                    _state_e = _state_e[indices, :]
+                    state_e = state_e[indices, :]
+                    next_state_e = next_state_e[indices, :]
+                    action_e = action_e[indices, :]
+                aux_loss += F.smooth_l1_loss(
+                    input=self.actr.auxo(_state_e),
+                    target=self.get_reward(state_e, action_e, next_state_e),
+                )
 
             actr_loss += aux_loss
 
@@ -802,8 +803,7 @@ class Agent(object):
 
             if self.hps.grad_pen:
                 # Create gradient penalty loss (coefficient from the original paper)
-                inputs = [p_input_a, p_input_b, e_input_a, e_input_b]
-                grad_pen = 10. * self.grad_pen(*inputs)
+                grad_pen = 10. * self.grad_pen(p_input_a, p_input_b, e_input_a, e_input_b)
                 d_loss += grad_pen
                 # Log metrics
                 metrics['grad_pen'].append(grad_pen)
@@ -823,19 +823,6 @@ class Agent(object):
                     target=self.actr.act(_p_input_a),
                     reduction='none',
                 )
-                if self.hps.kye_mixing:
-                    if self.hps.wrap_absorb:
-                        _, e_indices = self.remove_absorbing(e_input_a)
-                        _e_input_a = e_input_a[e_indices, 0:-1]
-                        e_input_a = e_input_a[e_indices, :]
-                        e_input_b = e_input_b[e_indices, :]
-                    else:
-                        _e_input_a = e_input_a
-                    _aux_loss += F.smooth_l1_loss(
-                        input=self.disc.auxo(e_input_a, e_input_b),
-                        target=self.actr.act(_e_input_a),
-                        reduction='none',
-                    )
                 _aux_loss = _aux_loss.mean(dim=-1, keepdim=True)
 
                 # Init collections of gradients
@@ -878,6 +865,20 @@ class Agent(object):
 
                 aux_loss = _aux_loss.mean()
                 metrics['aux_loss'].append(aux_loss)
+
+                if self.hps.kye_mixing:
+                    # Add mixing auxiliary loss
+                    if self.hps.wrap_absorb:
+                        _, e_indices = self.remove_absorbing(e_input_a)
+                        _e_input_a = e_input_a[e_indices, 0:-1]
+                        e_input_a = e_input_a[e_indices, :]
+                        e_input_b = e_input_b[e_indices, :]
+                    else:
+                        _e_input_a = e_input_a
+                    aux_loss += F.smooth_l1_loss(
+                        input=self.disc.auxo(e_input_a, e_input_b),
+                        target=self.actr.act(_e_input_a),
+                    )
 
                 d_loss += aux_loss
 
