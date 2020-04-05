@@ -626,13 +626,18 @@ class Agent(object):
                 reduction='none',
             )
 
-            # Init collections of gradients
+            inputs = []
+            for n, p in self.actr.s_encoder.named_parameters():
+                if p.requires_grad:
+                    if len(p.shape) == 1:  # ignore the bias vectors
+                        continue
+                    inputs.append(p)
             grads_a_list = []
             grads_b_list = []
             for i in range(_state.size(0)):
                 # Compute the gradients of the shared weights for the main task
                 grads_a = autograd.grad(outputs=[_actr_loss[i, ...]],
-                                        inputs=[self.actr.s_encoder.fc_block.fc.weight],
+                                        inputs=[*inputs],
                                         only_inputs=True,
                                         grad_outputs=[torch.ones_like(_actr_loss[i, ...])],
                                         retain_graph=True,
@@ -640,22 +645,25 @@ class Agent(object):
                                         allow_unused=True)
                 # Compute the gradients of the shared weights for the auxiliary task
                 grads_b = autograd.grad(outputs=[_aux_loss[i, ...]],
-                                        inputs=[self.actr.s_encoder.fc_block.fc.weight],
+                                        inputs=[*inputs],
                                         only_inputs=True,
                                         grad_outputs=[torch.ones_like(_aux_loss[i, ...])],
                                         retain_graph=True,
                                         create_graph=True,
                                         allow_unused=True)
-                grads_a_list.append(grads_a[0])
-                grads_b_list.append(grads_b[0])
-            grads_a = torch.stack(grads_a_list, dim=0).sum(dim=-1)
-            grads_b = torch.stack(grads_b_list, dim=0).sum(dim=-1)
+                grads_a = torch.cat(list(grads_a), dim=-1)
+                grads_b = torch.cat(list(grads_b), dim=-1)
+                grads_a_list.append(grads_a)
+                grads_b_list.append(grads_b)
+            grads_a = torch.stack(grads_a_list, dim=0)
+            grads_b = torch.stack(grads_b_list, dim=0)
             cos_sims = F.cosine_similarity(grads_a, grads_b).unsqueeze(-1)
             cos_sims = cos_sims.detach()  # safety measure
             metrics['cos_sim'].append(cos_sims.mean())
 
             # Assemble losses
 
+            cos_sims = cos_sims.mean(dim=1)
             assert _aux_loss.shape == cos_sims.shape, "shape mismatch"
             _aux_loss *= torch.max(torch.zeros_like(cos_sims), cos_sims)
             _aux_loss *= self.hps.kye_p_scale
@@ -803,7 +811,8 @@ class Agent(object):
 
             if self.hps.grad_pen:
                 # Create gradient penalty loss (coefficient from the original paper)
-                grad_pen = 10. * self.grad_pen(p_input_a, p_input_b, e_input_a, e_input_b)
+                grad_pen, gradgrads = self.grad_pen(p_input_a, p_input_b, e_input_a, e_input_b)
+                grad_pen *= 10.
                 d_loss += grad_pen
                 # Log metrics
                 metrics['grad_pen'].append(grad_pen)
@@ -825,17 +834,18 @@ class Agent(object):
                 )
                 _aux_loss = _aux_loss.mean(dim=-1, keepdim=True)
 
-                # Init collections of gradients
+                inputs = []
+                for n, p in self.disc.d_encoder.named_parameters():
+                    if p.requires_grad:
+                        if len(p.shape) == 1:  # ignore the bias vectors
+                            continue
+                        inputs.append(p)
                 grads_a_list = []
                 grads_b_list = []
                 for i in range(_p_input_a.size(0)):
                     # Compute the gradients of the shared weights for the main task
-                    if self.hps.spectral_norm:
-                        inputs = self.disc.d_encoder.fc_block.fc.weight_orig
-                    else:
-                        inputs = self.disc.d_encoder.fc_block.fc.weight
                     grads_a = autograd.grad(outputs=[_p_e_loss[i, ...]],  # without entropy loss
-                                            inputs=[inputs],
+                                            inputs=[*inputs],
                                             only_inputs=True,
                                             grad_outputs=[torch.ones_like(_p_e_loss[i, ...])],
                                             retain_graph=True,
@@ -843,22 +853,31 @@ class Agent(object):
                                             allow_unused=True)
                     # Compute the gradients of the shared weights for the auxiliary task
                     grads_b = autograd.grad(outputs=[_aux_loss[i, ...]],
-                                            inputs=[inputs],
+                                            inputs=[*inputs],
                                             only_inputs=True,
                                             grad_outputs=[torch.ones_like(_aux_loss[i, ...])],
                                             retain_graph=True,
                                             create_graph=True,
                                             allow_unused=True)
-                    grads_a_list.append(grads_a[0])
-                    grads_b_list.append(grads_b[0])
-                grads_a = torch.stack(grads_a_list, dim=0).sum(dim=-1)
-                grads_b = torch.stack(grads_b_list, dim=0).sum(dim=-1)
+                    grads_a = torch.cat(list(grads_a), dim=-1)
+                    grads_b = torch.cat(list(grads_b), dim=-1)
+                    grads_a_list.append(grads_a)
+                    grads_b_list.append(grads_b)
+                grads_a = torch.stack(grads_a_list, dim=0)
+                grads_b = torch.stack(grads_b_list, dim=0)
                 cos_sims = F.cosine_similarity(grads_a, grads_b).unsqueeze(-1)
                 cos_sims = cos_sims.detach()  # safety measure
                 metrics['cos_sim'].append(cos_sims.mean())
 
+                # FIXME
+                grad_pen_cos_sims = F.cosine_similarity(grads_a.mean(dim=0).unsqueeze(0),
+                                                        gradgrads.unsqueeze(0))
+                metrics['grad_pen_cos_sim'].append(grad_pen_cos_sims.mean())
+                # FIXME
+
                 # Assemble losses
 
+                cos_sims = cos_sims.mean(dim=1)
                 assert _aux_loss.shape == cos_sims.shape, "shape mismatch"
                 _aux_loss *= torch.max(torch.zeros_like(cos_sims), cos_sims)
                 _aux_loss *= self.hps.kye_d_scale
@@ -908,14 +927,35 @@ class Agent(object):
         grads = autograd.grad(outputs=score,
                               inputs=[input_a_i, input_b_i],
                               only_inputs=True,
-                              grad_outputs=torch.ones(score.size()).to(self.device),
+                              grad_outputs=[torch.ones_like(score)],
                               retain_graph=True,
                               create_graph=True,
                               allow_unused=self.hps.state_only)
         assert len(list(grads)) == 2, "length must be exactly 2"
         # Return the gradient penalty (try to induce 1-Lipschitzness)
-        grads_concat = torch.cat(list(grads), dim=-1)
-        return (grads_concat.norm(2, dim=-1) - 1.).pow(2).mean()
+        grads = torch.cat(list(grads), dim=-1)
+        _grad_pen = (grads.norm(2, dim=-1) - 1.).pow(2)
+        grad_pen = _grad_pen.mean()
+
+        inputs = []
+        for n, p in self.disc.d_encoder.named_parameters():
+            if p.requires_grad:
+                if len(p.shape) == 1:  # ignore the bias vectors
+                    continue
+                inputs.append(p)
+
+        gradgrads = autograd.grad(
+            outputs=_grad_pen,
+            inputs=[*inputs],
+            only_inputs=True,
+            grad_outputs=[torch.ones_like(_grad_pen)],
+            retain_graph=True,
+            create_graph=True,
+            allow_unused=self.hps.state_only,
+        )
+        gradgrads = torch.cat(list(gradgrads), dim=-1)
+
+        return grad_pen, gradgrads
 
     def get_reward(self, state, action, next_state):
         # Define the discriminator inputs

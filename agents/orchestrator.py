@@ -367,6 +367,7 @@ def learn(args,
                     d['disc_losses'].append(metrics['disc_loss'])
                     if agent.hps.kye_d:
                         d['cos_sims_d'].append(metrics['cos_sim'])
+                        d['grad_pen_cos_sims_d'].append(metrics['grad_pen_cos_sim'])  # FIXME
 
         if eval_env is not None:
             assert rank == 0, "non-zero rank mpi worker forbidden here"
@@ -444,6 +445,8 @@ def learn(args,
             if agent.hps.kye_d:
                 wandb.log({'cos_sim_d': np.mean(d['cos_sims_d'])},
                           step=timesteps_so_far)
+                wandb.log({'grad_pen_cos_sim_d': np.mean(d['grad_pen_cos_sims_d'])},
+                          step=timesteps_so_far)  # FIXME
 
             if (iters_so_far - 1) % args.eval_frequency == 0:
                 wandb.log({'eval_len': np.mean(d['eval_len']),
