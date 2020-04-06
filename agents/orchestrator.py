@@ -52,9 +52,6 @@ def rollout_generator(env, agent, rollout_len):
                     "obs0_orig": ob,
                     "acs_orig": ac,
                     "obs1_orig": new_ob,
-                    # Extra stats
-                    "elapsed_steps": env._elapsed_steps,
-                    "max_episode_steps": env._max_episode_steps,
                 }
                 agent.store_transition(transition)
                 # Add absorbing transition
@@ -72,9 +69,6 @@ def rollout_generator(env, agent, rollout_len):
                     "obs0_orig": ob,  # from previous transition, with reward eval on absorbing
                     "acs_orig": ac,  # from previous transition, with reward eval on absorbing
                     "obs1_orig": new_ob,  # from previous transition, with reward eval on absorbing
-                    # Extra stats
-                    "elapsed_steps": env._elapsed_steps,
-                    "max_episode_steps": env._max_episode_steps,
                 }
                 agent.store_transition(transition_a)
             else:
@@ -90,9 +84,6 @@ def rollout_generator(env, agent, rollout_len):
                     "obs0_orig": ob,
                     "acs_orig": ac,
                     "obs1_orig": new_ob,
-                    # Extra stats
-                    "elapsed_steps": env._elapsed_steps,
-                    "max_episode_steps": env._max_episode_steps,
                 }
                 agent.store_transition(transition)
         else:
@@ -104,9 +95,6 @@ def rollout_generator(env, agent, rollout_len):
                 "obs1": new_ob,
                 "rews": rew,
                 "dones1": done,
-                # Extra stats
-                "elapsed_steps": env._elapsed_steps,
-                "max_episode_steps": env._max_episode_steps,
             }
             agent.store_transition(transition)
 
@@ -263,13 +251,6 @@ def learn(args,
     d = defaultdict(list)
     b_eval = deque(maxlen=10)
 
-    # # FIXME block
-
-    # elapsed_steps_list = []
-    # qgns_list = []
-
-    # # FIXME block
-
     # Set up model save directory
     if rank == 0:
         ckpt_dir = osp.join(args.checkpoint_dir, experiment_name)
@@ -351,13 +332,6 @@ def learn(args,
                     if agent.hps.kye_p:
                         d['cos_sims_p'].append(metrics['cos_sim'])
 
-                    # # FIXME block
-
-                    # elapsed_steps_list.append(metrics['elapsed_steps'])
-                    # qgns_list.append(metrics['qgns'])
-
-                    # # FIXME block
-
                 for _ in range(agent.hps.d_steps):
                     # Sample a batch of transitions from the replay buffer
                     batch = agent.sample_batch()
@@ -367,7 +341,6 @@ def learn(args,
                     d['disc_losses'].append(metrics['disc_loss'])
                     if agent.hps.kye_d:
                         d['cos_sims_d'].append(metrics['cos_sim'])
-                        d['grad_pen_cos_sims_d'].append(metrics['grad_pen_cos_sim'])  # FIXME
 
         if eval_env is not None:
             assert rank == 0, "non-zero rank mpi worker forbidden here"
@@ -445,25 +418,12 @@ def learn(args,
             if agent.hps.kye_d:
                 wandb.log({'cos_sim_d': np.mean(d['cos_sims_d'])},
                           step=timesteps_so_far)
-                wandb.log({'grad_pen_cos_sim_d': np.mean(d['grad_pen_cos_sims_d'])},
-                          step=timesteps_so_far)  # FIXME
 
             if (iters_so_far - 1) % args.eval_frequency == 0:
                 wandb.log({'eval_len': np.mean(d['eval_len']),
                            'eval_env_ret': np.mean(d['eval_env_ret']),
                            'avg_eval_env_ret': np.mean(b_eval)},
                           step=timesteps_so_far)
-
-            # # FIXME block
-
-            # if (iters_so_far - 1) % 100 == 0:
-            #     import matplotlib.pyplot as plt
-            #     plt.scatter(np.array(elapsed_steps_list), np.array(qgns_list))
-            #     plt.savefig("grad{}.png".format(iters_so_far))
-            #     elapsed_steps_list = []
-            #     qgns_list = []
-
-            # # FIXME block
 
         # Clear the iteration's running stats
         d.clear()

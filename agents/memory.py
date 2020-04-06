@@ -120,11 +120,6 @@ class ReplayBuffer(object):
             if 'acs_orig' in la_transitions.keys():
                 la_batch['acs_orig'].append(la_transitions['acs_orig'][0])
 
-            if 'elapsed_steps' in la_transitions.keys():
-                la_batch['elapsed_steps'].append(la_transitions['elapsed_steps'][0])
-            if 'max_episode_steps' in la_transitions.keys():
-                la_batch['max_episode_steps'].append(la_transitions['max_episode_steps'][0])
-
             # # This block: sanity checker
             # from helpers import logger
             # logger.info("\n\n")
