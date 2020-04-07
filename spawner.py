@@ -32,13 +32,15 @@ CONDA = CONFIG['resources']['conda_env']
 TYPE = 'sweep' if args.sweep else 'fixed'
 # Write out the boolean arguments (using the 'boolean_flag' function)
 BOOL_ARGS = ['cuda', 'render', 'record', 'with_scheduler',
+             'layer_norm',
              'prioritized_replay', 'ranked', 'unreal',
              'n_step_returns', 'ret_norm', 'popart',
              'clipped_double', 'targ_actor_smoothing',
              'use_c51', 'use_qr',
-             'state_only', 'minimax_only', 'spectral_norm', 'grad_pen', 'wrap_absorb',
+             'state_only', 'minimax_only', 'spectral_norm', 'grad_pen', 'one_sided_pen',
+             'wrap_absorb', 'd_batch_norm',
              'historical_patching',
-             'kye_p', 'kye_d', 'kye_mixing',
+             'kye_p', 'kye_d', 'kye_mixing', 'adaptive_aux_scaling',
              'use_purl']
 
 # Create the list of environments from the indicated benchmark
@@ -161,6 +163,9 @@ def get_hps(sweep):
             'eval_steps_per_iter': CONFIG['parameters'].get('eval_steps_per_iter', 10),
             'eval_frequency': CONFIG['parameters'].get('eval_frequency', 10),
 
+            # Model
+            'layer_norm': CONFIG['parameters']['layer_norm'],
+
             # Optimization
             'actor_lr': float(np.random.choice([1e-4, 3e-4])),
             'critic_lr': float(np.random.choice([1e-4, 3e-4])),
@@ -216,6 +221,7 @@ def get_hps(sweep):
             'ent_reg_scale': CONFIG['parameters'].get('ent_reg_scale', 0.001),
             'spectral_norm': CONFIG['parameters'].get('spectral_norm', True),
             'grad_pen': CONFIG['parameters'].get('grad_pen', True),
+            'one_sided_pen': CONFIG['parameters'].get('one_sided_pen', True),
             'historical_patching': CONFIG['parameters'].get('historical_patching', True),
             'fake_ls_type': np.random.choice(['"random-uniform_0.7_1.2"',
                                               '"soft_labels_0.1"',
@@ -225,6 +231,7 @@ def get_hps(sweep):
                                               '"none"']),
             'syn_rew_scale': CONFIG['parameters'].get('syn_rew_scale', 1.0),
             'wrap_absorb': CONFIG['parameters'].get('wrap_absorb', False),
+            'd_batch_norm': CONFIG['parameters'].get('d_batch_norm', False),
 
             # KYE
             'kye_p': CONFIG['parameters'].get('kye_p', False),
@@ -232,6 +239,7 @@ def get_hps(sweep):
             'kye_d': CONFIG['parameters'].get('kye_d', False),
             'kye_d_scale': np.random.choice([0.01, 0.1, 0.5]),
             'kye_mixing': CONFIG['parameters'].get('kye_mixing', False),
+            'adaptive_aux_scaling': CONFIG['parameters'].get('adaptive_aux_scaling', False),
 
             # PU
             'use_purl': CONFIG['parameters'].get('use_purl', False),
@@ -258,6 +266,9 @@ def get_hps(sweep):
             'training_steps_per_iter': CONFIG['parameters'].get('training_steps_per_iter', 2),
             'eval_steps_per_iter': CONFIG['parameters'].get('eval_steps_per_iter', 10),
             'eval_frequency': CONFIG['parameters'].get('eval_frequency', 10),
+
+            # Model
+            'layer_norm': CONFIG['parameters']['layer_norm'],
 
             # Optimization
             'actor_lr': float(CONFIG['parameters'].get('actor_lr', 3e-4)),
@@ -311,11 +322,13 @@ def get_hps(sweep):
             'ent_reg_scale': CONFIG['parameters'].get('ent_reg_scale', 0.001),
             'spectral_norm': CONFIG['parameters'].get('spectral_norm', True),
             'grad_pen': CONFIG['parameters'].get('grad_pen', True),
+            'one_sided_pen': CONFIG['parameters'].get('one_sided_pen', True),
             'historical_patching': CONFIG['parameters'].get('historical_patching', True),
             'fake_ls_type': CONFIG['parameters'].get('fake_ls_type', 'none'),
             'real_ls_type': CONFIG['parameters'].get('real_ls_type', 'random-uniform_0.7_1.2'),
             'syn_rew_scale': CONFIG['parameters'].get('syn_rew_scale', 1.0),
             'wrap_absorb': CONFIG['parameters'].get('wrap_absorb', False),
+            'd_batch_norm': CONFIG['parameters'].get('d_batch_norm', False),
 
             # KYE
             'kye_p': CONFIG['parameters'].get('kye_p', False),
@@ -323,6 +336,7 @@ def get_hps(sweep):
             'kye_d': CONFIG['parameters'].get('kye_d', False),
             'kye_d_scale': CONFIG['parameters'].get('kye_d_scale', 0.1),
             'kye_mixing': CONFIG['parameters'].get('kye_mixing', False),
+            'adaptive_aux_scaling': CONFIG['parameters'].get('adaptive_aux_scaling', False),
 
             # PU
             'use_purl': CONFIG['parameters'].get('use_purl', False),

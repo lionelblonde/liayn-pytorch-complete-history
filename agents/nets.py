@@ -56,8 +56,9 @@ class Discriminator(nn.Module):
         self.hps = hps
         self.leak = 0.1
         apply_sn = snwrap(use_sn=self.hps.spectral_norm)
-        # Define observation whitening
-        self.rms_obs = RunMoms(shape=env.observation_space.shape, use_mpi=True)
+        if self.hps.d_batch_norm:
+            # Define observation whitening
+            self.rms_obs = RunMoms(shape=env.observation_space.shape, use_mpi=True)
         # Define the input dimension
         in_dim = ob_dim
         if self.hps.state_only:
@@ -65,13 +66,13 @@ class Discriminator(nn.Module):
         else:
             in_dim += ac_dim
         # Assemble the layers and output heads
-        self.d_encoder = nn.Sequential(OrderedDict([
+        self.fc_stack = nn.Sequential(OrderedDict([
             ('fc_block', nn.Sequential(OrderedDict([
                 ('fc', apply_sn(nn.Linear(in_dim, 100))),
                 ('nl', nn.LeakyReLU(negative_slope=self.leak)),
             ]))),
         ]))
-        self.d_decoder = nn.Sequential(OrderedDict([
+        self.d_fc_stack = nn.Sequential(OrderedDict([
             ('fc_block', nn.Sequential(OrderedDict([
                 ('fc', apply_sn(nn.Linear(100, 100))),
                 ('nl', nn.LeakyReLU(negative_slope=self.leak)),
@@ -80,20 +81,20 @@ class Discriminator(nn.Module):
         self.d_head = nn.Linear(100, 1)
         if self.hps.kye_d:
             assert self.hps.state_only, "only allowed in the state-only setting"
-            self.a_decoder = nn.Sequential(OrderedDict([
+            self.a_fc_stack = nn.Sequential(OrderedDict([
                 ('fc_block', nn.Sequential(OrderedDict([
                     ('fc', nn.Linear(100, 100)),
-                    ('ln', nn.LayerNorm(100)),
+                    ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(100)),
                     ('nl', nn.ReLU()),
                 ]))),
             ]))
             self.a_head = nn.Linear(100, env.action_space.shape[0])  # always original ac_dim
         # Perform initialization
-        self.d_encoder.apply(init(weight_scale=math.sqrt(2) / math.sqrt(1 + self.leak**2)))
-        self.d_decoder.apply(init(weight_scale=math.sqrt(2) / math.sqrt(1 + self.leak**2)))
+        self.fc_stack.apply(init(weight_scale=math.sqrt(2) / math.sqrt(1 + self.leak**2)))
+        self.d_fc_stack.apply(init(weight_scale=math.sqrt(2) / math.sqrt(1 + self.leak**2)))
         self.d_head.apply(init(weight_scale=0.01))
         if self.hps.kye_d:
-            self.a_decoder.apply(init(weight_scale=math.sqrt(2)))
+            self.a_fc_stack.apply(init(weight_scale=math.sqrt(2)))
             self.a_head.apply(init(weight_scale=0.01))
 
     def D(self, input_a, input_b):
@@ -105,30 +106,35 @@ class Discriminator(nn.Module):
         return out[1]  # aux
 
     def forward(self, input_a, input_b):
-        # Apply normalization
-        if self.hps.wrap_absorb:
-            # Normalize state
-            input_a_ = input_a.clone()[:, 0:-1]
-            input_a_ = torch.clamp(self.rms_obs.standardize(input_a_), -5., 5.)
-            input_a = torch.cat([input_a_, input_a[:, -1].unsqueeze(-1)], dim=-1)
-            if self.hps.state_only:
-                # Normalize next state
-                input_b_ = input_b.clone()[:, 0:-1]
-                input_b_ = torch.clamp(self.rms_obs.standardize(input_b_), -5., 5.)
-                input_b = torch.cat([input_b_, input_b[:, -1].unsqueeze(-1)], dim=-1)
+        if self.hps.d_batch_norm:
+            # Apply normalization
+            if self.hps.wrap_absorb:
+                # Normalize state
+                input_a_ = input_a.clone()[:, 0:-1]
+                input_a_ = torch.clamp(self.rms_obs.standardize(input_a_), -5., 5.)
+                input_a = torch.cat([input_a_, input_a[:, -1].unsqueeze(-1)], dim=-1)
+                if self.hps.state_only:
+                    # Normalize next state
+                    input_b_ = input_b.clone()[:, 0:-1]
+                    input_b_ = torch.clamp(self.rms_obs.standardize(input_b_), -5., 5.)
+                    input_b = torch.cat([input_b_, input_b[:, -1].unsqueeze(-1)], dim=-1)
+            else:
+                # Normalize state
+                input_a = torch.clamp(self.rms_obs.standardize(input_a), -5., 5.)
+                if self.hps.state_only:
+                    # Normalize next state
+                    input_b = torch.clamp(self.rms_obs.standardize(input_b), -5., 5.)
         else:
-            # Normalize state
-            input_a = torch.clamp(self.rms_obs.standardize(input_a), -5., 5.)
+            input_a = torch.clamp(input_a, -5., 5.)
             if self.hps.state_only:
-                # Normalize next state
-                input_b = torch.clamp(self.rms_obs.standardize(input_b), -5., 5.)
+                input_b = torch.clamp(input_b, -5., 5.)
         # Concatenate
         x = torch.cat([input_a, input_b], dim=-1)
-        x = self.d_encoder(x)
-        score = self.d_head(self.d_decoder(x))  # no sigmoid here
+        x = self.fc_stack(x)
+        score = self.d_head(self.d_fc_stack(x))  # no sigmoid here
         out = [score]
         if self.hps.kye_d:
-            action = self.a_head(self.a_decoder(x))
+            action = self.a_head(self.a_fc_stack(x))
             out.append(action)
         return out
 
@@ -144,36 +150,36 @@ class Actor(nn.Module):
         # Define observation whitening
         self.rms_obs = RunMoms(shape=env.observation_space.shape, use_mpi=True)
         # Assemble the last layers and output heads
-        self.s_encoder = nn.Sequential(OrderedDict([
+        self.fc_stack = nn.Sequential(OrderedDict([
             ('fc_block', nn.Sequential(OrderedDict([
                 ('fc', nn.Linear(ob_dim, 300)),
-                ('ln', nn.LayerNorm(300)),
+                ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(300)),
                 ('nl', nn.ReLU()),
             ]))),
         ]))
-        self.a_decoder = nn.Sequential(OrderedDict([
+        self.a_fc_stack = nn.Sequential(OrderedDict([
             ('fc_block', nn.Sequential(OrderedDict([
                 ('fc', nn.Linear(300, 200)),
-                ('ln', nn.LayerNorm(200)),
+                ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(200)),
                 ('nl', nn.ReLU()),
             ]))),
         ]))
         self.a_head = nn.Linear(200, ac_dim)
         if self.hps.kye_p:
-            self.r_decoder = nn.Sequential(OrderedDict([
+            self.r_fc_stack = nn.Sequential(OrderedDict([
                 ('fc_block_1', nn.Sequential(OrderedDict([
                     ('fc', nn.Linear(300, 200)),
-                    ('ln', nn.LayerNorm(200)),
+                    ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(200)),
                     ('nl', nn.ReLU()),
                 ]))),
             ]))
             self.r_head = nn.Linear(200, 1)
         # Perform initialization
-        self.s_encoder.apply(init(weight_scale=math.sqrt(2)))
-        self.a_decoder.apply(init(weight_scale=math.sqrt(2)))
+        self.fc_stack.apply(init(weight_scale=math.sqrt(2)))
+        self.a_fc_stack.apply(init(weight_scale=math.sqrt(2)))
         self.a_head.apply(init(weight_scale=0.01))
         if self.hps.kye_p:
-            self.r_decoder.apply(init(weight_scale=math.sqrt(2)))
+            self.r_fc_stack.apply(init(weight_scale=math.sqrt(2)))
             self.r_head.apply(init(weight_scale=0.01))
 
     def act(self, ob):
@@ -189,11 +195,11 @@ class Actor(nn.Module):
 
     def forward(self, ob):
         ob = torch.clamp(self.rms_obs.standardize(ob), -5., 5.)
-        x = self.s_encoder(ob)
-        ac = float(self.ac_max) * torch.tanh(self.a_head(self.a_decoder(x)))
+        x = self.fc_stack(ob)
+        ac = float(self.ac_max) * torch.tanh(self.a_head(self.a_fc_stack(x)))
         out = [ac]
         if self.hps.kye_p:
-            aux = self.r_head(self.r_decoder(x))
+            aux = self.r_head(self.r_fc_stack(x))
             out.append(aux)
         return out
 
@@ -222,25 +228,22 @@ class Critic(nn.Module):
         # Define observation whitening
         self.rms_obs = RunMoms(shape=env.observation_space.shape, use_mpi=True)
         # Assemble the last layers and output heads
-        self.c_encoder = nn.Sequential(OrderedDict([
+        self.fc_stack = nn.Sequential(OrderedDict([
             ('fc_block_1', nn.Sequential(OrderedDict([
                 ('fc', nn.Linear(ob_dim + ac_dim, 400)),
-                ('ln', nn.LayerNorm(400)),
+                ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(400)),
                 ('nl', nn.ReLU()),
             ]))),
-        ]))
-        self.c_decoder = nn.Sequential(OrderedDict([
-            ('fc_block_1', nn.Sequential(OrderedDict([
+            ('fc_block_2', nn.Sequential(OrderedDict([
                 ('fc', nn.Linear(400, 300)),
-                ('ln', nn.LayerNorm(300)),
+                ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(300)),
                 ('nl', nn.ReLU()),
             ]))),
         ]))
-        self.c_head = nn.Linear(300, num_heads)
+        self.head = nn.Linear(300, num_heads)
         # Perform initialization
-        self.c_encoder.apply(init(weight_scale=math.sqrt(2)))
-        self.c_decoder.apply(init(weight_scale=math.sqrt(2)))
-        self.c_head.apply(init(weight_scale=0.01))
+        self.fc_stack.apply(init(weight_scale=math.sqrt(2)))
+        self.head.apply(init(weight_scale=0.01))
 
     def QZ(self, ob, ac):
         return self.forward(ob, ac)
@@ -248,9 +251,8 @@ class Critic(nn.Module):
     def forward(self, ob, ac):
         ob = torch.clamp(self.rms_obs.standardize(ob), -5., 5.)
         x = torch.cat([ob, ac], dim=-1)
-        x = self.c_encoder(x)
-        x = self.c_decoder(x)
-        x = self.c_head(x)
+        x = self.fc_stack(x)
+        x = self.head(x)
         if self.hps.use_c51:
             # Return a categorical distribution
             x = F.log_softmax(x, dim=1).exp()
@@ -258,4 +260,4 @@ class Critic(nn.Module):
 
     @property
     def out_params(self):
-        return [p for p in self.c_head.parameters()]
+        return [p for p in self.head.parameters()]

@@ -1,7 +1,7 @@
 import time
 from contextlib import contextmanager
 
-from helpers.misc_util import zipsame, prettify_time
+from helpers.misc_util import prettify_time
 
 
 def colorize(string, color, bold=False, highlight=False):
@@ -37,21 +37,9 @@ def log_module_info(logger, name, model):
             return str(n)
 
     logger.info(4 * ">" + " logging {} specs".format(name))
-    lists = [[x for x in model.state_dict()],
-             [list(model.state_dict()[x].size()) for x in model.state_dict()],
-             [model.state_dict()[x].numel() for x in model.state_dict()],
-             [True
-              if x in [n for (n, p) in model.named_parameters() if p.requires_grad]
-              else False
-              for x in model.state_dict()]]
-    for i, (p, s, n, t) in enumerate(zipsame(*lists)):
-        logger.info("[INFO] ({}:".format(str(i).zfill(2)) +
-                    " param_name={},".format(str(p)) +
-                    " size={},".format(str(s)) +
-                    " numel={},".format(str(n)) +
-                    " trainable={})".format(str(t)))
+    logger.info(model)
     num_params = [p.numel() for (n, p) in model.named_parameters() if p.requires_grad]
-    logger.info("[INFO] trainable params: {}.".format(_fmt(sum(num_params))))
+    logger.info("total trainable params: {}.".format(_fmt(sum(num_params))))
 
 
 def timed_cm_wrapper(logger, color_message='yellow', color_elapsed_time='cyan'):

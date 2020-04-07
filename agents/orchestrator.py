@@ -329,7 +329,7 @@ def learn(args,
                         d['twin_losses'].append(metrics['twin_loss'])
                     if agent.hps.prioritized_replay:
                         iws = metrics['iws']  # last one only
-                    if agent.hps.kye_p:
+                    if agent.hps.kye_p and agent.hps.adaptive_aux_scaling:
                         d['cos_sims_p'].append(metrics['cos_sim'])
 
                 for _ in range(agent.hps.d_steps):
@@ -339,7 +339,7 @@ def learn(args,
                     metrics = agent.update_discriminator(batch)
                     # Log training stats
                     d['disc_losses'].append(metrics['disc_loss'])
-                    if agent.hps.kye_d:
+                    if agent.hps.kye_d and agent.hps.adaptive_aux_scaling:
                         d['cos_sims_d'].append(metrics['cos_sim'])
 
         if eval_env is not None:
@@ -369,9 +369,9 @@ def learn(args,
                 logger.record_tabular('eval_len', np.mean(d['eval_len']))
                 logger.record_tabular('eval_env_ret', np.mean(d['eval_env_ret']))
                 logger.record_tabular('avg_eval_env_ret', np.mean(b_eval))
-                if agent.hps.kye_p:
+                if agent.hps.kye_p and agent.hps.adaptive_aux_scaling:
                     logger.record_tabular('cos_sim_p', np.mean(d['cos_sims_p']))
-                if agent.hps.kye_d:
+                if agent.hps.kye_d and agent.hps.adaptive_aux_scaling:
                     logger.record_tabular('cos_sim_d', np.mean(d['cos_sims_d']))
                 logger.info("dumping stats in .csv file")
                 logger.dump_tabular()
@@ -412,10 +412,10 @@ def learn(args,
                 wandb.log({'twin_loss': np.mean(d['twin_losses']),
                            'twin_lrnow': np.array(lrnows['twin'])},
                           step=timesteps_so_far)
-            if agent.hps.kye_p:
+            if agent.hps.kye_p and agent.hps.adaptive_aux_scaling:
                 wandb.log({'cos_sim_p': np.mean(d['cos_sims_p'])},
                           step=timesteps_so_far)
-            if agent.hps.kye_d:
+            if agent.hps.kye_d and agent.hps.adaptive_aux_scaling:
                 wandb.log({'cos_sim_d': np.mean(d['cos_sims_d'])},
                           step=timesteps_so_far)
 
