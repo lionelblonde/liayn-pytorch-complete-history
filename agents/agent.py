@@ -39,7 +39,7 @@ class Agent(object):
         assert self.hps.rollout_len <= self.hps.batch_size
         assert self.hps.clip_norm >= 0
         if self.hps.clip_norm <= 0:
-            logger.info("[WARN] clip_norm={} <= 0, hence disabled.".format(self.hps.clip_norm))
+            logger.info("clip_norm={} <= 0, hence disabled.".format(self.hps.clip_norm))
 
         # Define demo dataset
         self.expert_dataset = expert_dataset
@@ -197,7 +197,7 @@ class Agent(object):
         """Parse the `noise_type` hyperparameter"""
         ac_noise = None
         param_noise = None
-        logger.info("[INFO] parsing noise type")
+        logger.info("parsing noise type")
         # Parse the comma-seprated (with possible whitespaces) list of noise params
         for cur_noise_type in noise_type.split(','):
             cur_noise_type = cur_noise_type.strip()  # remove all whitespaces (start and end)
@@ -209,26 +209,26 @@ class Agent(object):
                 # Set parameter noise
                 _, std = cur_noise_type.split('_')
                 param_noise = AdaptiveParamNoise(initial_std=float(std), delta=float(std))
-                logger.info("[INFO] {} configured".format(param_noise))
+                logger.info("{} configured".format(param_noise))
             elif 'normal' in cur_noise_type:
                 _, std = cur_noise_type.split('_')
                 # Spherical (isotropic) gaussian action noise
                 ac_noise = NormalAcNoise(mu=np.zeros(self.ac_dim),
                                          sigma=float(std) * np.ones(self.ac_dim))
-                logger.info("[INFO] {} configured".format(ac_noise))
+                logger.info("{} configured".format(ac_noise))
             elif 'ou' in cur_noise_type:
                 _, std = cur_noise_type.split('_')
                 # Ornstein-Uhlenbeck action noise
                 ac_noise = OUAcNoise(mu=np.zeros(self.ac_dim),
                                      sigma=(float(std) * np.ones(self.ac_dim)))
-                logger.info("[INFO] {} configured".format(ac_noise))
+                logger.info("{} configured".format(ac_noise))
             else:
                 raise RuntimeError("unknown noise type: '{}'".format(cur_noise_type))
         return param_noise, ac_noise
 
     def parse_label_smoothing_type(self, ls_type):
         """Parse the `label_smoothing_type` hyperparameter"""
-        logger.info("[INFO] parsing label smoothing type")
+        logger.info("parsing label smoothing type")
         if ls_type == 'none':
 
             def _apply(labels):
@@ -293,7 +293,7 @@ class Agent(object):
                 shapes,
             )
         # Summarize replay buffer creation (relies on `__repr__` method)
-        logger.info("[INFO] {} configured".format(replay_buffer))
+        logger.info("{} configured".format(replay_buffer))
         return replay_buffer
 
     def store_transition(self, transition):
@@ -304,7 +304,7 @@ class Agent(object):
         _state = transition['obs0']
         if self.hps.wrap_absorb:
             if np.all(np.equal(_state, np.append(np.zeros_like(_state[0:-1]), 1.))):
-                # logger.info("[INFO] absorbing -> not using it to update rms_obs")
+                # logger.info("absorbing -> not using it to update rms_obs")
                 return
             _state = _state[0:-1]
         self.actr.rms_obs.update(_state)
@@ -372,7 +372,7 @@ class Agent(object):
         for j, row in enumerate([x[i, :] for i in range(x.shape[0])]):
             if torch.all(torch.eq(row, torch.cat([torch.zeros_like(row[0:-1]),
                                                   torch.Tensor([1.]).to(self.device)], dim=-1))):
-                # logger.info("[INFO] removing absorbing row (#{})".format(j))
+                # logger.info("removing absorbing row (#{})".format(j))
                 pass
             else:
                 non_absorbing_rows.append(j)
@@ -403,7 +403,7 @@ class Agent(object):
             td_len = torch.ones_like(done).to(self.device)
 
         if self.hps.targ_actor_smoothing:
-            n_ = action.clone().detach().data.normal_(0, self.hps.td3_std).to(self.device)
+            n_ = action.clone().detach().data.normal_(0., self.hps.td3_std).to(self.device)
             n_ = n_.clamp(-self.hps.td3_c, self.hps.td3_c)
             next_action = (self.targ_actr.act(next_state) + n_).clamp(-self.max_ac, self.max_ac)
         else:
@@ -957,7 +957,7 @@ class Agent(object):
             # Return the sum the two previous reward functions (as in AIRL, Fu et al. 2018)
             # Numerics: might be better might be way worse
             reward = non_satur_reward + minimax_reward
-        return self.hps.syn_rew_scale * reward
+        return reward
 
     def update_target_net(self, iters_so_far):
         """Update the target networks"""

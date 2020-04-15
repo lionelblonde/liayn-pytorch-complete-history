@@ -229,7 +229,6 @@ def get_hps(sweep):
             'real_ls_type': np.random.choice(['"random-uniform_0.7_1.2"',
                                               '"soft_labels_0.1"',
                                               '"none"']),
-            'syn_rew_scale': CONFIG['parameters'].get('syn_rew_scale', 1.0),
             'wrap_absorb': CONFIG['parameters'].get('wrap_absorb', False),
             'd_batch_norm': CONFIG['parameters'].get('d_batch_norm', False),
 
@@ -326,7 +325,6 @@ def get_hps(sweep):
             'historical_patching': CONFIG['parameters'].get('historical_patching', True),
             'fake_ls_type': CONFIG['parameters'].get('fake_ls_type', 'none'),
             'real_ls_type': CONFIG['parameters'].get('real_ls_type', 'random-uniform_0.7_1.2'),
-            'syn_rew_scale': CONFIG['parameters'].get('syn_rew_scale', 1.0),
             'wrap_absorb': CONFIG['parameters'].get('wrap_absorb', False),
             'd_batch_norm': CONFIG['parameters'].get('d_batch_norm', False),
 

@@ -267,10 +267,10 @@ def learn(args,
                            config=args.__dict__)
             except ConnectionRefusedError:
                 pause = 5
-                logger.info("[WARN] wandb co error. Retrying in {} secs.".format(pause))
+                logger.info("wandb co error. Retrying in {} secs.".format(pause))
                 time.sleep(pause)
                 continue
-            logger.info("[WARN] wandb co established!")
+            logger.info("wandb co established!")
             break
 
     # Create rollout generator for training the agent

@@ -97,7 +97,6 @@ def argparser(description="DDPG Experiment"):
     boolean_flag(parser, 'historical_patching', default=True)
     parser.add_argument('--fake_ls_type', type=str, default='none')
     parser.add_argument('--real_ls_type', type=str, default='random-uniform_0.7_1.2')
-    parser.add_argument('--syn_rew_scale', type=float, default=1.0)
     boolean_flag(parser, 'wrap_absorb', default=False)
     boolean_flag(parser, 'd_batch_norm', default=False)
 
