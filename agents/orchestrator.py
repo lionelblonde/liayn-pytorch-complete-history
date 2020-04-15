@@ -41,7 +41,7 @@ def rollout_generator(env, agent, rollout_len):
             if done and not env._elapsed_steps == env._max_episode_steps:
                 # Wrap with an absorbing state
                 _new_ob = np.append(np.zeros(agent.ob_shape), 1)
-                _rew = agent.get_reward(_ob[None], _ac[None], _new_ob[None])
+                _rew = agent.get_syn_rew(_ob[None], _ac[None], _new_ob[None])
                 _rew = np.asscalar(_rew.cpu().numpy().flatten())
                 transition = {
                     "obs0": _ob,
@@ -58,7 +58,7 @@ def rollout_generator(env, agent, rollout_len):
                 _ob_a = np.append(np.zeros(agent.ob_shape), 1)
                 _ac_a = np.append(np.zeros(agent.ac_shape), 1)
                 _new_ob_a = np.append(np.zeros(agent.ob_shape), 1)
-                _rew_a = agent.get_reward(_ob_a[None], _ac_a[None], _new_ob_a[None])
+                _rew_a = agent.get_syn_rew(_ob_a[None], _ac_a[None], _new_ob_a[None])
                 _rew_a = np.asscalar(_rew_a.cpu().numpy().flatten())
                 transition_a = {
                     "obs0": _ob_a,
@@ -73,7 +73,7 @@ def rollout_generator(env, agent, rollout_len):
                 agent.store_transition(transition_a)
             else:
                 _new_ob = np.append(new_ob, 0)
-                _rew = agent.get_reward(_ob[None], _ac[None], _new_ob[None])
+                _rew = agent.get_syn_rew(_ob[None], _ac[None], _new_ob[None])
                 _rew = np.asscalar(_rew.cpu().numpy().flatten())
                 transition = {
                     "obs0": _ob,
@@ -87,7 +87,7 @@ def rollout_generator(env, agent, rollout_len):
                 }
                 agent.store_transition(transition)
         else:
-            rew = agent.get_reward(ob[None], ac[None], new_ob[None])
+            rew = agent.get_syn_rew(ob[None], ac[None], new_ob[None])
             rew = np.asscalar(rew.cpu().numpy().flatten())
             transition = {
                 "obs0": ob,

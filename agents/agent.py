@@ -19,6 +19,10 @@ from agents.nets import Actor, Critic, Discriminator
 from agents.param_noise import AdaptiveParamNoise
 from agents.ac_noise import NormalAcNoise, OUAcNoise
 
+from agents.red import RandomExpertDistillation
+from agents.kye import KnowYourEnemy
+from agents.dyn import Forward
+
 
 class Agent(object):
 
@@ -179,6 +183,37 @@ class Agent(object):
         if not self.eval_mode:
             log_module_info(logger, 'disc', self.disc)
 
+        if (self.hps.reward_type == 'red') or (self.hps.reward_type == 'gail_red_mod'):
+            # Create nets
+            self.red = RandomExpertDistillation(
+                self.env,
+                self.device,
+                self.hps,
+                self.expert_dataset,
+            )
+            # Train the predictor network on expert dataset
+            logger.info(">>>> RED training: BEG")
+            for epoch in range(int(self.hps.red_epochs)):
+                metrics, _ = self.red.train()
+                logger.info("epoch: {}/{} | loss: {}".format(str(epoch).zfill(3),
+                                                             self.hps.red_epochs,
+                                                             metrics['loss']))
+            logger.info(">>>> RED training: END")
+
+        if self.hps.reward_type == 'gail_kye_mod':
+            self.kye = KnowYourEnemy(
+                self.env,
+                self.device,
+                self.hps,
+            )
+
+        if self.hps.reward_type == 'gail_dyn_mod':
+            self.dyn = Forward(
+                self.env,
+                self.device,
+                self.hps,
+            )
+
     def norm_rets(self, x):
         """Standardize if return normalization is used, do nothing otherwise"""
         if self.hps.ret_norm:
@@ -320,6 +355,11 @@ class Agent(object):
         if self.hps.d_batch_norm:
             self.disc.rms_obs.update(_state)  # only with agent samples, no expert ones
 
+        if self.hps.reward_type == 'gail_kye_mod' and self.hps.kye_batch_norm:
+            self.kye.pred_net.rms_obs.update(_state)
+        if self.hps.reward_type == 'gail_dyn_mod' and self.hps.dyn_batch_norm:
+            self.dyn.pred_net.rms_obs.update(_state)
+
     def sample_batch(self):
         """Sample a batch of transitions from the replay buffer"""
         # Create patcher if needed
@@ -327,7 +367,7 @@ class Agent(object):
         if self.hps.historical_patching:
 
             def patcher(x, y, z):
-                return self.get_reward(x, y, z).cpu().numpy()
+                return self.get_syn_rew(x, y, z).cpu().numpy()
 
         # Get a batch of transitions from the replay buffer
         if self.hps.n_step_returns:
@@ -389,6 +429,10 @@ class Agent(object):
             state = torch.Tensor(batch['obs0_orig']).to(self.device)
             action = torch.Tensor(batch['acs_orig']).to(self.device)
             next_state = torch.Tensor(batch['obs1_orig']).to(self.device)
+            if self.hps.reward_type == 'gail_kye_mod' or self.hps.reward_type == 'gail_dyn_mod':
+                state_a = torch.Tensor(batch['obs0']).to(self.device)
+                action_a = torch.Tensor(batch['acs']).to(self.device)
+                next_state_a = torch.Tensor(batch['obs1']).to(self.device)
         else:
             state = torch.Tensor(batch['obs0']).to(self.device)
             action = torch.Tensor(batch['acs']).to(self.device)
@@ -581,8 +625,6 @@ class Agent(object):
 
         if self.hps.kye_p:
 
-            # Sub-optimal potential re-definitions here
-            # but easier to debut and with little over-head
             if self.hps.wrap_absorb:
                 _state = torch.Tensor(batch['obs0_orig']).to(self.device)
             else:
@@ -597,9 +639,15 @@ class Agent(object):
                 next_state = next_state[indices, :]
                 action = action[indices, :]
 
+            input_a = state
+            if self.hps.state_only:
+                input_b = next_state
+            else:
+                input_b = action
+
             _aux_loss = F.smooth_l1_loss(
                 input=self.actr.auxo(_state),
-                target=self.get_reward(state, action, next_state),
+                target=self.disc.D(input_a, input_b),
                 reduction='none',
             )
 
@@ -668,9 +716,16 @@ class Agent(object):
                     state_e = state_e[indices, :]
                     next_state_e = next_state_e[indices, :]
                     action_e = action_e[indices, :]
+
+                input_a_e = state_e
+                if self.hps.state_only:
+                    input_b_e = next_state_e
+                else:
+                    input_b_e = action_e
+
                 aux_loss += self.hps.kye_p_scale * F.smooth_l1_loss(
                     input=self.actr.auxo(_state_e),
-                    target=self.get_reward(state_e, action_e, next_state_e),
+                    target=self.disc.D(input_a_e, input_b_e),
                 )
 
             actr_loss += aux_loss
@@ -698,6 +753,12 @@ class Agent(object):
             self.actr_sched.step(iters_so_far)
             # Update target nets
             self.update_target_net(iters_so_far)  # not an error
+
+        if self.hps.reward_type == 'gail_kye_mod':
+            self.kye.update(state_a, action_a, next_state_a, self.disc.D)  # ignore returned var
+
+        if self.hps.reward_type == 'gail_dyn_mod':
+            self.dyn.update(state_a, action_a, next_state_a)  # ignore returned var
 
         metrics = {k: torch.stack(v).mean().cpu().data.numpy() for k, v in metrics.items()}
 
@@ -923,7 +984,7 @@ class Agent(object):
         grad_pen = _grad_pen.mean()
         return grad_pen
 
-    def get_reward(self, state, action, next_state):
+    def get_syn_rew(self, state, action, next_state):
         # Define the discriminator inputs
         input_a = state
         if self.hps.state_only:
@@ -957,7 +1018,39 @@ class Agent(object):
             # Return the sum the two previous reward functions (as in AIRL, Fu et al. 2018)
             # Numerics: might be better might be way worse
             reward = non_satur_reward + minimax_reward
-        return reward
+
+        if self.hps.reward_type == 'gail':
+            return reward
+
+        if (self.hps.reward_type == 'red') or (self.hps.reward_type == 'gail_red_mod'):
+            # Compute reward
+            red_reward = self.red.get_syn_rew(input_a, input_b)
+            # Assemble and return reward
+            if self.hps.reward_type == 'red':
+                return red_reward
+            elif self.hps.reward_type == 'gail_red_mod':
+                assert red_reward.shape == reward.shape
+                return red_reward * reward
+
+        if self.hps.reward_type == 'gail_kye_mod':
+            # Know your enemy
+            kye_reward = self.kye.get_int_rew(input_a, input_b, self.disc.D)
+            return kye_reward * reward
+
+        if self.hps.reward_type == 'gail_dyn_mod':
+            # Controlability
+            if self.hps.state_only:
+                input_c = action
+            else:
+                input_c = next_state
+            if not isinstance(input_c, torch.Tensor):
+                input_c = torch.Tensor(input_c)
+            input_a = input_a.cpu()
+            if self.hps.state_only:
+                dyn_reward = self.dyn.get_int_rew(input_a, input_c, input_b)
+            else:
+                dyn_reward = self.dyn.get_int_rew(input_a, input_b, input_c)
+            return dyn_reward * reward
 
     def update_target_net(self, iters_so_far):
         """Update the target networks"""

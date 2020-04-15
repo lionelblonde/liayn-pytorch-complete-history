@@ -84,7 +84,6 @@ parameters:
   wrap_absorb: true
   d_batch_norm: false
 
-  # KYE
   kye_p: false
   kye_p_scale: 1.
   kye_d: false
@@ -92,6 +91,20 @@ parameters:
   kye_mixing: false
   adaptive_aux_scaling: false
 
-  # PU
+  reward_type: 'gail'
+
+  red_epochs: 200
+  red_batch_norm: true
+  red_lr: 5.0e-4
+  proportion_of_exp_per_red_update: 1.
+
+  kye_batch_norm: True
+  kye_lr: 5.0e-4
+  proportion_of_exp_per_kye_update: 1.
+
+  dyn_batch_norm: True
+  dyn_lr: 5.0e-4
+  proportion_of_exp_per_dyn_update: 1.
+
   use_purl: false
   purl_eta: 0.25

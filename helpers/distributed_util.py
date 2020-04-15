@@ -217,3 +217,8 @@ class RunMoms(object):
         mean = torch.Tensor(self.mean).to(x)
         std = torch.Tensor(self.std).to(x)
         return (x * std) + mean
+
+    def divide_by_std(self, x):
+        assert isinstance(x, torch.Tensor)
+        std = torch.Tensor(self.std).to(x)
+        return x / std
