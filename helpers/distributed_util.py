@@ -109,7 +109,7 @@ def sync_with_root(model, comm=COMM):
         else:
             param.data.copy_(comm.bcast(None))
         comm.Barrier()
-    logger.info("[INFO] workers all synced with root")
+    logger.info("workers all synced with root")
 
 
 def sync_check(model, comm=COMM):
@@ -123,7 +123,7 @@ def sync_check(model, comm=COMM):
             param_ = comm.bcast(None)
             assert torch.all(torch.eq(param.cpu(), param_.cpu())), "not in sync anymore"
         comm.Barrier()
-    logger.info("[INFO] workers all synced with root")
+    logger.info("workers all synced with root")
 
 
 def guess_available_gpus(n_gpus=None):

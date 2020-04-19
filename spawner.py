@@ -88,7 +88,7 @@ if BENCH == 'mujoco':
             'Walker2d': '16',
             'HalfCheetah': '16',
             'Ant': '16',
-            'Humanoid': '48',
+            'Humanoid': '32',
         }
         # Define per-environment timeouts map
         PET = {
@@ -222,6 +222,7 @@ def get_hps(sweep):
             'ent_reg_scale': CONFIG['parameters'].get('ent_reg_scale', 0.001),
             'spectral_norm': CONFIG['parameters'].get('spectral_norm', True),
             'grad_pen': CONFIG['parameters'].get('grad_pen', True),
+            'grad_pen_type': CONFIG['parameters'].get('grad_pen_type', 'wgan'),
             'one_sided_pen': CONFIG['parameters'].get('one_sided_pen', True),
             'historical_patching': CONFIG['parameters'].get('historical_patching', True),
             'fake_ls_type': np.random.choice(['"random-uniform_0.7_1.2"',
@@ -334,6 +335,7 @@ def get_hps(sweep):
             'ent_reg_scale': CONFIG['parameters'].get('ent_reg_scale', 0.001),
             'spectral_norm': CONFIG['parameters'].get('spectral_norm', True),
             'grad_pen': CONFIG['parameters'].get('grad_pen', True),
+            'grad_pen_type': CONFIG['parameters'].get('grad_pen_type', 'wgan'),
             'one_sided_pen': CONFIG['parameters'].get('one_sided_pen', True),
             'historical_patching': CONFIG['parameters'].get('historical_patching', True),
             'fake_ls_type': CONFIG['parameters'].get('fake_ls_type', 'none'),
@@ -481,7 +483,7 @@ def run(args):
     # Create the job maps
     names = ["{}.{}".format(TYPE, hpmap['uuid']) for i, hpmap in enumerate(hpmaps)]
     # Create environment keys for envionment-specific hyperparameter selection
-    envkeys = [hpmap['env_id'].split('-')[0] for hpmap in hpmaps]
+    envkeys = [hpmap['env_id'].split('-v')[0] for hpmap in hpmaps]
 
     # Finally get all the required job strings
     jobs = [create_job_str(name, command, envkey)
