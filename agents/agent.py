@@ -645,7 +645,7 @@ class Agent(object):
             else:
                 input_b = action
 
-            _aux_loss = F.smooth_l1_loss(
+            _aux_loss = F.mse_loss(
                 input=self.actr.auxo(_state),
                 target=self.disc.D(input_a, input_b),
                 reduction='none',
@@ -723,7 +723,7 @@ class Agent(object):
                 else:
                     input_b_e = action_e
 
-                aux_loss += self.hps.kye_p_scale * F.smooth_l1_loss(
+                aux_loss += self.hps.kye_p_scale * F.mse_loss(
                     input=self.actr.auxo(_state_e),
                     target=self.disc.D(input_a_e, input_b_e),
                 )
@@ -867,7 +867,7 @@ class Agent(object):
                     p_input_b = p_input_b[p_indices, :]
                 else:
                     _p_input_a = p_input_a
-                _aux_loss = F.smooth_l1_loss(
+                _aux_loss = F.mse_loss(
                     input=self.disc.auxo(p_input_a, p_input_b),
                     target=self.actr.act(_p_input_a),
                     reduction='none',
@@ -932,7 +932,7 @@ class Agent(object):
                         e_input_b = e_input_b[e_indices, :]
                     else:
                         _e_input_a = e_input_a
-                    aux_loss += self.hps.kye_d_scale * F.smooth_l1_loss(
+                    aux_loss += self.hps.kye_d_scale * F.mse_loss(
                         input=self.disc.auxo(e_input_a, e_input_b),
                         target=self.actr.act(_e_input_a),
                     )
