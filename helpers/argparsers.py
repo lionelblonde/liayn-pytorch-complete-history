@@ -93,7 +93,8 @@ def argparser(description="DDPG Experiment"):
                         type=int, default=None)
     boolean_flag(parser, 'spectral_norm', help='whether to use spectral norm', default=True)
     boolean_flag(parser, 'grad_pen', help='whether to use gradient penalty', default=True)
-    parser.add_argument('--grad_pen_type', type=str, default=None, choices=['wgan', 'dragan'])
+    parser.add_argument('--grad_pen_type', type=str, default=None,
+                        choices=['wgan', 'dragan', 'nagard'])
     boolean_flag(parser, 'one_sided_pen', help='whether to use the one-sided version', default=True)
     boolean_flag(parser, 'historical_patching', default=True)
     parser.add_argument('--fake_ls_type', type=str, default='none')
@@ -103,13 +104,12 @@ def argparser(description="DDPG Experiment"):
 
     boolean_flag(parser, 'kye_p', default=False)
     parser.add_argument('--kye_p_scale', type=float, default=0.1)
-    boolean_flag(parser, 'kye_d', default=False)
-    parser.add_argument('--kye_d_scale', type=float, default=0.1)
     boolean_flag(parser, 'kye_mixing', default=True)
     boolean_flag(parser, 'adaptive_aux_scaling', default=False)
 
     parser.add_argument('--reward_type', type=str, default=None,
-                        choices=['gail', 'red', 'gail_red_mod', 'gail_kye_mod', 'gail_dyn_mod'])
+                        choices=['gail', 'red', 'gail_red_mod', 'gail_kye_mod', 'gail_dyn_mod',
+                                 'gail_grad_mod', 'gail_self_distill_mod'])
 
     parser.add_argument('--red_epochs', type=int, default=200)
     boolean_flag(parser, 'red_batch_norm', default=True)

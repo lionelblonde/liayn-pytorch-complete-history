@@ -79,31 +79,14 @@ class Discriminator(nn.Module):
             ]))),
         ]))
         self.d_head = nn.Linear(100, 1)
-        if self.hps.kye_d:
-            assert self.hps.state_only, "only allowed in the state-only setting"
-            self.a_fc_stack = nn.Sequential(OrderedDict([
-                ('fc_block', nn.Sequential(OrderedDict([
-                    ('fc', nn.Linear(100, 100)),
-                    ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(100)),
-                    ('nl', nn.ReLU()),
-                ]))),
-            ]))
-            self.a_head = nn.Linear(100, env.action_space.shape[0])  # always original ac_dim
         # Perform initialization
         self.fc_stack.apply(init(weight_scale=math.sqrt(2) / math.sqrt(1 + self.leak**2)))
         self.d_fc_stack.apply(init(weight_scale=math.sqrt(2) / math.sqrt(1 + self.leak**2)))
         self.d_head.apply(init(weight_scale=0.01))
-        if self.hps.kye_d:
-            self.a_fc_stack.apply(init(weight_scale=math.sqrt(2)))
-            self.a_head.apply(init(weight_scale=0.01))
 
     def D(self, input_a, input_b):
         out = self.forward(input_a, input_b)
         return out[0]  # score
-
-    def auxo(self, input_a, input_b):
-        out = self.forward(input_a, input_b)
-        return out[1]  # aux
 
     def forward(self, input_a, input_b):
         if self.hps.d_batch_norm:
@@ -132,11 +115,7 @@ class Discriminator(nn.Module):
         x = torch.cat([input_a, input_b], dim=-1)
         x = self.fc_stack(x)
         score = self.d_head(self.d_fc_stack(x))  # no sigmoid here
-        out = [score]
-        if self.hps.kye_d:
-            action = self.a_head(self.a_fc_stack(x))
-            out.append(action)
-        return out
+        return score
 
 
 class Actor(nn.Module):

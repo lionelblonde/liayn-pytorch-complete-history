@@ -124,7 +124,7 @@ class KnowYourEnemy(object):
         # Compute loss
         _loss = F.mse_loss(
             self.pred_net(input_a, input_b),
-            disc_score_func(input_a, input_b),
+            disc_score_func(input_a, input_b).detach(),  # detached already, but detach just in case
             reduction='none',
         )
         loss = _loss.mean(dim=-1)
@@ -158,5 +158,5 @@ class KnowYourEnemy(object):
         ).detach()
         # Normalize intrinsic reward
         pred_losses = self.rms_pred_losses.divide_by_std(pred_losses)
-        int_rews = torch.exp(-pred_losses)
+        int_rews = F.softplus(-pred_losses)
         return int_rews

@@ -87,8 +87,6 @@ parameters:
 
   kye_p: false
   kye_p_scale: 1.
-  kye_d: false
-  kye_d_scale: 1.
   kye_mixing: false
   adaptive_aux_scaling: false
 

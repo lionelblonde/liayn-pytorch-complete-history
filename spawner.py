@@ -40,7 +40,7 @@ BOOL_ARGS = ['cuda', 'render', 'record', 'with_scheduler',
              'state_only', 'minimax_only', 'spectral_norm', 'grad_pen', 'one_sided_pen',
              'wrap_absorb', 'd_batch_norm',
              'historical_patching',
-             'kye_p', 'kye_d', 'kye_mixing', 'adaptive_aux_scaling',
+             'kye_p', 'kye_mixing', 'adaptive_aux_scaling',
              'red_batch_norm', 'rnd_explo', 'rnd_batch_norm', 'kye_batch_norm', 'dyn_batch_norm',
              'use_purl']
 
@@ -66,6 +66,18 @@ if BENCH == 'mujoco':
                   'Ant-v3'],
     }
     ENVS = TOC[args.envset]
+
+    # Define per-environment discount map
+    PED = {
+        'InvertedPendulum': 0.99,
+        'Reacher': 0.99,
+        'InvertedDoublePendulum': 0.99,
+        'Hopper': 0.995,
+        'Walker2d': 0.99,
+        'HalfCheetah': 0.99,
+        'Ant': 0.99,
+        'Humanoid': 0.99,
+    }
 
     if CLUSTER == 'baobab':
         # Define per-environement partitions map
@@ -127,6 +139,8 @@ def copy_and_add_env(hpmap, env):
     # Add the env and demos
     hpmap_.update({'env_id': env})
     hpmap_.update({'expert_path': DEMOS[env]})
+    # Override discount value
+    hpmap_.update({'gamma': PED[env.split('-v')[0]]})
     return hpmap_
 
 
@@ -236,8 +250,6 @@ def get_hps(sweep):
 
             'kye_p': CONFIG['parameters'].get('kye_p', False),
             'kye_p_scale': np.random.choice([0.01, 0.1, 0.5]),
-            'kye_d': CONFIG['parameters'].get('kye_d', False),
-            'kye_d_scale': np.random.choice([0.01, 0.1, 0.5]),
             'kye_mixing': CONFIG['parameters'].get('kye_mixing', False),
             'adaptive_aux_scaling': CONFIG['parameters'].get('adaptive_aux_scaling', False),
 
@@ -345,8 +357,6 @@ def get_hps(sweep):
 
             'kye_p': CONFIG['parameters'].get('kye_p', False),
             'kye_p_scale': CONFIG['parameters'].get('kye_p_scale', 0.1),
-            'kye_d': CONFIG['parameters'].get('kye_d', False),
-            'kye_d_scale': CONFIG['parameters'].get('kye_d_scale', 0.1),
             'kye_mixing': CONFIG['parameters'].get('kye_mixing', False),
             'adaptive_aux_scaling': CONFIG['parameters'].get('adaptive_aux_scaling', False),
 

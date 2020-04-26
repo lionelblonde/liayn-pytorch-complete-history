@@ -219,5 +219,5 @@ class RandomExpertDistillation(object):
         ).mean(dim=-1, keepdim=True).detach()
         # Normalize synthetic
         pred_losses = self.rms_pred_losses.divide_by_std(pred_losses)
-        syn_rews = torch.exp(-pred_losses)
+        syn_rews = F.softplus(-pred_losses)
         return syn_rews

@@ -200,7 +200,7 @@ class Agent(object):
                                                              metrics['loss']))
             logger.info(">>>> RED training: END")
 
-        if self.hps.reward_type == 'gail_kye_mod':
+        if self.hps.reward_type in ['gail_kye_mod', 'gail_self_distill_mod']:
             self.kye = KnowYourEnemy(
                 self.env,
                 self.device,
@@ -355,7 +355,7 @@ class Agent(object):
         if self.hps.d_batch_norm:
             self.disc.rms_obs.update(_state)  # only with agent samples, no expert ones
 
-        if self.hps.reward_type == 'gail_kye_mod' and self.hps.kye_batch_norm:
+        if self.hps.reward_type in ['gail_kye_mod', 'gail_self_distill_mod'] and self.hps.kye_batch_norm:
             self.kye.pred_net.rms_obs.update(_state)
         if self.hps.reward_type == 'gail_dyn_mod' and self.hps.dyn_batch_norm:
             self.dyn.pred_net.rms_obs.update(_state)
@@ -367,7 +367,7 @@ class Agent(object):
         if self.hps.historical_patching:
 
             def patcher(x, y, z):
-                return self.get_syn_rew(x, y, z).cpu().numpy()
+                return self.get_syn_rew(x, y, z).detach().cpu().numpy()  # redundant detach
 
         # Get a batch of transitions from the replay buffer
         if self.hps.n_step_returns:
@@ -429,7 +429,7 @@ class Agent(object):
             state = torch.Tensor(batch['obs0_orig']).to(self.device)
             action = torch.Tensor(batch['acs_orig']).to(self.device)
             next_state = torch.Tensor(batch['obs1_orig']).to(self.device)
-            if self.hps.reward_type == 'gail_kye_mod' or self.hps.reward_type == 'gail_dyn_mod':
+            if self.hps.reward_type in ['gail_dyn_mod', 'gail_kye_mod', 'gail_self_distill_mod']:
                 state_a = torch.Tensor(batch['obs0']).to(self.device)
                 action_a = torch.Tensor(batch['acs']).to(self.device)
                 next_state_a = torch.Tensor(batch['obs1']).to(self.device)
@@ -754,7 +754,7 @@ class Agent(object):
             # Update target nets
             self.update_target_net(iters_so_far)  # not an error
 
-        if self.hps.reward_type == 'gail_kye_mod':
+        if self.hps.reward_type in ['gail_kye_mod', 'gail_self_distill_mod']:
             self.kye.update(state_a, action_a, next_state_a, self.disc.D)  # ignore returned var
 
         if self.hps.reward_type == 'gail_dyn_mod':
@@ -851,93 +851,12 @@ class Agent(object):
 
             if self.hps.grad_pen:
                 # Create gradient penalty loss (coefficient from the original paper)
-                grad_pen = self.grad_pen(p_input_a, p_input_b, e_input_a, e_input_b)
+                grad_pen = self.grad_pen(self.hps.grad_pen_type,
+                                         p_input_a, p_input_b, e_input_a, e_input_b)
                 grad_pen *= 10.
                 d_loss += grad_pen
                 # Log metrics
                 metrics['grad_pen'].append(grad_pen)
-
-            if self.hps.kye_d:
-
-                # Create and add auxiliary loss
-                if self.hps.wrap_absorb:
-                    _, p_indices = self.remove_absorbing(p_input_a)
-                    _p_input_a = p_input_a[p_indices, 0:-1]
-                    p_input_a = p_input_a[p_indices, :]
-                    p_input_b = p_input_b[p_indices, :]
-                else:
-                    _p_input_a = p_input_a
-                _aux_loss = F.mse_loss(
-                    input=self.disc.auxo(p_input_a, p_input_b),
-                    target=self.actr.act(_p_input_a),
-                    reduction='none',
-                )
-                _aux_loss = _aux_loss.mean(dim=-1, keepdim=True)
-
-                if self.hps.adaptive_aux_scaling:
-                    inputs = []
-                    for n, p in self.disc.fc_stack.named_parameters():
-                        if p.requires_grad:
-                            if len(p.shape) == 1:  # ignore the bias vectors
-                                continue
-                            inputs.append(p)
-                    grads_a_list = []
-                    grads_b_list = []
-                    for i in range(_p_input_a.size(0)):
-                        # Compute the gradients of the shared weights for the main task
-                        grads_a = autograd.grad(
-                            outputs=[_p_e_loss[i, ...]],  # without entropy loss
-                            inputs=[*inputs],
-                            only_inputs=True,
-                            grad_outputs=[torch.ones_like(_p_e_loss[i, ...])],
-                            retain_graph=True,
-                            create_graph=True,
-                            allow_unused=True,
-                        )
-                        # Compute the gradients of the shared weights for the auxiliary task
-                        grads_b = autograd.grad(
-                            outputs=[_aux_loss[i, ...]],
-                            inputs=[*inputs],
-                            only_inputs=True,
-                            grad_outputs=[torch.ones_like(_aux_loss[i, ...])],
-                            retain_graph=True,
-                            create_graph=True,
-                            allow_unused=True,
-                        )
-                        grads_a = torch.cat(list(grads_a), dim=-1)
-                        grads_b = torch.cat(list(grads_b), dim=-1)
-                        grads_a_list.append(grads_a)
-                        grads_b_list.append(grads_b)
-                    grads_a = torch.stack(grads_a_list, dim=0)
-                    grads_b = torch.stack(grads_b_list, dim=0)
-                    cos_sims = F.cosine_similarity(grads_a, grads_b).unsqueeze(-1)
-                    cos_sims = cos_sims.detach()  # safety measure
-                    metrics['cos_sim'].append(cos_sims.mean())
-
-                    cos_sims = cos_sims.mean(dim=1)
-                    assert _aux_loss.shape == cos_sims.shape, "shape mismatch"
-                    _aux_loss *= torch.max(torch.zeros_like(cos_sims), cos_sims)
-
-                _aux_loss *= self.hps.kye_d_scale
-
-                aux_loss = _aux_loss.mean()
-                metrics['aux_loss'].append(aux_loss)
-
-                if self.hps.kye_mixing:
-                    # Add mixing auxiliary loss
-                    if self.hps.wrap_absorb:
-                        _, e_indices = self.remove_absorbing(e_input_a)
-                        _e_input_a = e_input_a[e_indices, 0:-1]
-                        e_input_a = e_input_a[e_indices, :]
-                        e_input_b = e_input_b[e_indices, :]
-                    else:
-                        _e_input_a = e_input_a
-                    aux_loss += self.hps.kye_d_scale * F.mse_loss(
-                        input=self.disc.auxo(e_input_a, e_input_b),
-                        target=self.actr.act(_e_input_a),
-                    )
-
-                d_loss += aux_loss
 
             # Update parameters
             self.disc_opt.zero_grad()
@@ -948,9 +867,9 @@ class Agent(object):
         metrics = {k: torch.stack(v).mean().cpu().data.numpy() for k, v in metrics.items()}
         return metrics
 
-    def grad_pen(self, p_input_a, p_input_b, e_input_a, e_input_b):
+    def grad_pen(self, variant, p_input_a, p_input_b, e_input_a, e_input_b):
         """Define the gradient penalty regularizer"""
-        if self.hps.grad_pen_type == 'wgan':
+        if variant == 'wgan':
             # Assemble interpolated inputs
             eps_a = p_input_a.clone().detach().data.uniform_()  # default device is input device
             eps_b = p_input_b.clone().detach().data.uniform_()  # default device is input device
@@ -960,7 +879,7 @@ class Agent(object):
             # gradients w.r.t. the inputs (not populated by default)
             input_a_i = Variable(input_a_i, requires_grad=True)
             input_b_i = Variable(input_b_i, requires_grad=True)
-        elif self.hps.grad_pen_type == 'dragan':
+        elif variant == 'dragan':
             # Assemble interpolated inputs
             eps_a = p_input_a.clone().detach().data.normal_(0, 10)  # default device is input device
             eps_b = p_input_b.clone().detach().data.normal_(0, 10)  # default device is input device
@@ -970,6 +889,20 @@ class Agent(object):
             # gradients w.r.t. the inputs (not populated by default)
             input_a_i = Variable(input_a_i, requires_grad=True)
             input_b_i = Variable(input_b_i, requires_grad=True)
+        elif variant == 'nagard':
+            eps_a = p_input_a.clone().detach().data.normal_(0, 10)  # default device is input device
+            eps_b = p_input_b.clone().detach().data.normal_(0, 10)  # default device is input device
+            input_a_i = p_input_a + eps_a
+            input_b_i = p_input_b + eps_b
+            # Set `requires_grad=True` to later have access to
+            # gradients w.r.t. the inputs (not populated by default)
+            input_a_i = Variable(input_a_i, requires_grad=True)
+            input_b_i = Variable(input_b_i, requires_grad=True)
+        elif variant == 'bare':
+            # Set `requires_grad=True` to later have access to
+            # gradients w.r.t. the inputs (not populated by default)
+            input_a_i = Variable(p_input_a, requires_grad=True)
+            input_b_i = Variable(p_input_b, requires_grad=True)
         else:
             raise NotImplementedError("invalid gradient penalty type")
         # Create the operation of interest
@@ -982,12 +915,14 @@ class Agent(object):
             grad_outputs=[torch.ones_like(score)],
             retain_graph=True,
             create_graph=True,
-            allow_unused=self.hps.state_only,
+            allow_unused=False,
         )
         assert len(list(grads)) == 2, "length must be exactly 2"
         # Return the gradient penalty (try to induce 1-Lipschitzness)
         grads = torch.cat(list(grads), dim=-1)
         grads_norm = grads.norm(2, dim=-1)
+        if variant == 'bare':
+            return grads_norm
         if self.hps.one_sided_pen:
             # Penalize the gradient for having a norm GREATER than 1
             _grad_pen = torch.max(torch.zeros_like(grads_norm), grads_norm - 1.).pow(2)
@@ -1013,7 +948,10 @@ class Agent(object):
         input_a = input_a.cpu()
         input_b = input_b.cpu()
         # Compure score
-        score = self.disc.D(input_a, input_b).detach().view(-1, 1)
+        if self.hps.reward_type == 'gail_self_distill_mod':
+            score = self.kye.pred_net(input_a, input_b).detach().view(-1, 1)
+        else:
+            score = self.disc.D(input_a, input_b).detach().view(-1, 1)
         # Counterpart of GAN's minimax (also called "saturating") loss
         # Numerics: 0 for non-expert-like states, goes to +inf for expert-like states
         # compatible with envs with traj cutoffs for bad (non-expert-like) behavior
@@ -1032,8 +970,12 @@ class Agent(object):
             # Numerics: might be better might be way worse
             reward = non_satur_reward + minimax_reward
 
-        if self.hps.reward_type == 'gail':
+        if self.hps.reward_type in ['gail', 'gail_self_distill_mod']:
             return reward
+
+        if self.hps.reward_type == 'gail_grad_mod':
+            gradient = self.grad_pen('bare', input_a, input_b, None, None).detach().view(-1, 1)
+            return reward / gradient
 
         if (self.hps.reward_type == 'red') or (self.hps.reward_type == 'gail_red_mod'):
             # Compute reward
