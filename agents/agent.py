@@ -689,8 +689,7 @@ class Agent(object):
                 grads_b = torch.stack(grads_b_list, dim=0)
                 cos_sims = F.cosine_similarity(grads_a, grads_b).unsqueeze(-1)
                 cos_sims = cos_sims.detach()  # safety measure
-                metrics['cos_sim'].append(cos_sims.mean())
-
+                metrics['cos_sim_aux'].append(cos_sims.mean())
                 cos_sims = cos_sims.mean(dim=1)
                 assert _aux_loss.shape == cos_sims.shape, "shape mismatch"
                 _aux_loss *= torch.max(torch.zeros_like(cos_sims), cos_sims)
@@ -871,36 +870,36 @@ class Agent(object):
         """Define the gradient penalty regularizer"""
         if variant == 'wgan':
             # Assemble interpolated inputs
-            eps_a = p_input_a.clone().detach().data.uniform_()  # default device is input device
-            eps_b = p_input_b.clone().detach().data.uniform_()  # default device is input device
+            eps_a = torch.rand(p_input_a.size(0), 1)
+            eps_b = torch.rand(p_input_b.size(0), 1)
             input_a_i = eps_a * p_input_a + ((1. - eps_a) * e_input_a)
             input_b_i = eps_b * p_input_b + ((1. - eps_b) * e_input_b)
-            # Set `requires_grad=True` to later have access to
-            # gradients w.r.t. the inputs (not populated by default)
-            input_a_i = Variable(input_a_i, requires_grad=True)
-            input_b_i = Variable(input_b_i, requires_grad=True)
+            input_a_i.requires_grad = True
+            input_b_i.requires_grad = True
+        elif variant == 'hyperwgan':
+            # Assemble interpolated inputs
+            eps_a = p_input_a.clone().detach().data.uniform_()
+            eps_b = p_input_b.clone().detach().data.uniform_()
+            input_a_i = eps_a * p_input_a + ((1. - eps_a) * e_input_a)
+            input_b_i = eps_b * p_input_b + ((1. - eps_b) * e_input_b)
+            input_a_i.requires_grad = True
+            input_b_i.requires_grad = True
         elif variant == 'dragan':
             # Assemble interpolated inputs
-            eps_a = p_input_a.clone().detach().data.normal_(0, 10)  # default device is input device
-            eps_b = p_input_b.clone().detach().data.normal_(0, 10)  # default device is input device
+            eps_a = p_input_a.clone().detach().data.normal_(0, 10)
+            eps_b = p_input_b.clone().detach().data.normal_(0, 10)
             input_a_i = e_input_a + eps_a
             input_b_i = e_input_b + eps_b
-            # Set `requires_grad=True` to later have access to
-            # gradients w.r.t. the inputs (not populated by default)
-            input_a_i = Variable(input_a_i, requires_grad=True)
-            input_b_i = Variable(input_b_i, requires_grad=True)
+            input_a_i.requires_grad = True
+            input_b_i.requires_grad = True
         elif variant == 'nagard':
-            eps_a = p_input_a.clone().detach().data.normal_(0, 10)  # default device is input device
-            eps_b = p_input_b.clone().detach().data.normal_(0, 10)  # default device is input device
+            eps_a = p_input_a.clone().detach().data.normal_(0, 10)
+            eps_b = p_input_b.clone().detach().data.normal_(0, 10)
             input_a_i = p_input_a + eps_a
             input_b_i = p_input_b + eps_b
-            # Set `requires_grad=True` to later have access to
-            # gradients w.r.t. the inputs (not populated by default)
-            input_a_i = Variable(input_a_i, requires_grad=True)
-            input_b_i = Variable(input_b_i, requires_grad=True)
+            input_a_i.requires_grad = True
+            input_b_i.requires_grad = True
         elif variant == 'bare':
-            # Set `requires_grad=True` to later have access to
-            # gradients w.r.t. the inputs (not populated by default)
             input_a_i = Variable(p_input_a, requires_grad=True)
             input_b_i = Variable(p_input_b, requires_grad=True)
         else:
@@ -922,6 +921,7 @@ class Agent(object):
         grads = torch.cat(list(grads), dim=-1)
         grads_norm = grads.norm(2, dim=-1)
         if variant == 'bare':
+            raise ValueError
             return grads_norm
         if self.hps.one_sided_pen:
             # Penalize the gradient for having a norm GREATER than 1

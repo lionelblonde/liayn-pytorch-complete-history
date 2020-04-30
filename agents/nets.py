@@ -85,8 +85,7 @@ class Discriminator(nn.Module):
         self.d_head.apply(init(weight_scale=0.01))
 
     def D(self, input_a, input_b):
-        out = self.forward(input_a, input_b)
-        return out[0]  # score
+        return self.forward(input_a, input_b)
 
     def forward(self, input_a, input_b):
         if self.hps.d_batch_norm:

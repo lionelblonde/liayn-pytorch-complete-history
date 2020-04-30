@@ -126,6 +126,7 @@ def plot(args):
     texts = deepcopy(dnames)
     texts.sort()
     texts = [text.split('__')[-1] for text in texts]
+    num_cols = len(texts)
     print("Legend's texts (ordered): {}".format(texts))
 
     patches = [plt.plot([],
@@ -205,7 +206,7 @@ def plot(args):
         # Create title
         plt.title("{} agents".format(env), color=palette['font'], fontproperties=f4, pad=28)
         # Create legend
-        legend = plt.legend(handles=patches, ncol=4, loc='lower left',
+        legend = plt.legend(handles=patches, ncol=num_cols, loc='lower left',
                             borderaxespad=0, facecolor='w', bbox_to_anchor=(0.0, 1.01))
         legend.get_frame().set_linewidth(0.0)
         for text in legend.get_texts():

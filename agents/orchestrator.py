@@ -330,7 +330,7 @@ def learn(args,
                     if agent.hps.prioritized_replay:
                         iws = metrics['iws']  # last one only
                     if agent.hps.kye_p and agent.hps.adaptive_aux_scaling:
-                        d['cos_sims_p'].append(metrics['cos_sim'])
+                        d['cos_sims_p'].append(metrics['cos_sim_aux'])
 
                 for _ in range(agent.hps.d_steps):
                     # Sample a batch of transitions from the replay buffer
@@ -339,8 +339,6 @@ def learn(args,
                     metrics = agent.update_discriminator(batch)
                     # Log training stats
                     d['disc_losses'].append(metrics['disc_loss'])
-                    if agent.hps.kye_d and agent.hps.adaptive_aux_scaling:
-                        d['cos_sims_d'].append(metrics['cos_sim'])
 
         if eval_env is not None:
             assert rank == 0, "non-zero rank mpi worker forbidden here"
@@ -371,8 +369,6 @@ def learn(args,
                 logger.record_tabular('avg_eval_env_ret', np.mean(b_eval))
                 if agent.hps.kye_p and agent.hps.adaptive_aux_scaling:
                     logger.record_tabular('cos_sim_p', np.mean(d['cos_sims_p']))
-                if agent.hps.kye_d and agent.hps.adaptive_aux_scaling:
-                    logger.record_tabular('cos_sim_d', np.mean(d['cos_sims_d']))
                 logger.info("dumping stats in .csv file")
                 logger.dump_tabular()
 
@@ -414,9 +410,6 @@ def learn(args,
                           step=timesteps_so_far)
             if agent.hps.kye_p and agent.hps.adaptive_aux_scaling:
                 wandb.log({'cos_sim_p': np.mean(d['cos_sims_p'])},
-                          step=timesteps_so_far)
-            if agent.hps.kye_d and agent.hps.adaptive_aux_scaling:
-                wandb.log({'cos_sim_d': np.mean(d['cos_sims_d'])},
                           step=timesteps_so_far)
 
             if (iters_so_far - 1) % args.eval_frequency == 0:
