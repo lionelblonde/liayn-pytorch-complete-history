@@ -432,7 +432,7 @@ class Agent(object):
             if self.hps.reward_type in ['gail_dyn_mod', 'gail_kye_mod', 'gail_self_distill_mod']:
                 state_a = torch.Tensor(batch['obs0']).to(self.device)
                 action_a = torch.Tensor(batch['acs']).to(self.device)
-                next_state_a = torch.Tensor(batch['obs1']).to(self.device)
+                next_state_a = torch.Tensor(batch['obs1_td1']).to(self.device)  # not n-step next!
         else:
             state = torch.Tensor(batch['obs0']).to(self.device)
             action = torch.Tensor(batch['acs']).to(self.device)
@@ -630,7 +630,10 @@ class Agent(object):
             else:
                 _state = torch.Tensor(batch['obs0']).to(self.device)
             state = torch.Tensor(batch['obs0']).to(self.device)
-            next_state = torch.Tensor(batch['obs1']).to(self.device)
+            if self.hps.n_step_returns:
+                next_state = torch.Tensor(batch['obs1_td1']).to(self.device)  # not the n-step next!
+            else:
+                next_state = torch.Tensor(batch['obs1']).to(self.device)
             action = torch.Tensor(batch['acs']).to(self.device)
             if self.hps.wrap_absorb:
                 _, indices = self.remove_absorbing(state)
@@ -777,7 +780,10 @@ class Agent(object):
         # Create DataLoader object to iterate over transitions in rollouts
         d_keys = ['obs0']
         if self.hps.state_only:
-            d_keys.append('obs1')
+            if self.hps.n_step_returns:
+                d_keys.append('obs1_td1')
+            else:
+                d_keys.append('obs1')
         else:
             d_keys.append('acs')
 
@@ -798,7 +804,10 @@ class Agent(object):
             p_input_a = d_batch['obs0'].to(self.device)
             e_input_a = e_batch['obs0'].to(self.device)
             if self.hps.state_only:
-                p_input_b = d_batch['obs1'].to(self.device)
+                if self.hps.n_step_returns:
+                    p_input_b = d_batch['obs1_td1'].to(self.device)
+                else:
+                    p_input_b = d_batch['obs1'].to(self.device)
                 e_input_b = e_batch['obs1'].to(self.device)
             else:
                 p_input_b = d_batch['acs'].to(self.device)
@@ -852,7 +861,7 @@ class Agent(object):
                 # Create gradient penalty loss (coefficient from the original paper)
                 grad_pen = self.grad_pen(self.hps.grad_pen_type,
                                          p_input_a, p_input_b, e_input_a, e_input_b)
-                grad_pen *= 10.
+                grad_pen *= self.hps.grad_pen_scale
                 d_loss += grad_pen
                 # Log metrics
                 metrics['grad_pen'].append(grad_pen)
@@ -921,14 +930,14 @@ class Agent(object):
         grads = torch.cat(list(grads), dim=-1)
         grads_norm = grads.norm(2, dim=-1)
         if variant == 'bare':
-            raise ValueError
             return grads_norm
         if self.hps.one_sided_pen:
             # Penalize the gradient for having a norm GREATER than 1
-            _grad_pen = torch.max(torch.zeros_like(grads_norm), grads_norm - 1.).pow(2)
+            _grad_pen = torch.max(torch.zeros_like(grads_norm),
+                                  grads_norm - self.hps.grad_pen_targ).pow(2)
         else:
             # Penalize the gradient for having a norm LOWER OR GREATER than 1
-            _grad_pen = (grads_norm - 1.).pow(2)
+            _grad_pen = (grads_norm - self.hps.grad_pen_targ).pow(2)
         grad_pen = _grad_pen.mean()
         return grad_pen
 
@@ -975,7 +984,7 @@ class Agent(object):
 
         if self.hps.reward_type == 'gail_grad_mod':
             gradient = self.grad_pen('bare', input_a, input_b, None, None).detach().view(-1, 1)
-            return reward / gradient
+            return reward * gradient
 
         if (self.hps.reward_type == 'red') or (self.hps.reward_type == 'gail_red_mod'):
             # Compute reward

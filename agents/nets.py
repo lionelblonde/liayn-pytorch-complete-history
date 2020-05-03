@@ -67,13 +67,11 @@ class Discriminator(nn.Module):
             in_dim += ac_dim
         # Assemble the layers and output heads
         self.fc_stack = nn.Sequential(OrderedDict([
-            ('fc_block', nn.Sequential(OrderedDict([
+            ('fc_block_1', nn.Sequential(OrderedDict([
                 ('fc', apply_sn(nn.Linear(in_dim, 100))),
                 ('nl', nn.LeakyReLU(negative_slope=self.leak)),
             ]))),
-        ]))
-        self.d_fc_stack = nn.Sequential(OrderedDict([
-            ('fc_block', nn.Sequential(OrderedDict([
+            ('fc_block_2', nn.Sequential(OrderedDict([
                 ('fc', apply_sn(nn.Linear(100, 100))),
                 ('nl', nn.LeakyReLU(negative_slope=self.leak)),
             ]))),
@@ -81,7 +79,6 @@ class Discriminator(nn.Module):
         self.d_head = nn.Linear(100, 1)
         # Perform initialization
         self.fc_stack.apply(init(weight_scale=math.sqrt(2) / math.sqrt(1 + self.leak**2)))
-        self.d_fc_stack.apply(init(weight_scale=math.sqrt(2) / math.sqrt(1 + self.leak**2)))
         self.d_head.apply(init(weight_scale=0.01))
 
     def D(self, input_a, input_b):
@@ -113,7 +110,7 @@ class Discriminator(nn.Module):
         # Concatenate
         x = torch.cat([input_a, input_b], dim=-1)
         x = self.fc_stack(x)
-        score = self.d_head(self.d_fc_stack(x))  # no sigmoid here
+        score = self.d_head(x)  # no sigmoid here
         return score
 
 

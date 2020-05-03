@@ -74,6 +74,33 @@ class ReplayBuffer(object):
 
         return transitions
 
+    def sample_recent(self, batch_size, patcher, window):
+        """Sample transitions from the most recent ones
+        `window_width` designates how far we go back in time
+        """
+        width = window if window <= self.num_entries else self.num_entries
+        # Extract the indices of the 'width' most recent entries
+        idxs = np.ones(width) * self.latest_entry_idx
+        idxs -= np.arange(start=width - 1, stop=-1, step=-1)
+        idxs += self.limit
+        idxs %= self.limit
+        idxs = idxs.astype(int)
+        assert len(idxs) == width
+        # Subsample from the isolated indices
+        idxs = np.random.choice(idxs, size=batch_size)
+        # Collect the transitions associated w/ the sampled indices from the replay buffer
+        transitions = self.batchify(idxs)
+
+        if patcher is not None:
+            # Patch the rewards
+            transitions['rews'] = patcher(
+                transitions['obs0'],
+                transitions['acs'],
+                transitions['obs1'],
+            )
+
+        return transitions
+
     def lookahead(self, transitions, n, gamma, patcher):
         """Perform n-step TD lookahead estimations starting from every transition"""
         assert 0 <= gamma <= 1
@@ -112,6 +139,9 @@ class ReplayBuffer(object):
             la_batch['rews'].append(la_discounted_sum_n_rews)
             la_batch['dones1'].append(la_is_trimmed)
             la_batch['td_len'].append(td_len)
+
+            # Add the first next state too in case it is needed for an auxiliary task
+            la_batch['obs1_td1'].append(la_transitions['obs1'][0])
 
             if 'obs0_orig' in la_transitions.keys():
                 la_batch['obs0_orig'].append(la_transitions['obs0_orig'][0])

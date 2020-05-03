@@ -78,6 +78,8 @@ parameters:
   spectral_norm: true
   grad_pen: true
   grad_pen_type: 'wgan'
+  grad_pen_targ: 1.
+  grad_pen_scale: 10.
   one_sided_pen: false
   historical_patching: true
   fake_ls_type: '"none"'

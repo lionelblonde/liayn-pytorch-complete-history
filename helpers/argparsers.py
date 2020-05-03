@@ -93,6 +93,8 @@ def argparser(description="DDPG Experiment"):
                         type=int, default=None)
     boolean_flag(parser, 'spectral_norm', help='whether to use spectral norm', default=True)
     boolean_flag(parser, 'grad_pen', help='whether to use gradient penalty', default=True)
+    parser.add_argument('--grad_pen_targ', type=float, default=1.)
+    parser.add_argument('--grad_pen_scale', type=float, default=10.)
     parser.add_argument('--grad_pen_type', type=str, default=None,
                         choices=['wgan', 'hyperwgan', 'dragan', 'nagard'])
     boolean_flag(parser, 'one_sided_pen', help='whether to use the one-sided version', default=True)
