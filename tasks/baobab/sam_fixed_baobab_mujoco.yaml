@@ -80,12 +80,12 @@ parameters:
   grad_pen_type: 'wgan'
   grad_pen_targ: 1.
   grad_pen_scale: 10.
-  one_sided_pen: false
+  one_sided_pen: true
   historical_patching: true
   fake_ls_type: '"none"'
-  real_ls_type: '"none"'
+  real_ls_type: '"random-uniform_0.7_1.2"'
   wrap_absorb: true
-  d_batch_norm: true
+  d_batch_norm: false
 
   kye_p: false
   kye_p_scale: 1.

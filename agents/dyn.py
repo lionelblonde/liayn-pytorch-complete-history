@@ -77,17 +77,6 @@ class Forward(object):
 
         log_module_info(logger, 'KYE Pred Network', self.pred_net)
 
-    def remove_absorbing(self, x):
-        non_absorbing_rows = []
-        for j, row in enumerate([x[i, :] for i in range(x.shape[0])]):
-            if torch.all(torch.eq(row, torch.cat([torch.zeros_like(row[0:-1]),
-                                                  torch.Tensor([1.]).to(self.device)], dim=-1))):
-                # logger.info("removing absorbing row (#{})".format(j))
-                pass
-            else:
-                non_absorbing_rows.append(j)
-        return x[non_absorbing_rows, :], non_absorbing_rows
-
     def update(self, state, action, next_state):
         """Update the dynamics predictor network"""
 

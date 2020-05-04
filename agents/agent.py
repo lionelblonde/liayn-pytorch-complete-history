@@ -214,6 +214,10 @@ class Agent(object):
                 self.hps,
             )
 
+        if self.hps.reward_type == 'gail_grad_mod':
+            self.grad_pen_store = []
+            self.rms_grad_pens = RunMoms(shape=(1,), use_mpi=False)
+
     def norm_rets(self, x):
         """Standardize if return normalization is used, do nothing otherwise"""
         if self.hps.ret_norm:
@@ -929,8 +933,8 @@ class Agent(object):
         # Return the gradient penalty (try to induce 1-Lipschitzness)
         grads = torch.cat(list(grads), dim=-1)
         grads_norm = grads.norm(2, dim=-1)
-        if variant == 'bare':
-            return grads_norm
+        # if variant == 'bare':  # FIXME
+        #     return grads_norm  # FIXME
         if self.hps.one_sided_pen:
             # Penalize the gradient for having a norm GREATER than 1
             _grad_pen = torch.max(torch.zeros_like(grads_norm),
@@ -938,6 +942,10 @@ class Agent(object):
         else:
             # Penalize the gradient for having a norm LOWER OR GREATER than 1
             _grad_pen = (grads_norm - self.hps.grad_pen_targ).pow(2)
+
+        if variant == 'bare':  # FIXME
+            return _grad_pen  # FIXME
+
         grad_pen = _grad_pen.mean()
         return grad_pen
 
@@ -983,8 +991,16 @@ class Agent(object):
             return reward
 
         if self.hps.reward_type == 'gail_grad_mod':
-            gradient = self.grad_pen('bare', input_a, input_b, None, None).detach().view(-1, 1)
-            return reward * gradient
+            # FIXME
+            # grad_pen = self.grad_pen('bare', input_a, input_b, None, None).detach(),view(-1, 1)
+            grad_pen = self.grad_pen('bare', input_a, input_b, None, None).detach().view(-1, 1)
+            self.grad_pen_store.append(grad_pen.mean())
+            if len(self.grad_pen_store) == 10:
+                self.rms_grad_pens.update(np.array(self.grad_pen_store))
+                self.grad_pen_store = []
+            rescaled_grad_pen = self.rms_grad_pens.divide_by_std(grad_pen)
+            return reward * F.softplus(-rescaled_grad_pen)
+            # return reward * gradient  # FIXME
 
         if (self.hps.reward_type == 'red') or (self.hps.reward_type == 'gail_red_mod'):
             # Compute reward

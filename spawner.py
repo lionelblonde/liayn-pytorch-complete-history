@@ -15,6 +15,7 @@ parser = argparse.ArgumentParser(description="Job Spawner")
 parser.add_argument('--config', type=str, default=None)
 parser.add_argument('--envset', type=str, default=None)
 parser.add_argument('--num_demos', '--list', nargs='+', type=str, default=None)
+boolean_flag(parser, 'long', default=False, help="long duration?")
 boolean_flag(parser, 'call', default=False, help="launch immediately?")
 boolean_flag(parser, 'sweep', default=False, help="hp search?")
 args = parser.parse_args()
@@ -82,14 +83,14 @@ if BENCH == 'mujoco':
     if CLUSTER == 'baobab':
         # Define per-environement partitions map
         PEP = {
-            'InvertedPendulum': 'shared-EL7,mono-shared-EL7',
-            'Reacher': 'shared-EL7,mono-shared-EL7',
-            'InvertedDoublePendulum': 'shared-EL7,mono-shared-EL7',
-            'Hopper': 'shared-EL7,mono-shared-EL7',
-            'Walker2d': 'shared-EL7,mono-shared-EL7',
-            'HalfCheetah': 'shared-EL7,mono-shared-EL7',
-            'Ant': 'shared-EL7,mono-shared-EL7',
-            'Humanoid': 'shared-EL7,mono-shared-EL7',
+            'InvertedPendulum': 'shared-EL7',
+            'Reacher': 'shared-EL7',
+            'InvertedDoublePendulum': 'shared-EL7',
+            'Hopper': 'mono-shared-EL7' if args.long else 'shared-EL7',
+            'Walker2d': 'mono-shared-EL7' if args.long else 'shared-EL7',
+            'HalfCheetah': 'mono-shared-EL7' if args.long else 'shared-EL7',
+            'Ant': 'mono-shared-EL7' if args.long else 'shared-EL7',
+            'Humanoid': 'mono-shared-EL7' if args.long else 'shared-EL7',
         }
         # Define per-environment ntasks map
         PEC = {
@@ -107,11 +108,11 @@ if BENCH == 'mujoco':
             'InvertedPendulum': '0-06:00:00',
             'Reacher': '0-06:00:00',
             'InvertedDoublePendulum': '0-06:00:00',
-            'Hopper': '0-12:00:00',
-            'Walker2d': '0-12:00:00',
-            'HalfCheetah': '0-12:00:00',
-            'Ant': '0-12:00:00',
-            'Humanoid': '0-12:00:00',
+            'Hopper': '2-00:00:00' if args.long else '0-12:00:00',
+            'Walker2d': '2-00:00:00' if args.long else '0-12:00:00',
+            'HalfCheetah': '2-00:00:00' if args.long else '0-12:00:00',
+            'Ant': '2-00:00:00' if args.long else '0-12:00:00',
+            'Humanoid': '2-00:00:00' if args.long else '0-12:00:00',
         }
 else:
     raise NotImplementedError("benchmark not covered by the spawner.")
