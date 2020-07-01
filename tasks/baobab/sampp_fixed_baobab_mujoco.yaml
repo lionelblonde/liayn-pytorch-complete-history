@@ -8,6 +8,7 @@ resources:
 logging:
   checkpoint_dir: 'data/checkpoints'
   log_dir: 'data/logs'
+  video_dir: 'data/videos'
   record: false
 
 parameters:

@@ -59,8 +59,8 @@ if BENCH == 'mujoco':
                     'HalfCheetah-v3',
                     'Ant-v3'],
         'humanoid': ['Humanoid-v3'],
-        'suite': ['InvertedPendulum-v2',
-                  'InvertedDoublePendulum-v2',
+        'ant': ['Ant-v3'],
+        'suite': ['InvertedDoublePendulum-v2',
                   'Hopper-v3',
                   'Walker2d-v3',
                   'HalfCheetah-v3',
@@ -86,11 +86,11 @@ if BENCH == 'mujoco':
             'InvertedPendulum': 'shared-EL7',
             'Reacher': 'shared-EL7',
             'InvertedDoublePendulum': 'shared-EL7',
-            'Hopper': 'mono-shared-EL7' if args.long else 'shared-EL7',
-            'Walker2d': 'mono-shared-EL7' if args.long else 'shared-EL7',
-            'HalfCheetah': 'mono-shared-EL7' if args.long else 'shared-EL7',
-            'Ant': 'mono-shared-EL7' if args.long else 'shared-EL7',
-            'Humanoid': 'mono-shared-EL7' if args.long else 'shared-EL7',
+            'Hopper': 'mono-EL7' if args.long else 'shared-EL7',
+            'Walker2d': 'mono-EL7' if args.long else 'shared-EL7',
+            'HalfCheetah': 'mono-EL7' if args.long else 'shared-EL7',
+            'Ant': 'mono-EL7' if args.long else 'shared-EL7',
+            'Humanoid': 'mono-EL7' if args.long else 'shared-EL7',
         }
         # Define per-environment ntasks map
         PEC = {
@@ -101,7 +101,7 @@ if BENCH == 'mujoco':
             'Walker2d': '16',
             'HalfCheetah': '16',
             'Ant': '16',
-            'Humanoid': '32',
+            'Humanoid': '16',
         }
         # Define per-environment timeouts map
         PET = {
@@ -168,6 +168,7 @@ def get_hps(sweep):
             'cuda': CONFIG['parameters']['cuda'],
             'checkpoint_dir': CONFIG['logging']['checkpoint_dir'],
             'log_dir': CONFIG['logging']['log_dir'],
+            'video_dir': CONFIG['logging']['video_dir'],
             'render': False,
             'record': CONFIG['logging'].get('record', False),
             'task': CONFIG['parameters']['task'],
@@ -284,6 +285,7 @@ def get_hps(sweep):
             'cuda': CONFIG['parameters']['cuda'],
             'checkpoint_dir': CONFIG['logging']['checkpoint_dir'],
             'log_dir': CONFIG['logging']['log_dir'],
+            'video_dir': CONFIG['logging']['video_dir'],
             'render': False,
             'record': CONFIG['logging'].get('record', False),
             'task': CONFIG['parameters']['task'],

@@ -19,6 +19,7 @@ def get_benchmark(env_id):
 def make_env(env_id, seed):
     """Create an environment"""
     benchmark = get_benchmark(env_id)
+
     if benchmark == 'mujoco':
         # Remove the lockfile if it exists
         lockfile = os.path.join(

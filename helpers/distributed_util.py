@@ -86,15 +86,16 @@ def mpi_moments(x, comm=COMM, axis=0, keepdims=False):
 
 
 def average_gradients(model, device):
-    for param in model.parameters():
+    for name, param in model.named_parameters():
         if param.grad is None:
+            logger.info("not averaged across workers: {}".format(name))
             continue
         # Place the gradients on cpu
         grads = param.grad.cpu().data.numpy()
         # Average the gradients across workers
         avg_grads = mpi_mean_like(grads)
         # Create a torch tensor out of it
-        avg_grads_tensor = torch.FloatTensor(avg_grads).to(device)
+        avg_grads_tensor = torch.Tensor(avg_grads).to(device)
         # Replace the param's gradient by the mpi-average
         param.grad.copy_(avg_grads_tensor)
 
@@ -105,10 +106,12 @@ def sync_with_root(model, comm=COMM):
     rank = comm.Get_rank()
     for param in model.parameters():
         if rank == 0:
-            comm.bcast(param)
+            comm.Bcast(param.cpu().data.numpy(), root=0)
         else:
-            param.data.copy_(comm.bcast(None))
-        comm.Barrier()
+            param_ = np.empty_like(param.cpu().data)
+            comm.Bcast(param_, root=0)
+            param_ = torch.FloatTensor(param_)
+            param.data.copy_(param_.data)
     logger.info("workers all synced with root")
 
 
@@ -118,11 +121,12 @@ def sync_check(model, comm=COMM):
     rank = comm.Get_rank()
     for param in model.parameters():
         if rank == 0:
-            comm.bcast(param)
+            comm.Bcast(param.cpu().data.numpy(), root=0)
         else:
-            param_ = comm.bcast(None)
+            param_ = np.empty_like(param.cpu().data)
+            comm.Bcast(param_, root=0)
+            param_ = torch.FloatTensor(param_)
             assert torch.all(torch.eq(param.cpu(), param_.cpu())), "not in sync anymore"
-        comm.Barrier()
     logger.info("workers all synced with root")
 
 

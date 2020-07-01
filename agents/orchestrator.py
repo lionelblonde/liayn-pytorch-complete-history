@@ -11,6 +11,7 @@ from helpers import logger
 # from helpers.distributed_util import sync_check
 from helpers.console_util import timed_cm_wrapper, log_iter_info
 from agents.agent import Agent
+from helpers.opencv_util import record_video
 
 
 def rollout_generator(env, agent, rollout_len):
@@ -188,14 +189,18 @@ def ep_generator(env, agent, render, record):
                 ob_orig = _render()
 
 
-def evaluate(args, device, env):
+def evaluate(args,
+             env,
+             experiment_name):
 
     # Rebuild the computational graph
     # Create an agent
-    agent = Agent(env=env,
-                  device=device,
-                  hps=args,
-                  expert_dataset=None)
+    agent = Agent(
+        env=env,
+        device='cpu',
+        hps=args,
+        expert_dataset=None,
+    )
     # Create episode generator
     ep_gen = ep_generator(env, agent, args.render)
     # Initialize and load the previously learned weights into the freshly re-built graph
@@ -233,10 +238,12 @@ def learn(args,
           expert_dataset):
 
     # Create an agent
-    agent = Agent(env=env,
-                  device=device,
-                  hps=args,
-                  expert_dataset=expert_dataset)
+    agent = Agent(
+        env=env,
+        device=device,
+        hps=args,
+        expert_dataset=expert_dataset,
+    )
 
     # Create context manager that records the time taken by encapsulated ops
     timed = timed_cm_wrapper(logger)
@@ -255,16 +262,21 @@ def learn(args,
     if rank == 0:
         ckpt_dir = osp.join(args.checkpoint_dir, experiment_name)
         os.makedirs(ckpt_dir, exist_ok=True)
+        if args.record:
+            vid_dir = osp.join(args.video_dir, experiment_name)
+            os.makedirs(vid_dir, exist_ok=True)
 
     # Setup wandb
     if rank == 0:
         while True:
             try:
-                wandb.init(project=args.wandb_project,
-                           name=experiment_name,
-                           group='.'.join(experiment_name.split('.')[:-2]),
-                           job_type=experiment_name.split('.')[-2],
-                           config=args.__dict__)
+                wandb.init(
+                    project=args.wandb_project,
+                    name=experiment_name,
+                    group='.'.join(experiment_name.split('.')[:-2]),
+                    job_type=experiment_name.split('.')[-2],
+                    config=args.__dict__,
+                )
             except ConnectionRefusedError:
                 pause = 5
                 logger.info("wandb co error. Retrying in {} secs.".format(pause))
@@ -374,17 +386,7 @@ def learn(args,
 
             if ((iters_so_far - 1) % args.eval_frequency == 0) and args.record:
                 # Record the last episode in a video
-                frames = np.split(eval_ep['obs_render'], 1, axis=-1)
-                frames = np.concatenate(np.array(frames), axis=0)
-                frames = np.array([np.squeeze(a, axis=0)
-                                   for a in np.split(frames, frames.shape[0], axis=0)])
-                frames = np.transpose(frames, (0, 3, 1, 2))  # from nwhc to ncwh
-
-                wandb.log({'video': wandb.Video(frames.astype(np.uint8),
-                                                fps=25,
-                                                format='gif',
-                                                caption="Evaluation (last episode)")},
-                          step=timesteps_so_far)
+                record_video(vid_dir, iters_so_far, eval_ep['obs_render'])
 
             # Log stats in dashboard
             wandb.log({"num_workers": np.array(world_size)})

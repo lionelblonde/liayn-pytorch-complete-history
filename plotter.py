@@ -3,6 +3,7 @@ from copy import deepcopy
 import glob
 import argparse
 import os
+import os.path as osp
 import hashlib
 import time
 
@@ -15,7 +16,7 @@ import matplotlib.font_manager as fm  # noqa
 
 
 parser = argparse.ArgumentParser(description="Plotter")
-parser.add_argument('--font', type=str, default='Source Code Pro')
+parser.add_argument('--font', type=str, default='Colfax')
 parser.add_argument('--dir', type=str, default=None, help='csv files location')
 parser.add_argument('--xcolkey', type=str, default=None, help='name of the X column')
 parser.add_argument('--ycolkey', type=str, default=None, help='name of the Y column')
@@ -25,11 +26,40 @@ args = parser.parse_args()
 
 def plot(args):
 
+    # # Create a map containing the expert performance
+    # expert_return = {
+    #     'InvertedDoublePendulum-v2': 9339.966,
+    #     'Hopper-v3': 4111.823,
+    #     'Walker2d-v3': 6046.116,
+    #     'HalfCheetah-v3': 7613.154,
+    #     'Ant-v3': 6688.696,
+    #     'Humanoid-v3': 9175.152,
+    # }
+
     # Font (must be first)
-    f1 = fm.FontProperties(fname='/Users/lionelblonde/Library/Fonts/Colfax-Light.otf', size=10)
-    f2 = fm.FontProperties(fname='/Users/lionelblonde/Library/Fonts/Colfax-Light.otf', size=10)
-    f3 = fm.FontProperties(fname='/Users/lionelblonde/Library/Fonts/Colfax-Light.otf', size=12)
-    f4 = fm.FontProperties(fname='/Users/lionelblonde/Library/Fonts/Colfax-Medium.otf', size=14)
+    font_dir = "/Users/lionelblonde/Library/Fonts/"
+    if args.font == 'Colfax':
+        f1 = fm.FontProperties(fname=osp.join(font_dir, 'Colfax-Light.otf'), size=10)
+        f2 = fm.FontProperties(fname=osp.join(font_dir, 'Colfax-Light.otf'), size=10)
+        f3 = fm.FontProperties(fname=osp.join(font_dir, 'Colfax-Light.otf'), size=12)
+        f4 = fm.FontProperties(fname=osp.join(font_dir, 'Colfax-Medium.otf'), size=14)
+    elif args.font == 'BasierSquare':
+        f1 = fm.FontProperties(fname=osp.join(font_dir, 'BasierSquare-Regular.otf'), size=10)
+        f2 = fm.FontProperties(fname=osp.join(font_dir, 'BasierSquare-Regular.otf'), size=10)
+        f3 = fm.FontProperties(fname=osp.join(font_dir, 'BasierSquare-Regular.otf'), size=12)
+        f4 = fm.FontProperties(fname=osp.join(font_dir, 'BasierSquare-Medium.otf'), size=14)
+    elif args.font == 'SourceCodePro':
+        f1 = fm.FontProperties(fname=osp.join(font_dir, 'SourceCodePro-Light.otf'), size=10)
+        f2 = fm.FontProperties(fname=osp.join(font_dir, 'SourceCodePro-Light.otf'), size=10)
+        f3 = fm.FontProperties(fname=osp.join(font_dir, 'SourceCodePro-Light.otf'), size=12)
+        f4 = fm.FontProperties(fname=osp.join(font_dir, 'SourceCodePro-Medium.otf'), size=14)
+    elif args.font == 'SourceCodeProBig':
+        f1 = fm.FontProperties(fname=osp.join(font_dir, 'SourceCodePro-Light.otf'), size=12)
+        f2 = fm.FontProperties(fname=osp.join(font_dir, 'SourceCodePro-Regular.otf'), size=12)
+        f3 = fm.FontProperties(fname=osp.join(font_dir, 'SourceCodePro-Regular.otf'), size=14)
+        f4 = fm.FontProperties(fname=osp.join(font_dir, 'SourceCodePro-Medium.otf'), size=16)
+    else:
+        raise ValueError("invalid font")
     # Create unique destination dir name
     hash_ = hashlib.sha1()
     hash_.update(str(time.time()).encode('utf-8'))
@@ -45,10 +75,11 @@ def plot(args):
     ]
     palette = {
         'grid': (231, 234, 236),
-        'face': (245, 249, 249),
+        'face': (255, 255, 255),  # (245, 249, 249)
         'axes': (200, 200, 208),
         'font': (108, 108, 126),
         'symbol': (64, 68, 82),
+        'expert': (0, 0, 0),
         'curves': curves,
     }
     for k, v in palette.items():
@@ -147,13 +178,14 @@ def plot(args):
                 for col in ycol_dump[key]:
                     xmax = len(col) if xmax > len(col) else xmax
         xmaxes[env] = xmax
-    # Get the maximum Y value accross all the experiments
-    ymax = -np.infty
 
     # Plot mean and standard deviation
     for env in experiment_map.keys():
 
         xmax = deepcopy(xmaxes[env])
+
+        # Get the maximum Y value accross all the experiments
+        ymax = -np.infty
 
         # Create figure and subplot
         fig, ax = plt.subplots()
@@ -175,6 +207,7 @@ def plot(args):
                 # Calculate statistics to plot
                 mean = np.mean(np.column_stack([col_[0:xmax] for col_ in ycol_dump[key]]), axis=-1)
                 std = np.std(np.column_stack([col_[0:xmax] for col_ in ycol_dump[key]]), axis=-1)
+
                 # Plot the computed statistics
                 ax.plot(xcol_dump[key][0][0:xmax], mean, color=color_map[key])
                 ax.fill_between(xcol_dump[key][0][0:xmax],
@@ -202,12 +235,21 @@ def plot(args):
             tick.set_fontproperties(f1)
         # Calculate the Y axis effective upper bound and truncate the axis at that value
         ylim = ax.get_yticks()[-1] if ymax > ax.get_yticks()[-2] else ax.get_yticks()[-2]
+        # # Add expert
+        # plt.axhline(y=expert_return[env], color=palette['expert'], linestyle=':', linewidth=1.2)
+        # ylim = max(ylim, expert_return[env])
         ax.set_ylim(top=ylim)
         # Create title
-        plt.title("{} agents".format(env), color=palette['font'], fontproperties=f4, pad=28)
+        plt.title("{} agents".format(env), color=palette['font'], fontproperties=f4, pad=34)
         # Create legend
-        legend = plt.legend(handles=patches, ncol=num_cols, loc='lower left',
-                            borderaxespad=0, facecolor='w', bbox_to_anchor=(0.0, 1.01))
+        legend = plt.legend(
+            handles=patches,
+            ncol=num_cols,
+            loc='lower left',
+            borderaxespad=0,
+            facecolor='w',
+            bbox_to_anchor=(-0.2, 1.03)
+        )
         legend.get_frame().set_linewidth(0.0)
         for text in legend.get_texts():
             text.set_color(palette['font'])

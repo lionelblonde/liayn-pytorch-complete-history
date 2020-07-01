@@ -19,6 +19,7 @@ def argparser(description="DDPG Experiment"):
     boolean_flag(parser, 'cuda', default=False)
     parser.add_argument('--checkpoint_dir', type=str, default='data/checkpoints')
     parser.add_argument('--log_dir', type=str, default='data/logs')
+    parser.add_argument('--video_dir', type=str, default='data/videos')
     boolean_flag(parser, 'render', help='render the interaction traces', default=False)
     boolean_flag(parser, 'record', help='record the interaction traces', default=False)
     parser.add_argument('--task', type=str, choices=['train', 'eval'], default=None)
@@ -111,7 +112,7 @@ def argparser(description="DDPG Experiment"):
 
     parser.add_argument('--reward_type', type=str, default=None,
                         choices=['gail', 'red', 'gail_red_mod', 'gail_kye_mod', 'gail_dyn_mod',
-                                 'gail_grad_mod', 'gail_self_distill_mod'])
+                                 'gail_grad_mod', 'gail_red_grad_mod'])
 
     parser.add_argument('--red_epochs', type=int, default=200)
     boolean_flag(parser, 'red_batch_norm', default=True)

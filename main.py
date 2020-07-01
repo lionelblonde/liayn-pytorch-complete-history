@@ -87,6 +87,8 @@ def evaluate(args):
     # Initialize and configure experiment
     experiment = ExperimentInitializer(args)
     experiment.configure_logging()
+    # Create experiment name
+    experiment_name = experiment.get_name()
 
     # Seedify
     random.seed(args.seed)
@@ -99,8 +101,8 @@ def evaluate(args):
 
     # Evaluate agent trained via DDPG
     orchestrator.evaluate(args=args,
-                          device='cpu',
-                          env=env)
+                          env=env,
+                          experiment_name=experiment_name)
 
     # Close environment
     env.close()

@@ -1,6 +1,7 @@
 import random
 import os
 import os.path as osp
+import subprocess
 
 import numpy as np
 import yaml
@@ -89,6 +90,11 @@ class ExperimentInitializer:
             return self.uuid
         # Assemble the uuid
         name = self.uuid + '.'
+        try:
+            out = subprocess.check_output(['git', 'rev-parse', '--short', 'HEAD'])
+            name += "gitSHA{}.".format(out.strip().decode('ascii'))
+        except OSError:
+            pass
         if self.args.task == 'eval':
             name += "{}.".format(self.args.task)
             assert self.args.num_trajs != np.inf, "num trajs must be finite"

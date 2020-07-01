@@ -183,7 +183,7 @@ class Agent(object):
         if not self.eval_mode:
             log_module_info(logger, 'disc', self.disc)
 
-        if (self.hps.reward_type == 'red') or (self.hps.reward_type == 'gail_red_mod'):
+        if self.hps.reward_type in ['red', 'gail_red_mod', 'gail_red_grad_mod']:
             # Create nets
             self.red = RandomExpertDistillation(
                 self.env,
@@ -200,7 +200,7 @@ class Agent(object):
                                                              metrics['loss']))
             logger.info(">>>> RED training: END")
 
-        if self.hps.reward_type in ['gail_kye_mod', 'gail_self_distill_mod']:
+        if self.hps.reward_type == 'gail_kye_mod':
             self.kye = KnowYourEnemy(
                 self.env,
                 self.device,
@@ -214,7 +214,7 @@ class Agent(object):
                 self.hps,
             )
 
-        if self.hps.reward_type == 'gail_grad_mod':
+        if self.hps.reward_type in ['gail_grad_mod', 'gail_red_grad_mod']:
             self.grad_pen_store = []
             self.rms_grad_pens = RunMoms(shape=(1,), use_mpi=False)
 
@@ -359,7 +359,7 @@ class Agent(object):
         if self.hps.d_batch_norm:
             self.disc.rms_obs.update(_state)  # only with agent samples, no expert ones
 
-        if self.hps.reward_type in ['gail_kye_mod', 'gail_self_distill_mod'] and self.hps.kye_batch_norm:
+        if self.hps.reward_type == 'gail_kye_mod' and self.hps.kye_batch_norm:
             self.kye.pred_net.rms_obs.update(_state)
         if self.hps.reward_type == 'gail_dyn_mod' and self.hps.dyn_batch_norm:
             self.dyn.pred_net.rms_obs.update(_state)
@@ -433,7 +433,7 @@ class Agent(object):
             state = torch.Tensor(batch['obs0_orig']).to(self.device)
             action = torch.Tensor(batch['acs_orig']).to(self.device)
             next_state = torch.Tensor(batch['obs1_orig']).to(self.device)
-            if self.hps.reward_type in ['gail_dyn_mod', 'gail_kye_mod', 'gail_self_distill_mod']:
+            if self.hps.reward_type in ['gail_dyn_mod', 'gail_kye_mod']:
                 state_a = torch.Tensor(batch['obs0']).to(self.device)
                 action_a = torch.Tensor(batch['acs']).to(self.device)
                 next_state_a = torch.Tensor(batch['obs1_td1']).to(self.device)  # not n-step next!
@@ -760,7 +760,7 @@ class Agent(object):
             # Update target nets
             self.update_target_net(iters_so_far)  # not an error
 
-        if self.hps.reward_type in ['gail_kye_mod', 'gail_self_distill_mod']:
+        if self.hps.reward_type == 'gail_kye_mod':
             self.kye.update(state_a, action_a, next_state_a, self.disc.D)  # ignore returned var
 
         if self.hps.reward_type == 'gail_dyn_mod':
@@ -837,10 +837,10 @@ class Agent(object):
             if self.hps.use_purl:
                 # Create positive-unlabeled binary classification (cross-entropy) losses
                 beta = 0.0  # hard-coded, using standard value from the original paper
-                p_e_loss = -self.hps.purl_eta * torch.log(1. - torch.sigmoid(e_scores) + 1e-8)
-                p_e_loss += -torch.max(-beta * torch.ones_like(p_scores),
-                                       (F.logsigmoid(e_scores) -
-                                        (self.hps.purl_eta * F.logsigmoid(p_scores))))
+                _p_e_loss = -self.hps.purl_eta * torch.log(1. - torch.sigmoid(e_scores) + 1e-8)
+                _p_e_loss += -torch.max(-beta * torch.ones_like(p_scores),
+                                        (F.logsigmoid(e_scores) -
+                                         (self.hps.purl_eta * F.logsigmoid(p_scores))))
             else:
                 # Create positive-negative binary classification (cross-entropy) losses
                 p_loss = F.binary_cross_entropy_with_logits(input=p_scores,
@@ -965,10 +965,7 @@ class Agent(object):
         input_a = input_a.cpu()
         input_b = input_b.cpu()
         # Compure score
-        if self.hps.reward_type == 'gail_self_distill_mod':
-            score = self.kye.pred_net(input_a, input_b).detach().view(-1, 1)
-        else:
-            score = self.disc.D(input_a, input_b).detach().view(-1, 1)
+        score = self.disc.D(input_a, input_b).detach().view(-1, 1)
         # Counterpart of GAN's minimax (also called "saturating") loss
         # Numerics: 0 for non-expert-like states, goes to +inf for expert-like states
         # compatible with envs with traj cutoffs for bad (non-expert-like) behavior
@@ -987,22 +984,21 @@ class Agent(object):
             # Numerics: might be better might be way worse
             reward = non_satur_reward + minimax_reward
 
-        if self.hps.reward_type in ['gail', 'gail_self_distill_mod']:
+        if self.hps.reward_type == 'gail':
             return reward
 
         if self.hps.reward_type == 'gail_grad_mod':
-            # FIXME
-            # grad_pen = self.grad_pen('bare', input_a, input_b, None, None).detach(),view(-1, 1)
+            # Compute GP modulation
             grad_pen = self.grad_pen('bare', input_a, input_b, None, None).detach().view(-1, 1)
             self.grad_pen_store.append(grad_pen.mean())
             if len(self.grad_pen_store) == 10:
                 self.rms_grad_pens.update(np.array(self.grad_pen_store))
                 self.grad_pen_store = []
             rescaled_grad_pen = self.rms_grad_pens.divide_by_std(grad_pen)
-            return reward * F.softplus(-rescaled_grad_pen)
-            # return reward * gradient  # FIXME
+            # return reward * F.softplus(-rescaled_grad_pen)
+            return reward * torch.exp(-rescaled_grad_pen)
 
-        if (self.hps.reward_type == 'red') or (self.hps.reward_type == 'gail_red_mod'):
+        if self.hps.reward_type in ['red', 'gail_red_mod']:
             # Compute reward
             red_reward = self.red.get_syn_rew(input_a, input_b)
             # Assemble and return reward
@@ -1011,6 +1007,18 @@ class Agent(object):
             elif self.hps.reward_type == 'gail_red_mod':
                 assert red_reward.shape == reward.shape
                 return red_reward * reward
+
+        if self.hps.reward_type == 'gail_red_grad_mod':
+            # Compute RED reward
+            red_reward = self.red.get_syn_rew(input_a, input_b)
+            # Compute GP modulation
+            grad_pen = self.grad_pen('bare', input_a, input_b, None, None).detach().view(-1, 1)
+            self.grad_pen_store.append(grad_pen.mean())
+            if len(self.grad_pen_store) == 10:
+                self.rms_grad_pens.update(np.array(self.grad_pen_store))
+                self.grad_pen_store = []
+            rescaled_grad_pen = self.rms_grad_pens.divide_by_std(grad_pen)
+            return reward * red_reward * F.softplus(-rescaled_grad_pen)
 
         if self.hps.reward_type == 'gail_kye_mod':
             # Know your enemy
@@ -1031,6 +1039,9 @@ class Agent(object):
             else:
                 dyn_reward = self.dyn.get_int_rew(input_a, input_b, input_c)
             return dyn_reward * reward
+
+        # If this point is reached, something fatally went wrong
+        raise ValueError("invalid reward type")
 
     def update_target_net(self, iters_so_far):
         """Update the target networks"""
