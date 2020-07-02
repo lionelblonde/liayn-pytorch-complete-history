@@ -25,7 +25,11 @@ CONFIG = yaml.safe_load(open(args.config))
 
 # Extract parameters from config
 NUM_SEEDS = CONFIG['parameters']['num_seeds']
-NUM_DEMOS = [int(i) for i in args.num_demos]
+NEED_DEMOS = (CONFIG['parameters']['algo'] == 'sam-dac')
+if NEED_DEMOS:
+    NUM_DEMOS = [int(i) for i in args.num_demos]
+else:
+    NUM_DEMOS = [0]  # arbitrary, only used for dim checking
 CLUSTER = CONFIG['resources']['cluster']
 WANDB_PROJECT = CONFIG['resources']['wandb_project'].upper() + '-' + CLUSTER.upper()
 CONDA = CONFIG['resources']['conda_env']
@@ -67,7 +71,6 @@ if BENCH == 'mujoco':
                   'Ant-v3'],
     }
     ENVS = TOC[args.envset]
-
     # Define per-environment discount map
     PED = {
         'InvertedPendulum': 0.99,
@@ -94,14 +97,14 @@ if BENCH == 'mujoco':
         }
         # Define per-environment ntasks map
         PEC = {
-            'InvertedPendulum': '8',
-            'Reacher': '8',
-            'InvertedDoublePendulum': '8',
-            'Hopper': '16',
-            'Walker2d': '16',
-            'HalfCheetah': '16',
-            'Ant': '16',
-            'Humanoid': '16',
+            'InvertedPendulum': '8' if NEED_DEMOS else '16',
+            'Reacher': '8' if NEED_DEMOS else '16',
+            'InvertedDoublePendulum': '8' if NEED_DEMOS else '16',
+            'Hopper': '16' if NEED_DEMOS else '32',
+            'Walker2d': '16' if NEED_DEMOS else '32',
+            'HalfCheetah': '16' if NEED_DEMOS else '32',
+            'Ant': '16' if NEED_DEMOS else '32',
+            'Humanoid': '16' if NEED_DEMOS else '32',
         }
         # Define per-environment timeouts map
         PET = {
@@ -114,13 +117,40 @@ if BENCH == 'mujoco':
             'Ant': '2-00:00:00' if args.long else '0-12:00:00',
             'Humanoid': '2-00:00:00' if args.long else '0-12:00:00',
         }
+elif BENCH == 'dmc':
+    TOC = {
+        'debug': ['Hopper-Hop-Feat-v0'],
+        'flareon': ['Hopper-Hop-Feat-v0',
+                    'Walker-Run-Feat-v0']
+    }
+    ENVS = TOC[args.envset]
+    # Define per-environment discount map
+    PED = {
+        'Hopper-Hop-Feat': 0.99,
+    }
+
+    if CLUSTER == 'baobab':
+        # Define per-environement partitions map
+        PEP = {
+            'Hopper-Hop-Feat': 'shared-EL7,mono-shared-EL7',
+        }
+        # Define per-environment ntasks map
+        PEC = {
+            'Hopper-Hop-Feat': '1',
+        }
+        # Define per-environment timeouts map
+        PET = {
+            'Hopper-Hop-Feat': '0-12:00:00',
+        }
+
 else:
     raise NotImplementedError("benchmark not covered by the spawner.")
 assert bool(TOC), "each benchmark must have a 'TOC' dictionary"
 
-# Create the list of demonstrations
-demo_dir = os.environ['DEMO_DIR']
-DEMOS = {k: osp.join(demo_dir, k) for k in ENVS}
+# If needed, create the list of demonstrations
+if NEED_DEMOS:
+    demo_dir = os.environ['DEMO_DIR']
+    DEMOS = {k: osp.join(demo_dir, k) for k in ENVS}
 
 
 def copy_and_add_seed(hpmap, seed):
@@ -128,10 +158,26 @@ def copy_and_add_seed(hpmap, seed):
     # Add the seed and edit the job uuid to only differ by the seed
     hpmap_.update({'seed': seed})
     # Enrich the uuid with extra information
-    hpmap_.update({'uuid': "{}.{}.demos{}.seed{}".format(hpmap['uuid'],
-                                                         hpmap['env_id'],
-                                                         str(hpmap['num_demos']).zfill(3),
-                                                         str(seed).zfill(2))})
+    try:
+        out = subprocess.check_output(['git', 'rev-parse', '--short', 'HEAD'])
+        gitsha = "gitSHA_{}".format(out.strip().decode('ascii'))
+    except OSError:
+        pass
+    if NEED_DEMOS:
+        hpmap_.update({'uuid': "{}.{}.{}.demos{}.seed{}".format(
+            hpmap['uuid'],
+            gitsha,
+            hpmap['env_id'],
+            str(hpmap['num_demos']).zfill(3),
+            str(seed).zfill(2))}
+        )
+    else:
+        hpmap_.update({'uuid': "{}.{}.{}.seed{}".format(
+            hpmap['uuid'],
+            gitsha,
+            hpmap['env_id'],
+            str(seed).zfill(2))}
+        )
     return hpmap_
 
 
@@ -139,7 +185,8 @@ def copy_and_add_env(hpmap, env):
     hpmap_ = deepcopy(hpmap)
     # Add the env and demos
     hpmap_.update({'env_id': env})
-    hpmap_.update({'expert_path': DEMOS[env]})
+    if NEED_DEMOS:
+        hpmap_.update({'expert_path': DEMOS[env]})
     # Override discount value
     hpmap_.update({'gamma': PED[env.split('-v')[0]]})
     return hpmap_
@@ -172,9 +219,9 @@ def get_hps(sweep):
             'render': False,
             'record': CONFIG['logging'].get('record', False),
             'task': CONFIG['parameters']['task'],
+            'algo': CONFIG['parameters']['algo'],
 
             # Training
-            'save_frequency': CONFIG['parameters'].get('save_frequency', 400),
             'num_timesteps': int(float(CONFIG['parameters'].get('num_timesteps', 2e7))),
             'training_steps_per_iter': CONFIG['parameters'].get('training_steps_per_iter', 2),
             'eval_steps_per_iter': CONFIG['parameters'].get('eval_steps_per_iter', 10),
@@ -257,7 +304,7 @@ def get_hps(sweep):
             'kye_mixing': CONFIG['parameters'].get('kye_mixing', False),
             'adaptive_aux_scaling': CONFIG['parameters'].get('adaptive_aux_scaling', False),
 
-            'reward_type': CONFIG['parameters']['reward_type'],
+            'reward_type': CONFIG['parameters'].get('reward_type', 'gail'),
 
             'red_epochs': CONFIG['parameters'].get('red_epochs', 200),
             'red_lr': CONFIG['parameters'].get('red_lr', 5e-4),
@@ -289,9 +336,9 @@ def get_hps(sweep):
             'render': False,
             'record': CONFIG['logging'].get('record', False),
             'task': CONFIG['parameters']['task'],
+            'algo': CONFIG['parameters']['algo'],
 
             # Training
-            'save_frequency': CONFIG['parameters'].get('save_frequency', 400),
             'num_timesteps': int(float(CONFIG['parameters'].get('num_timesteps', 2e7))),
             'training_steps_per_iter': CONFIG['parameters'].get('training_steps_per_iter', 2),
             'eval_steps_per_iter': CONFIG['parameters'].get('eval_steps_per_iter', 10),
@@ -367,7 +414,7 @@ def get_hps(sweep):
             'kye_mixing': CONFIG['parameters'].get('kye_mixing', False),
             'adaptive_aux_scaling': CONFIG['parameters'].get('adaptive_aux_scaling', False),
 
-            'reward_type': CONFIG['parameters']['reward_type'],
+            'reward_type': CONFIG['parameters'].get('reward_type', 'gail'),
 
             'red_epochs': CONFIG['parameters'].get('red_epochs', 200),
             'red_lr': CONFIG['parameters'].get('red_lr', 5e-4),
@@ -389,10 +436,11 @@ def get_hps(sweep):
     hpmaps = [copy_and_add_env(hpmap, env)
               for env in ENVS]
 
-    # Duplicate for each number of demos
-    hpmaps = [copy_and_add_num_demos(hpmap_, num_demos)
-              for hpmap_ in hpmaps
-              for num_demos in NUM_DEMOS]
+    if NEED_DEMOS:
+        # Duplicate for each number of demos
+        hpmaps = [copy_and_add_num_demos(hpmap_, num_demos)
+                  for hpmap_ in hpmaps
+                  for num_demos in NUM_DEMOS]
 
     # Duplicate for each seed
     hpmaps = [copy_and_add_seed(hpmap_, seed)
@@ -448,6 +496,8 @@ def create_job_str(name, command, envkey):
         bash_script_str += ('\n')
         # Load modules
         bash_script_str += ('module load GCC/8.3.0 OpenMPI/3.1.4\n')
+        if BENCH == 'dmc':
+            bash_script_str += ('module load Mesa/19.2.1\n')
         if CONFIG['parameters']['cuda']:
             bash_script_str += ('module load CUDA\n')
         bash_script_str += ('\n')
@@ -527,8 +577,9 @@ def run(args):
         dir_ = hpmaps[0]['uuid'].split('.')[0]  # arbitrarilly picked index 0
         session_name = "{}-{}seeds-{}".format(TYPE, str(NUM_SEEDS).zfill(2), dir_)
         yaml_content = {'session_name': session_name,
-                        'environment': {'DEMO_DIR': os.environ['DEMO_DIR']},
                         'windows': []}
+        if NEED_DEMOS:
+            yaml_content.update({'environment': {'DEMO_DIR': os.environ['DEMO_DIR']}})
         for i, name in enumerate(names):
             executable = "{}.sh".format(name)
             pane = {'shell_command': ["source activate {}".format(CONDA),

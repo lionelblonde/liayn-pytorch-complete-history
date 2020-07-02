@@ -23,10 +23,9 @@ def argparser(description="DDPG Experiment"):
     boolean_flag(parser, 'render', help='render the interaction traces', default=False)
     boolean_flag(parser, 'record', help='record the interaction traces', default=False)
     parser.add_argument('--task', type=str, choices=['train', 'eval'], default=None)
+    parser.add_argument('--algo', type=str, choices=['ddpg-td3', 'sam-dac'], default=None)
 
     # Training
-    parser.add_argument('--save_frequency', help='save model every xx iterations',
-                        type=int, default=1000)
     parser.add_argument('--num_timesteps', help='total number of interactions',
                         type=int, default=int(1e7))
     parser.add_argument('--training_steps_per_iter', type=int, default=4)

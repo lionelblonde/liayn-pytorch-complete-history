@@ -20,6 +20,12 @@ def make_env(env_id, seed):
     """Create an environment"""
     benchmark = get_benchmark(env_id)
 
+    if benchmark == 'dmc':
+        # Import here to avoid glew issues altogether if not using anyway
+        from helpers.dmc_envs import make_dmc  # noqa
+        env = make_dmc(env_id)
+        return env
+
     if benchmark == 'mujoco':
         # Remove the lockfile if it exists
         lockfile = os.path.join(

@@ -92,7 +92,7 @@ class ExperimentInitializer:
         name = self.uuid + '.'
         try:
             out = subprocess.check_output(['git', 'rev-parse', '--short', 'HEAD'])
-            name += "gitSHA{}.".format(out.strip().decode('ascii'))
+            name += "gitSHA_{}.".format(out.strip().decode('ascii'))
         except OSError:
             pass
         if self.args.task == 'eval':

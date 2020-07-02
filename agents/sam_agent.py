@@ -24,7 +24,7 @@ from agents.kye import KnowYourEnemy
 from agents.dyn import Forward
 
 
-class Agent(object):
+class SAMAgent(object):
 
     def __init__(self, env, device, hps, expert_dataset):
         self.env = env
@@ -148,10 +148,8 @@ class Agent(object):
             else:
                 return 1.0
 
+        # Set up lr scheduler
         self.actr_sched = torch.optim.lr_scheduler.LambdaLR(self.actr_opt, _lr)
-        self.crit_sched = torch.optim.lr_scheduler.LambdaLR(self.crit_opt, _lr)
-        if self.hps.clipped_double:
-            self.twin_sched = torch.optim.lr_scheduler.LambdaLR(self.twin_opt, _lr)
 
         if not self.eval_mode:
             # Set up demonstrations dataset
@@ -750,10 +748,8 @@ class Agent(object):
             twin_loss.backward()
             average_gradients(self.twin, self.device)
         self.crit_opt.step()
-        self.crit_sched.step(iters_so_far)
         if self.hps.clipped_double:
             self.twin_opt.step()
-            self.twin_sched.step(iters_so_far)
         if update_actor:
             self.actr_opt.step()
             self.actr_sched.step(iters_so_far)
@@ -767,11 +763,7 @@ class Agent(object):
             self.dyn.update(state_a, action_a, next_state_a)  # ignore returned var
 
         metrics = {k: torch.stack(v).mean().cpu().data.numpy() for k, v in metrics.items()}
-
-        lrnows = {'actr': self.actr_sched.get_last_lr(),
-                  'crit': self.crit_sched.get_last_lr()}
-        if self.hps.clipped_double:
-            lrnows.update({'twin': self.twin_sched.get_last_lr()})
+        lrnows = {'actr': self.actr_sched.get_last_lr()}
 
         return metrics, lrnows
 
@@ -933,8 +925,6 @@ class Agent(object):
         # Return the gradient penalty (try to induce 1-Lipschitzness)
         grads = torch.cat(list(grads), dim=-1)
         grads_norm = grads.norm(2, dim=-1)
-        # if variant == 'bare':  # FIXME
-        #     return grads_norm  # FIXME
         if self.hps.one_sided_pen:
             # Penalize the gradient for having a norm GREATER than 1
             _grad_pen = torch.max(torch.zeros_like(grads_norm),
@@ -943,8 +933,9 @@ class Agent(object):
             # Penalize the gradient for having a norm LOWER OR GREATER than 1
             _grad_pen = (grads_norm - self.hps.grad_pen_targ).pow(2)
 
-        if variant == 'bare':  # FIXME
-            return _grad_pen  # FIXME
+        if variant == 'bare':
+            # Return before averaging over the minibatch
+            return _grad_pen
 
         grad_pen = _grad_pen.mean()
         return grad_pen

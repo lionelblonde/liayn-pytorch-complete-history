@@ -15,16 +15,16 @@ logging:
 parameters:
   # Generic
   task: 'train'
+  algo: 'sam-dac'
   cuda: false
   num_seeds: 4
   benchmark: 'mujoco'
 
   # Training
-  save_frequency: 1000
   num_timesteps: 1e7
   training_steps_per_iter: 2
   eval_steps_per_iter: 10
-  eval_frequency: 10
+  eval_frequency: 5000
 
   # Model
   layer_norm: true

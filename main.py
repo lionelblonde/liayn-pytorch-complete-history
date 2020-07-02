@@ -1,3 +1,4 @@
+import os
 import random
 
 from mpi4py import MPI
@@ -11,6 +12,8 @@ from helpers.distributed_util import setup_mpi_gpus
 from helpers.env_makers import make_env
 from agents import orchestrator
 from helpers.dataset import DemoDataset
+from agents.ddpg_agent import DDPGAgent
+from agents.sam_agent import SAMAgent
 
 
 def train(args):
@@ -30,12 +33,14 @@ def train(args):
     experiment_name = experiment.get_name()
 
     # Set device-related knobs
-    if args.cuda and torch.cuda.is_available():
+    if args.cuda:
+        assert torch.cuda.is_available()
         torch.backends.cudnn.benchmark = False
         torch.backends.cudnn.deterministic = True
         device = torch.device("cuda:0")
         setup_mpi_gpus()
     else:
+        os.environ["CUDA_VISIBLE_DEVICES"] = ""  # kill any possibility of usage
         device = torch.device("cpu")
     logger.info("device in use: {}".format(device))
 
@@ -50,27 +55,50 @@ def train(args):
     # Create environment
     env = make_env(args.env_id, worker_seed)
 
-    # Create the expert demonstrations dataset from expert trajectories
-    expert_dataset = DemoDataset(
-        expert_path=args.expert_path,
-        num_demos=args.num_demos,
-        env=env,
-        wrap_absorb=args.wrap_absorb,
-    )
+    # Create an agent wrapper
+    if args.algo == 'ddpg-td3':
+        def agent_wrapper():
+            return DDPGAgent(
+                env=env,
+                device=device,
+                hps=args,
+            )
+
+    elif args.algo == 'sam-dac':
+        # Create the expert demonstrations dataset from expert trajectories
+        expert_dataset = DemoDataset(
+            expert_path=args.expert_path,
+            num_demos=args.num_demos,
+            env=env,
+            wrap_absorb=args.wrap_absorb,
+        )
+
+        def agent_wrapper():
+            return SAMAgent(
+                env=env,
+                device=device,
+                hps=args,
+                expert_dataset=expert_dataset,
+            )
+
+    else:
+        raise NotImplementedError("algorithm not covered")
+
     # Create an evaluation environment not to mess up with training rollouts
     eval_env = None
     if rank == 0:
         eval_env = make_env(args.env_id, eval_seed)
 
     # Train
-    orchestrator.learn(args=args,
-                       rank=rank,
-                       world_size=world_size,
-                       device=device,
-                       env=env,
-                       eval_env=eval_env,
-                       experiment_name=experiment_name,
-                       expert_dataset=expert_dataset)
+    orchestrator.learn(
+        args=args,
+        rank=rank,
+        world_size=world_size,
+        env=env,
+        eval_env=eval_env,
+        agent_wrapper=agent_wrapper,
+        experiment_name=experiment_name,
+    )
 
     # Close environment
     env.close()
@@ -99,10 +127,34 @@ def evaluate(args):
     # Create environment
     env = make_env(args.env_id, args.seed)
 
+    # Create an agent wrapper
+    if args.algo == 'ddpg-td3':
+        def agent_wrapper():
+            return DDPGAgent(
+                env=env,
+                device='cpu',
+                hps=args,
+            )
+
+    elif args.algo == 'sam-dac':
+        def agent_wrapper():
+            return SAMAgent(
+                env=env,
+                device='cpu',
+                hps=args,
+                expert_dataset=None,
+            )
+
+    else:
+        raise NotImplementedError("algorithm not covered")
+
     # Evaluate agent trained via DDPG
-    orchestrator.evaluate(args=args,
-                          env=env,
-                          experiment_name=experiment_name)
+    orchestrator.evaluate(
+        args=args,
+        env=env,
+        agent_wrapper=agent_wrapper,
+        experiment_name=experiment_name,
+    )
 
     # Close environment
     env.close()
