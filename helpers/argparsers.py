@@ -17,9 +17,6 @@ def argparser(description="DDPG Experiment"):
     # Generic
     parser.add_argument('--uuid', type=str, default=None)
     boolean_flag(parser, 'cuda', default=False)
-    parser.add_argument('--checkpoint_dir', type=str, default='data/checkpoints')
-    parser.add_argument('--log_dir', type=str, default='data/logs')
-    parser.add_argument('--video_dir', type=str, default='data/videos')
     boolean_flag(parser, 'render', help='render the interaction traces', default=False)
     boolean_flag(parser, 'record', help='record the interaction traces', default=False)
     parser.add_argument('--task', type=str, choices=['train', 'eval'], default=None)

@@ -7,9 +7,6 @@ resources:
   cluster: 'local'
 
 logging:
-  checkpoint_dir: 'data/checkpoints'
-  log_dir: 'data/logs'
-  video_dir: 'data/videos'
   record: false
 
 parameters:
@@ -24,7 +21,7 @@ parameters:
   num_timesteps: 1e8
   training_steps_per_iter: 2
   eval_steps_per_iter: 10
-  eval_frequency: 5000
+  eval_frequency: 10000
 
   # Model
   layer_norm: true
@@ -41,7 +38,8 @@ parameters:
   batch_size: 64
   gamma: 0.99
   mem_size: 1000000
-  noise_type: '"normal_0.2, ou_0.3"'
+  noise_type: '"ou_0.3"'
+
   pn_adapt_frequency: 50
   polyak: 0.001
   targ_up_freq: 100
@@ -51,11 +49,11 @@ parameters:
   popart: false
 
   # TD3
-  clipped_double: true
-  targ_actor_smoothing: true
+  clipped_double: false
+  targ_actor_smoothing: false
   td3_std: 0.2
   td3_c: 0.5
-  actor_update_delay: 2
+  actor_update_delay: 1
 
   # Prioritized replay
   prioritized_replay: false
@@ -65,7 +63,9 @@ parameters:
   unreal: false
 
   # Distributional RL
-  use_c51: false
+  use_c51: true
   use_qr: false
   c51_num_atoms: 51
+  c51_vmin: -100.
+  c51_vmax: 100.
   num_tau: 200

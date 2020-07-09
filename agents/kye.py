@@ -158,5 +158,5 @@ class KnowYourEnemy(object):
         ).detach()
         # Normalize intrinsic reward
         pred_losses = self.rms_pred_losses.divide_by_std(pred_losses)
-        int_rews = F.softplus(-pred_losses)
+        int_rews = (-pred_losses).exp()
         return int_rews

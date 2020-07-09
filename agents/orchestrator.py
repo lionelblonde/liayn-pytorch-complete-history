@@ -1,6 +1,5 @@
 import time
 from copy import deepcopy
-import sys
 import os
 import os.path as osp
 from collections import defaultdict, deque
@@ -300,12 +299,12 @@ def learn(args,
     d = defaultdict(list)
     b_eval = deque(maxlen=10)
 
-    # Set up model save directory
     if rank == 0:
+        # Set up model save directory
         ckpt_dir = osp.join(args.checkpoint_dir, experiment_name)
         os.makedirs(ckpt_dir, exist_ok=True)
         # Save the model as a dry run, to avoid bad surprises at the end
-        agent.save(ckpt_dir, iters_so_far)
+        agent.save(ckpt_dir, "{}_dryrun".format(iters_so_far))
         logger.info("dry run. Saving model @: {}".format(ckpt_dir))
         if args.record:
             vid_dir = osp.join(args.video_dir, experiment_name)
@@ -314,25 +313,30 @@ def learn(args,
         # Handle timeout signal gracefully
         def timeout(signum, frame):
             # Save the model
-            agent.save(ckpt_dir, iters_so_far)
-            logger.info("timeout rang. Saving model @: {}".format(ckpt_dir))
-            # End the run
-            logger.info("bye.")
-            sys.exit(0)
+            agent.save(ckpt_dir, "{}_timeout".format(iters_so_far))
+            # No need to log a message, orterun stopped the trace already
+            # No need to end the run by hand, SIGKILL is sent by orterun fast enough after SIGTERM
 
         # Tie the timeout handler with the termination signal
+        # Note, orterun relays SIGTERM and SIGINT to the workers as SIGTERM signals,
+        # quickly followed by a SIGKILL signal (Open-MPI impl)
         signal.signal(signal.SIGTERM, timeout)
 
-    # Set up wandb
-    if rank == 0:
+        # Group by everything except the seed, which is last, hence index -1
+        # For 'sam-dac', it groups by uuid + gitSHA + env_id + num_demos,
+        # while for 'ddpg-td3', it groups by uuid + gitSHA + env_id
+        group = '.'.join(experiment_name.split('.')[:-1])
+
+        # Set up wandb
         while True:
             try:
                 wandb.init(
                     project=args.wandb_project,
                     name=experiment_name,
-                    group='.'.join(experiment_name.split('.')[:-2]),
-                    job_type=experiment_name.split('.')[-2],
+                    id=experiment_name,
+                    group=group,
                     config=args.__dict__,
+                    dir=args.root,
                 )
             except ConnectionRefusedError:
                 pause = 5
@@ -515,4 +519,5 @@ def learn(args,
     if rank == 0:
         # Save once we are done iterating
         agent.save(ckpt_dir, iters_so_far)
-        logger.info("We're done. Saving model @: {}".format(ckpt_dir))
+        logger.info("we're done. Saving model @: {}".format(ckpt_dir))
+        logger.info("bye.")

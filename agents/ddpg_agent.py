@@ -38,9 +38,8 @@ class DDPGAgent(object):
             logger.info("clip_norm={} <= 0, hence disabled.".format(self.hps.clip_norm))
 
         # Define action clipping range
-        assert all(self.ac_space.low == -self.ac_space.high)
-        self.max_ac = self.ac_space.high[0].astype('float32')
-        assert all(ac_comp == self.max_ac for ac_comp in self.ac_space.high)
+        self.max_ac = max(np.abs(np.amax(self.ac_space.high.astype('float32'))),
+                          np.abs(np.amin(self.ac_space.low.astype('float32'))))
 
         # Define critic to use
         assert sum([self.hps.use_c51, self.hps.use_qr]) <= 1
@@ -52,6 +51,12 @@ class DDPGAgent(object):
             self.c51_supp = torch.linspace(*c51_supp_range).to(self.device)
             self.c51_delta = ((self.hps.c51_vmax - self.hps.c51_vmin) /
                               (self.hps.c51_num_atoms - 1))
+            c51_offset_range = (0,
+                                (self.hps.batch_size - 1) * self.hps.c51_num_atoms,
+                                self.hps.batch_size)
+            c51_offset = torch.linspace(*c51_offset_range)
+            self.c51_offset = c51_offset.long().unsqueeze(1).expand(self.hps.batch_size,
+                                                                    self.hps.c51_num_atoms)
         elif self.hps.use_qr:
             assert not self.hps.clipped_double
             qr_cum_density = np.array([((2 * i) + 1) / (2.0 * self.hps.num_tau)
@@ -133,6 +138,13 @@ class DDPGAgent(object):
         log_module_info(logger, 'crit', self.crit)
         if self.hps.clipped_double:
             log_module_info(logger, 'twin', self.crit)
+
+        # from agents.smooth import Smooth  # FIXME
+        # self.smooth = Smooth(
+        #         self.env,
+        #         self.device,
+        #         self.hps,
+        #     )
 
     def norm_rets(self, x):
         """Standardize if return normalization is used, do nothing otherwise"""
@@ -225,6 +237,8 @@ class DDPGAgent(object):
             self.pnp_actr.rms_obs.update(_state)
             self.apnp_actr.rms_obs.update(_state)
 
+        # self.smooth.pred_net.rms_obs.update(_state)  # FIXME
+
     def sample_batch(self):
         """Sample a batch of transitions from the replay buffer"""
 
@@ -276,7 +290,10 @@ class DDPGAgent(object):
         state = torch.Tensor(batch['obs0']).to(self.device)
         action = torch.Tensor(batch['acs']).to(self.device)
         next_state = torch.Tensor(batch['obs1']).to(self.device)
+
         reward = torch.Tensor(batch['rews']).to(self.device)
+        # reward = self.smooth.get_rew(state, action).to(self.device)  # FIXME
+
         done = torch.Tensor(batch['dones1'].astype('float32')).to(self.device)
         if self.hps.prioritized_replay:
             iws = torch.Tensor(batch['iws']).to(self.device)
@@ -300,33 +317,49 @@ class DDPGAgent(object):
 
             # Compute QZ estimate
             z = self.crit.QZ(state, action).unsqueeze(-1)
-            z.data.clamp_(0.01, 0.99)
             # Compute target QZ estimate
-            z_prime = self.targ_crit.QZ(next_state, next_action)
-            z_prime.data.clamp_(0.01, 0.99)
-
+            z_prime = self.targ_crit.QZ(next_state, next_action).detach()
+            # Project on the c51 support
             gamma_mask = ((self.hps.gamma ** td_len) * (1 - done))
-            Tz = reward + (gamma_mask * self.c51_supp.view(1, self.hps.c51_num_atoms))
-            Tz = Tz.clamp(self.hps.c51_vmin, self.hps.c51_vmax)
-            b = (Tz - self.hps.c51_vmin) / self.c51_delta
-            l = b.floor().long()  # noqa
-            u = b.ceil().long()
-            targ_z = z_prime.clone().zero_()
-            z_prime_l = z_prime * (u + (l == u).float() - b)  # noqa
-            z_prime_u = z_prime * (b - l.float())  # noqa
-            for i in range(targ_z.size(0)):
-                targ_z[i].index_add_(0, l[i], z_prime_l[i])
-                targ_z[i].index_add_(0, u[i], z_prime_u[i])
-
+            p_targ_z = reward + (gamma_mask * self.c51_supp.unsqueeze(0))
+            # Clamp when the projected value goes under the min or over the max
+            p_targ_z = p_targ_z.clamp(self.hps.c51_vmin, self.hps.c51_vmax)
+            # Define the translation (bias) to map the projection to [0, num_atoms - 1]
+            bias = (p_targ_z - self.hps.c51_vmin) / self.c51_delta
+            # How to assign mass at atoms while the values are over the continuous
+            # interval [0, num_atoms - 1]? Calculate the lower and upper atoms.
+            # Note, the integers of the interval coincide exactly with the atoms.
+            # The considered atoms are therefore calculated simply using floor and ceil.
+            l_atom, u_atom = bias.floor().long(), bias.ceil().long()
+            # Deal with the case where bias is an integer (exact atom), bias = l_atom = u_atom,
+            # in which case we offset l by 1 to the left and u by 1 to the right when applicable.
+            l_atom[(u_atom > 0) * (l_atom == u_atom)] -= 1
+            u_atom[(l_atom < (self.hps.c51_num_atoms - 1)) * (l_atom == u_atom)] += 1
+            # Calculate the gaps between the bias and the lower and upper atoms respectively
+            l_gap = bias - l_atom.float()
+            u_gap = u_atom.float() - bias
+            # Create the translated and projected target, with the right size, but zero-filled
+            t_p_targ_z = z_prime.detach().clone().zero_()  # detach just in case
+            t_p_targ_z.view(-1).index_add_(
+                0,
+                (l_atom + self.c51_offset).view(-1),
+                (z_prime * u_gap).view(-1)
+            )
+            t_p_targ_z.view(-1).index_add_(
+                0,
+                (u_atom + self.c51_offset).view(-1),
+                (z_prime * l_gap).view(-1)
+            )
             # Reshape target to be of shape [batch_size, self.hps.c51_num_atoms, 1]
-            targ_z = targ_z.view(-1, self.hps.c51_num_atoms, 1)
+            t_p_targ_z = t_p_targ_z.view(-1, self.hps.c51_num_atoms, 1)
 
             # Critic loss
-            ce_losses = -(targ_z.detach() * torch.log(z)).sum(dim=1)
+            ce_losses = -(t_p_targ_z.detach() * torch.log(z)).sum(dim=1)
+            # shape is batch_size x 1
 
             if self.hps.prioritized_replay:
                 # Update priorities
-                new_priorities = np.abs(ce_losses.sum(dim=1).detach().cpu().numpy()) + 1e-6
+                new_priorities = np.abs(ce_losses.detach().cpu().numpy()) + 1e-6
                 self.replay_buffer.update_priorities(batch['idxs'].reshape(-1), new_priorities)
                 # Adjust with importance weights
                 ce_losses *= iws
@@ -343,7 +376,6 @@ class DDPGAgent(object):
 
             # Compute QZ estimate
             z = self.crit.QZ(state, action).unsqueeze(-1)
-
             # Compute target QZ estimate
             z_prime = self.targ_crit.QZ(next_state, next_action)
             # Reshape rewards to be of shape [batch_size x num_tau, 1]
@@ -486,6 +518,8 @@ class DDPGAgent(object):
 
         metrics = {k: torch.stack(v).mean().cpu().data.numpy() for k, v in metrics.items()}
         lrnows = {'actr': self.actr_sched.get_last_lr()}
+
+        # self.smooth.update(batch)  # FIXME
 
         return metrics, lrnows
 

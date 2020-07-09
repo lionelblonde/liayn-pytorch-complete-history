@@ -1,7 +1,6 @@
 import argparse
 from copy import deepcopy
 import os
-import os.path as osp
 import numpy as np
 import subprocess
 import yaml
@@ -51,6 +50,7 @@ BOOL_ARGS = ['cuda', 'render', 'record', 'with_scheduler',
 
 # Create the list of environments from the indicated benchmark
 BENCH = CONFIG['parameters']['benchmark']
+
 if BENCH == 'mujoco':
     # Define environments map
     TOC = {
@@ -71,17 +71,6 @@ if BENCH == 'mujoco':
                   'Ant-v3'],
     }
     ENVS = TOC[args.envset]
-    # Define per-environment discount map
-    PED = {
-        'InvertedPendulum': 0.99,
-        'Reacher': 0.99,
-        'InvertedDoublePendulum': 0.99,
-        'Hopper': 0.995,
-        'Walker2d': 0.99,
-        'HalfCheetah': 0.99,
-        'Ant': 0.99,
-        'Humanoid': 0.99,
-    }
 
     if CLUSTER == 'baobab':
         # Define per-environement partitions map
@@ -97,14 +86,14 @@ if BENCH == 'mujoco':
         }
         # Define per-environment ntasks map
         PEC = {
-            'InvertedPendulum': '8' if NEED_DEMOS else '16',
-            'Reacher': '8' if NEED_DEMOS else '16',
-            'InvertedDoublePendulum': '8' if NEED_DEMOS else '16',
-            'Hopper': '16' if NEED_DEMOS else '32',
-            'Walker2d': '16' if NEED_DEMOS else '32',
-            'HalfCheetah': '16' if NEED_DEMOS else '32',
-            'Ant': '16' if NEED_DEMOS else '32',
-            'Humanoid': '16' if NEED_DEMOS else '32',
+            'InvertedPendulum': 8 if NEED_DEMOS else 1,
+            'Reacher': 8 if NEED_DEMOS else 1,
+            'InvertedDoublePendulum': 8 if NEED_DEMOS else 1,
+            'Hopper': 16 if NEED_DEMOS else 1,
+            'Walker2d': 16 if NEED_DEMOS else 1,
+            'HalfCheetah': 16 if NEED_DEMOS else 1,
+            'Ant': 16 if NEED_DEMOS else 1,
+            'Humanoid': 16 if NEED_DEMOS else 1,
         }
         # Define per-environment timeouts map
         PET = {
@@ -117,30 +106,84 @@ if BENCH == 'mujoco':
             'Ant': '2-00:00:00' if args.long else '0-12:00:00',
             'Humanoid': '2-00:00:00' if args.long else '0-12:00:00',
         }
+
 elif BENCH == 'dmc':
     TOC = {
         'debug': ['Hopper-Hop-Feat-v0'],
         'flareon': ['Hopper-Hop-Feat-v0',
-                    'Walker-Run-Feat-v0']
+                    'Walker-Run-Feat-v0'],
+        'glaceon': ['Hopper-Hop-Feat-v0',
+                    'Cheetah-Run-Feat-v0',
+                    'Walker-Run-Feat-v0'],
+        'stacker': ['Stacker-Stack_2-Feat-v0',
+                    'Stacker-Stack_4-Feat-v0'],
+        'humanoid': ['Humanoid-Walk-Feat-v0',
+                     'Humanoid-Run-Feat-v0'],
+        'cmu': ['Humanoid_CMU-Stand-Feat-v0',
+                'Humanoid_CMU-Run-Feat-v0'],
+        'quad': ['Quadruped-Walk-Feat-v0',
+                 'Quadruped-Run-Feat-v0',
+                 'Quadruped-Escape-Feat-v0',
+                 'Quadruped-Fetch-Feat-v0'],
+        'dog': ['Dog-Run-Feat-v0',
+                'Dog-Fetch-Feat-v0'],
     }
     ENVS = TOC[args.envset]
-    # Define per-environment discount map
-    PED = {
-        'Hopper-Hop-Feat': 0.99,
-    }
 
     if CLUSTER == 'baobab':
         # Define per-environement partitions map
         PEP = {
             'Hopper-Hop-Feat': 'shared-EL7,mono-shared-EL7',
+            'Walker-Run-Feat': 'shared-EL7,mono-shared-EL7',
+            'Cheetah-Run-Feat': 'shared-EL7,mono-shared-EL7',
+            'Stacker-Stack_2-Feat': 'shared-EL7,mono-shared-EL7',
+            'Stacker-Stack_4-Feat': 'shared-EL7,mono-shared-EL7',
+            'Humanoid-Walk-Feat': 'shared-EL7,mono-shared-EL7',
+            'Humanoid-Run-Feat': 'shared-EL7,mono-shared-EL7',
+            'Humanoid_CMU-Stand-Feat': 'shared-EL7,mono-shared-EL7',
+            'Humanoid_CMU-Run-Feat': 'shared-EL7,mono-shared-EL7',
+            'Quadruped-Walk-Feat': 'shared-EL7,mono-shared-EL7',
+            'Quadruped-Run-Feat': 'shared-EL7,mono-shared-EL7',
+            'Quadruped-Escape-Feat': 'shared-EL7,mono-shared-EL7',
+            'Quadruped-Fetch-Feat': 'shared-EL7,mono-shared-EL7',
+            'Dog-Run-Feat': 'shared-EL7,mono-shared-EL7',
+            'Dog-Fetch-Feat': 'shared-EL7,mono-shared-EL7',
         }
         # Define per-environment ntasks map
         PEC = {
-            'Hopper-Hop-Feat': '1',
+            'Hopper-Hop-Feat': 16,
+            'Walker-Run-Feat': 16,
+            'Cheetah-Run-Feat': 16,
+            'Stacker-Stack_2-Feat': 1,
+            'Stacker-Stack_4-Feat': 1,
+            'Humanoid-Walk-Feat': 1,
+            'Humanoid-Run-Feat': 1,
+            'Humanoid_CMU-Stand-Feat': 1,
+            'Humanoid_CMU-Run-Feat': 1,
+            'Quadruped-Walk-Feat': 1,
+            'Quadruped-Run-Feat': 1,
+            'Quadruped-Escape-Feat': 1,
+            'Quadruped-Fetch-Feat': 1,
+            'Dog-Run-Feat': 1,
+            'Dog-Fetch-Feat': 1,
         }
         # Define per-environment timeouts map
         PET = {
-            'Hopper-Hop-Feat': '0-12:00:00',
+            'Hopper-Hop-Feat': '2-00:00:00' if args.long else '0-12:00:00',
+            'Walker-Run-Feat': '2-00:00:00' if args.long else '0-12:00:00',
+            'Cheetah-Run-Feat': '2-00:00:00' if args.long else '0-12:00:00',
+            'Stacker-Stack_2-Feat': '2-00:00:00' if args.long else '0-12:00:00',
+            'Stacker-Stack_4-Feat': '2-00:00:00' if args.long else '0-12:00:00',
+            'Humanoid-Walk-Feat': '2-00:00:00' if args.long else '0-12:00:00',
+            'Humanoid-Run-Feat': '2-00:00:00' if args.long else '0-12:00:00',
+            'Humanoid_CMU-Stand-Feat': '2-00:00:00' if args.long else '0-12:00:00',
+            'Humanoid_CMU-Run-Feat': '2-00:00:00' if args.long else '0-12:00:00',
+            'Quadruped-Walk-Feat': '2-00:00:00' if args.long else '0-12:00:00',
+            'Quadruped-Run-Feat': '2-00:00:00' if args.long else '0-12:00:00',
+            'Quadruped-Escape-Feat': '2-00:00:00' if args.long else '0-12:00:00',
+            'Quadruped-Fetch-Feat': '2-00:00:00' if args.long else '0-12:00:00',
+            'Dog-Run-Feat': '2-00:00:00' if args.long else '0-12:00:00',
+            'Dog-Fetch-Feat': '2-00:00:00' if args.long else '0-12:00:00',
         }
 
 else:
@@ -150,7 +193,7 @@ assert bool(TOC), "each benchmark must have a 'TOC' dictionary"
 # If needed, create the list of demonstrations
 if NEED_DEMOS:
     demo_dir = os.environ['DEMO_DIR']
-    DEMOS = {k: osp.join(demo_dir, k) for k in ENVS}
+    DEMOS = {k: os.path.join(demo_dir, k) for k in ENVS}
 
 
 def copy_and_add_seed(hpmap, seed):
@@ -187,8 +230,6 @@ def copy_and_add_env(hpmap, env):
     hpmap_.update({'env_id': env})
     if NEED_DEMOS:
         hpmap_.update({'expert_path': DEMOS[env]})
-    # Override discount value
-    hpmap_.update({'gamma': PED[env.split('-v')[0]]})
     return hpmap_
 
 
@@ -213,9 +254,6 @@ def get_hps(sweep):
             # Generic
             'uuid': uuid,
             'cuda': CONFIG['parameters']['cuda'],
-            'checkpoint_dir': CONFIG['logging']['checkpoint_dir'],
-            'log_dir': CONFIG['logging']['log_dir'],
-            'video_dir': CONFIG['logging']['video_dir'],
             'render': False,
             'record': CONFIG['logging'].get('record', False),
             'task': CONFIG['parameters']['task'],
@@ -272,8 +310,8 @@ def get_hps(sweep):
             'use_c51': CONFIG['parameters'].get('use_c51', False),
             'use_qr': CONFIG['parameters'].get('use_qr', False),
             'c51_num_atoms': CONFIG['parameters'].get('c51_num_atoms', 51),
-            'c51_vmin': CONFIG['parameters'].get('c51_vmin', 0.),
-            'c51_vmax': CONFIG['parameters'].get('c51_vmax', 100.),
+            'c51_vmin': CONFIG['parameters'].get('c51_vmin', -10.),
+            'c51_vmax': CONFIG['parameters'].get('c51_vmax', 10.),
             'num_tau': np.random.choice([100, 200]),
 
             # Adversarial imitation
@@ -308,15 +346,18 @@ def get_hps(sweep):
 
             'red_epochs': CONFIG['parameters'].get('red_epochs', 200),
             'red_lr': CONFIG['parameters'].get('red_lr', 5e-4),
-            'proportion_of_exp_per_red_update': CONFIG['parameters'].get('proportion_of_exp_per_red_update', 1.),
+            'proportion_of_exp_per_red_update': CONFIG['parameters'].get(
+                'proportion_of_exp_per_red_update', 1.),
 
             'kye_batch_norm': CONFIG['parameters'].get('kye_batch_norm', True),
             'kye_lr': CONFIG['parameters'].get('kye_lr', 5e-4),
-            'proportion_of_exp_per_kye_update': CONFIG['parameters'].get('proportion_of_exp_per_kye_update', 1.),
+            'proportion_of_exp_per_kye_update': CONFIG['parameters'].get(
+                'proportion_of_exp_per_kye_update', 1.),
 
             'dyn_batch_norm': CONFIG['parameters'].get('dyn_batch_norm', True),
             'dyn_lr': CONFIG['parameters'].get('dyn_lr', 5e-4),
-            'proportion_of_exp_per_dyn_update': CONFIG['parameters'].get('proportion_of_exp_per_dyn_update', 1.),
+            'proportion_of_exp_per_dyn_update': CONFIG['parameters'].get(
+                'proportion_of_exp_per_dyn_update', 1.),
 
             'use_purl': CONFIG['parameters'].get('use_purl', False),
             'purl_eta': float(CONFIG['parameters'].get('purl_eta', 0.25)),
@@ -330,9 +371,6 @@ def get_hps(sweep):
             # Generic
             'uuid': uuid,
             'cuda': CONFIG['parameters']['cuda'],
-            'checkpoint_dir': CONFIG['logging']['checkpoint_dir'],
-            'log_dir': CONFIG['logging']['log_dir'],
-            'video_dir': CONFIG['logging']['video_dir'],
             'render': False,
             'record': CONFIG['logging'].get('record', False),
             'task': CONFIG['parameters']['task'],
@@ -386,8 +424,8 @@ def get_hps(sweep):
             'use_c51': CONFIG['parameters'].get('use_c51', False),
             'use_qr': CONFIG['parameters'].get('use_qr', False),
             'c51_num_atoms': CONFIG['parameters'].get('c51_num_atoms', 51),
-            'c51_vmin': CONFIG['parameters'].get('c51_vmin', 0.),
-            'c51_vmax': CONFIG['parameters'].get('c51_vmax', 100.),
+            'c51_vmin': CONFIG['parameters'].get('c51_vmin', -10.),
+            'c51_vmax': CONFIG['parameters'].get('c51_vmax', 10.),
             'num_tau': CONFIG['parameters'].get('num_tau', 200),
 
             # Adversarial imitation
@@ -418,15 +456,18 @@ def get_hps(sweep):
 
             'red_epochs': CONFIG['parameters'].get('red_epochs', 200),
             'red_lr': CONFIG['parameters'].get('red_lr', 5e-4),
-            'proportion_of_exp_per_red_update': CONFIG['parameters'].get('proportion_of_exp_per_red_update', 1.),
+            'proportion_of_exp_per_red_update': CONFIG['parameters'].get(
+                'proportion_of_exp_per_red_update', 1.),
 
             'kye_batch_norm': CONFIG['parameters'].get('kye_batch_norm', True),
             'kye_lr': CONFIG['parameters'].get('kye_lr', 5e-4),
-            'proportion_of_exp_per_kye_update': CONFIG['parameters'].get('proportion_of_exp_per_kye_update', 1.),
+            'proportion_of_exp_per_kye_update': CONFIG['parameters'].get(
+                'proportion_of_exp_per_kye_update', 1.),
 
             'dyn_batch_norm': CONFIG['parameters'].get('dyn_batch_norm', True),
             'dyn_lr': CONFIG['parameters'].get('dyn_lr', 5e-4),
-            'proportion_of_exp_per_dyn_update': CONFIG['parameters'].get('proportion_of_exp_per_dyn_update', 1.),
+            'proportion_of_exp_per_dyn_update': CONFIG['parameters'].get(
+                'proportion_of_exp_per_dyn_update', 1.),
 
             'use_purl': CONFIG['parameters'].get('use_purl', False),
             'purl_eta': float(CONFIG['parameters'].get('purl_eta', 0.25)),
@@ -476,7 +517,7 @@ def create_job_str(name, command, envkey):
     """Build the batch script that launches a job"""
 
     # Prepend python command with python binary path
-    command = osp.join(os.environ['CONDA_PREFIX'], "bin", command)
+    command = os.path.join(os.environ['CONDA_PREFIX'], "bin", command)
 
     if CLUSTER == 'baobab':
         # Set sbatch config
@@ -529,9 +570,12 @@ def run(args):
     """Spawn jobs"""
 
     # Create directory for spawned jobs
-    os.makedirs("spawn", exist_ok=True)
+    root = os.path.dirname(os.path.abspath(__file__))
+    spawn_dir = os.path.join(root, 'spawn')
+    os.makedirs(spawn_dir, exist_ok=True)
     if CLUSTER == 'local':
-        os.makedirs("tmux", exist_ok=True)
+        tmux_dir = os.path.join(root, 'tmux')
+        os.makedirs(tmux_dir, exist_ok=True)
 
     # Get the hyperparameter set(s)
     if args.sweep:
@@ -560,9 +604,10 @@ def run(args):
     for i, (name, job) in enumerate(zipsame(names, jobs)):
         logger.info(">>>>>>>>>>>>>>>>>>>> Job #{} ready to submit. Config below.".format(i))
         logger.info(job + "\n")
-        dir_ = name.split('.')[1]
-        os.makedirs("spawn/{}".format(dir_), exist_ok=True)
-        job_name = "spawn/{}/{}.sh".format(dir_, name)
+        dirname = name.split('.')[1]
+        full_dirname = os.path.join(spawn_dir, dirname)
+        os.makedirs(full_dirname, exist_ok=True)
+        job_name = os.path.join(full_dirname, "{}.sh".format(name))
         with open(job_name, 'w') as f:
             f.write(job)
         if args.call and not CLUSTER == 'local':
@@ -590,7 +635,7 @@ def run(args):
                       'panes': [pane]}
             yaml_content['windows'].append(window)
         # Dump the assembled tmux config into a yaml file
-        job_config = "tmux/{}.yaml".format(session_name)
+        job_config = os.path.join(tmux_dir, "{}.yaml".format(session_name))
         with open(job_config, "w") as f:
             yaml.dump(yaml_content, f, default_flow_style=False)
         if args.call:

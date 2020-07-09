@@ -97,8 +97,9 @@ class ExperimentInitializer:
             pass
         if self.args.task == 'eval':
             name += "{}.".format(self.args.task)
-            assert self.args.num_trajs != np.inf, "num trajs must be finite"
             name += "num_trajs_{}.".format(self.args.num_trajs)
         name += self.args.env_id
+        if self.args.algo == 'sam-dac':
+            name += ".demos{}".format(str(self.args.num_demos).zfill(3))
         name += ".seed_{}".format(str(self.args.seed).zfill(2))
         return name

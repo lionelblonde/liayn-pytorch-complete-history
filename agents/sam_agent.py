@@ -50,9 +50,8 @@ class SAMAgent(object):
         self.eval_mode = self.expert_dataset is None
 
         # Define action clipping range
-        assert all(self.ac_space.low == -self.ac_space.high)
-        self.max_ac = self.ac_space.high[0].astype('float32')
-        assert all(ac_comp == self.max_ac for ac_comp in self.ac_space.high)
+        self.max_ac = max(np.abs(np.amax(self.ac_space.high.astype('float32'))),
+                          np.abs(np.amin(self.ac_space.low.astype('float32'))))
 
         # Define critic to use
         assert sum([self.hps.use_c51, self.hps.use_qr]) <= 1
