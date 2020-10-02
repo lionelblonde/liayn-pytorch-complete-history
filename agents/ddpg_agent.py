@@ -139,13 +139,6 @@ class DDPGAgent(object):
         if self.hps.clipped_double:
             log_module_info(logger, 'twin', self.crit)
 
-        # from agents.smooth import Smooth  # FIXME
-        # self.smooth = Smooth(
-        #         self.env,
-        #         self.device,
-        #         self.hps,
-        #     )
-
     def norm_rets(self, x):
         """Standardize if return normalization is used, do nothing otherwise"""
         if self.hps.ret_norm:
@@ -237,8 +230,6 @@ class DDPGAgent(object):
             self.pnp_actr.rms_obs.update(_state)
             self.apnp_actr.rms_obs.update(_state)
 
-        # self.smooth.pred_net.rms_obs.update(_state)  # FIXME
-
     def sample_batch(self):
         """Sample a batch of transitions from the replay buffer"""
 
@@ -290,10 +281,7 @@ class DDPGAgent(object):
         state = torch.Tensor(batch['obs0']).to(self.device)
         action = torch.Tensor(batch['acs']).to(self.device)
         next_state = torch.Tensor(batch['obs1']).to(self.device)
-
         reward = torch.Tensor(batch['rews']).to(self.device)
-        # reward = self.smooth.get_rew(state, action).to(self.device)  # FIXME
-
         done = torch.Tensor(batch['dones1'].astype('float32')).to(self.device)
         if self.hps.prioritized_replay:
             iws = torch.Tensor(batch['iws']).to(self.device)
@@ -518,8 +506,6 @@ class DDPGAgent(object):
 
         metrics = {k: torch.stack(v).mean().cpu().data.numpy() for k, v in metrics.items()}
         lrnows = {'actr': self.actr_sched.get_last_lr()}
-
-        # self.smooth.update(batch)  # FIXME
 
         return metrics, lrnows
 

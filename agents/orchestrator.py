@@ -226,7 +226,6 @@ def ep_generator(env, agent, render, record):
                 obs_render = []
             acs = []
             env_rews = []
-            agent.reset_noise()
             ob = np.array(env.reset())
 
             if record:
@@ -277,7 +276,6 @@ def evaluate(args,
 
 def learn(args,
           rank,
-          world_size,
           env,
           eval_env,
           agent_wrapper,
@@ -379,10 +377,10 @@ def learn(args,
                 for training_step in range(args.training_steps_per_iter):
 
                     if agent.param_noise is not None:
+                        # Adapt parameter noise
+                        agent.adapt_param_noise()
                         if training_step % args.pn_adapt_frequency == 0:
-                            # Adapt parameter noise
-                            agent.adapt_param_noise()
-                            # Store the action-space dist between perturbed and non-perturbed actors
+                            # Store the action-space dist between perturbed and non-perturbed
                             d['pn_dist'].append(agent.pn_dist)
                             # Store the new std resulting from the adaption
                             d['pn_cur_std'].append(agent.param_noise.cur_std)
@@ -395,13 +393,14 @@ def learn(args,
                         update_actor=not bool(iters_so_far % args.actor_update_delay),
                         iters_so_far=iters_so_far,
                     )
-                    # Log training stats
-                    d['actr_losses'].append(metrics['actr_loss'])
-                    d['crit_losses'].append(metrics['crit_loss'])
-                    if agent.hps.clipped_double:
-                        d['twin_losses'].append(metrics['twin_loss'])
-                    if agent.hps.prioritized_replay:
-                        iws = metrics['iws']  # last one only
+                    if iters_so_far % args.eval_frequency == 0:
+                        # Log training stats
+                        d['actr_losses'].append(metrics['actr_loss'])
+                        d['crit_losses'].append(metrics['crit_loss'])
+                        if agent.hps.clipped_double:
+                            d['twin_losses'].append(metrics['twin_loss'])
+                        if agent.hps.prioritized_replay:
+                            iws = metrics['iws']  # last one only
 
         elif args.algo == 'sam-dac':
 
@@ -409,10 +408,10 @@ def learn(args,
                 for training_step in range(args.training_steps_per_iter):
 
                     if agent.param_noise is not None:
+                        # Adapt parameter noise
+                        agent.adapt_param_noise()
                         if training_step % args.pn_adapt_frequency == 0:
-                            # Adapt parameter noise
-                            agent.adapt_param_noise()
-                            # Store the action-space dist between perturbed and non-perturbed actors
+                            # Store the action-space dist between perturbed and non-perturbed
                             d['pn_dist'].append(agent.pn_dist)
                             # Store the new std resulting from the adaption
                             d['pn_cur_std'].append(agent.param_noise.cur_std)
@@ -426,23 +425,25 @@ def learn(args,
                             update_actor=not bool(iters_so_far % args.actor_update_delay),
                             iters_so_far=iters_so_far,
                         )
-                        # Log training stats
-                        d['actr_losses'].append(metrics['actr_loss'])
-                        d['crit_losses'].append(metrics['crit_loss'])
-                        if agent.hps.clipped_double:
-                            d['twin_losses'].append(metrics['twin_loss'])
-                        if agent.hps.prioritized_replay:
-                            iws = metrics['iws']  # last one only
-                        if agent.hps.kye_p and agent.hps.adaptive_aux_scaling:
-                            d['cos_sims_p'].append(metrics['cos_sim_aux'])
+                        if iters_so_far % args.eval_frequency == 0:
+                            # Log training stats
+                            d['actr_losses'].append(metrics['actr_loss'])
+                            d['crit_losses'].append(metrics['crit_loss'])
+                            if agent.hps.clipped_double:
+                                d['twin_losses'].append(metrics['twin_loss'])
+                            if agent.hps.prioritized_replay:
+                                iws = metrics['iws']  # last one only
+                            if agent.hps.kye_p and agent.hps.adaptive_aux_scaling:
+                                d['cos_sims_p'].append(metrics['cos_sim_aux'])
 
                     for _ in range(agent.hps.d_steps):
                         # Sample a batch of transitions from the replay buffer
                         batch = agent.sample_batch()
                         # Update the discriminator
                         metrics = agent.update_discriminator(batch)
-                        # Log training stats
-                        d['disc_losses'].append(metrics['disc_loss'])
+                        if iters_so_far % args.eval_frequency == 0:
+                            # Log training stats
+                            d['disc_losses'].append(metrics['disc_loss'])
 
         if eval_env is not None:
             assert rank == 0, "non-zero rank mpi worker forbidden here"
@@ -463,25 +464,23 @@ def learn(args,
         iters_so_far += 1
         timesteps_so_far += args.rollout_len
 
-        if rank == 0:
+        if rank == 0 and ((iters_so_far - 1) % args.eval_frequency == 0):
 
             # Log stats in csv
-            if (iters_so_far - 1) % args.eval_frequency == 0:
-                logger.record_tabular('timestep', timesteps_so_far)
-                logger.record_tabular('eval_len', np.mean(d['eval_len']))
-                logger.record_tabular('eval_env_ret', np.mean(d['eval_env_ret']))
-                logger.record_tabular('avg_eval_env_ret', np.mean(b_eval))
-                if agent.hps.kye_p and agent.hps.adaptive_aux_scaling:
-                    logger.record_tabular('cos_sim_p', np.mean(d['cos_sims_p']))
-                logger.info("dumping stats in .csv file")
-                logger.dump_tabular()
+            logger.record_tabular('timestep', timesteps_so_far)
+            logger.record_tabular('eval_len', np.mean(d['eval_len']))
+            logger.record_tabular('eval_env_ret', np.mean(d['eval_env_ret']))
+            logger.record_tabular('avg_eval_env_ret', np.mean(b_eval))
+            if agent.hps.kye_p and agent.hps.adaptive_aux_scaling:
+                logger.record_tabular('cos_sim_p', np.mean(d['cos_sims_p']))
+            logger.info("dumping stats in .csv file")
+            logger.dump_tabular()
 
-            if ((iters_so_far - 1) % args.eval_frequency == 0) and args.record:
+            if args.record:
                 # Record the last episode in a video
                 record_video(vid_dir, iters_so_far, eval_ep['obs_render'])
 
             # Log stats in dashboard
-            wandb.log({"num_workers": np.array(world_size)})
             if agent.hps.prioritized_replay:
                 quantiles = [0.1, 0.25, 0.5, 0.75, 0.9]
                 np.quantile(iws, quantiles)
@@ -507,11 +506,10 @@ def learn(args,
                     wandb.log({'cos_sim_p': np.mean(d['cos_sims_p'])},
                               step=timesteps_so_far)
 
-            if (iters_so_far - 1) % args.eval_frequency == 0:
-                wandb.log({'eval_len': np.mean(d['eval_len']),
-                           'eval_env_ret': np.mean(d['eval_env_ret']),
-                           'avg_eval_env_ret': np.mean(b_eval)},
-                          step=timesteps_so_far)
+            wandb.log({'eval_len': np.mean(d['eval_len']),
+                       'eval_env_ret': np.mean(d['eval_env_ret']),
+                       'avg_eval_env_ret': np.mean(b_eval)},
+                      step=timesteps_so_far)
 
         # Clear the iteration's running stats
         d.clear()

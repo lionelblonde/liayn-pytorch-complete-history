@@ -101,5 +101,5 @@ class ExperimentInitializer:
         name += self.args.env_id
         if self.args.algo == 'sam-dac':
             name += ".demos{}".format(str(self.args.num_demos).zfill(3))
-        name += ".seed_{}".format(str(self.args.seed).zfill(2))
+        name += ".seed{}".format(str(self.args.seed).zfill(2))
         return name

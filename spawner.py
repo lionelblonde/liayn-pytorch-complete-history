@@ -1,6 +1,7 @@
 import argparse
 from copy import deepcopy
 import os
+import sys
 import numpy as np
 import subprocess
 import yaml
@@ -17,6 +18,7 @@ parser.add_argument('--num_demos', '--list', nargs='+', type=str, default=None)
 boolean_flag(parser, 'long', default=False, help="long duration?")
 boolean_flag(parser, 'call', default=False, help="launch immediately?")
 boolean_flag(parser, 'sweep', default=False, help="hp search?")
+boolean_flag(parser, 'wandb_upgrade', default=True, help="upgrade wandb?")
 args = parser.parse_args()
 
 # Retrieve config from filesystem
@@ -568,6 +570,12 @@ def create_job_str(name, command, envkey):
 
 def run(args):
     """Spawn jobs"""
+
+   if args.wandb_upgrade:
+        # Upgrade the wandb package
+        logger.info(">>>>>>>>>>>>>>>>>>>> Upgrading wandb pip package")
+        out = subprocess.check_output([sys.executable, '-m', 'pip', 'install', 'wandb', '--upgrade'])
+        logger.info(out.decode("utf-8"))
 
     # Create directory for spawned jobs
     root = os.path.dirname(os.path.abspath(__file__))

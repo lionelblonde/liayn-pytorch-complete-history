@@ -131,6 +131,6 @@ def argparser(description="DDPG Experiment"):
     parser.add_argument('--num_trajs', help='number of trajectories to evaluate',
                         type=int, default=10)
     parser.add_argument('--iter_num', help='iteration to evaluate the model at',
-                        type=int, default=None)
+                        type=str, default=None)  # the number might have a suffix
 
     return parser

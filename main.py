@@ -19,12 +19,6 @@ from agents.sam_agent import SAMAgent
 def train(args):
     """Train an agent"""
 
-    # Make the paths absolute
-    args.root = os.path.dirname(os.path.abspath(__file__))
-    for k in ['checkpoints', 'logs', 'videos']:
-        new_k = "{}_dir".format(k[:-1])
-        vars(args)[new_k] = os.path.join(args.root, 'data', k)
-
     # Get the current process rank
     comm = MPI.COMM_WORLD
     rank = comm.Get_rank()
@@ -99,7 +93,6 @@ def train(args):
     orchestrator.learn(
         args=args,
         rank=rank,
-        world_size=world_size,
         env=env,
         eval_env=eval_env,
         agent_wrapper=agent_wrapper,
@@ -154,7 +147,7 @@ def evaluate(args):
     else:
         raise NotImplementedError("algorithm not covered")
 
-    # Evaluate agent trained via DDPG
+    # Evaluate
     orchestrator.evaluate(
         args=args,
         env=env,
@@ -168,6 +161,13 @@ def evaluate(args):
 
 if __name__ == '__main__':
     _args = argparser().parse_args()
+
+    # Make the paths absolute
+    _args.root = os.path.dirname(os.path.abspath(__file__))
+    for k in ['checkpoints', 'logs', 'videos', 'replays']:
+        new_k = "{}_dir".format(k[:-1])
+        vars(_args)[new_k] = os.path.join(_args.root, 'data', k)
+
     if _args.task == 'train':
         train(_args)
     elif _args.task == 'eval':
