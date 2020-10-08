@@ -8,6 +8,9 @@ import torch.nn.utils as U
 from helpers.distributed_util import RunMoms
 
 
+STANDARDIZED_OB_CLAMPS = [-5., 5.]
+
+
 # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> Core.
 
 def init(weight_scale=1., constant_bias=0.):
@@ -90,23 +93,23 @@ class Discriminator(nn.Module):
             if self.hps.wrap_absorb:
                 # Normalize state
                 input_a_ = input_a.clone()[:, 0:-1]
-                input_a_ = torch.clamp(self.rms_obs.standardize(input_a_), -5., 5.)
+                input_a_ = self.rms_obs.standardize(input_a_).clamp(*STANDARDIZED_OB_CLAMPS)
                 input_a = torch.cat([input_a_, input_a[:, -1].unsqueeze(-1)], dim=-1)
                 if self.hps.state_only:
                     # Normalize next state
                     input_b_ = input_b.clone()[:, 0:-1]
-                    input_b_ = torch.clamp(self.rms_obs.standardize(input_b_), -5., 5.)
+                    input_b_ = self.rms_obs.standardize(input_b_).clamp(*STANDARDIZED_OB_CLAMPS)
                     input_b = torch.cat([input_b_, input_b[:, -1].unsqueeze(-1)], dim=-1)
             else:
                 # Normalize state
-                input_a = torch.clamp(self.rms_obs.standardize(input_a), -5., 5.)
+                input_a = self.rms_obs.standardize(input_a).clamp(*STANDARDIZED_OB_CLAMPS)
                 if self.hps.state_only:
                     # Normalize next state
-                    input_b = torch.clamp(self.rms_obs.standardize(input_b), -5., 5.)
+                    input_b = self.rms_obs.standardize(input_b).clamp(*STANDARDIZED_OB_CLAMPS)
         else:
-            input_a = torch.clamp(input_a, -5., 5.)
+            input_a = input_a.clamp(*STANDARDIZED_OB_CLAMPS)
             if self.hps.state_only:
-                input_b = torch.clamp(input_b, -5., 5.)
+                input_b = input_b.clamp(*STANDARDIZED_OB_CLAMPS)
         # Concatenate
         x = torch.cat([input_a, input_b], dim=-1)
         x = self.fc_stack(x)
@@ -169,7 +172,7 @@ class Actor(nn.Module):
             raise ValueError("should not be called")
 
     def forward(self, ob):
-        ob = torch.clamp(self.rms_obs.standardize(ob), -5., 5.)
+        ob = self.rms_obs.standardize(ob).clamp(*STANDARDIZED_OB_CLAMPS)
         x = self.fc_stack(ob)
         ac = float(self.ac_max) * torch.tanh(self.a_head(self.a_fc_stack(x)))
         out = [ac]
@@ -224,7 +227,7 @@ class Critic(nn.Module):
         return self.forward(ob, ac)
 
     def forward(self, ob, ac):
-        ob = torch.clamp(self.rms_obs.standardize(ob), -5., 5.)
+        ob = self.rms_obs.standardize(ob).clamp(*STANDARDIZED_OB_CLAMPS)
         x = torch.cat([ob, ac], dim=-1)
         x = self.fc_stack(x)
         x = self.head(x)

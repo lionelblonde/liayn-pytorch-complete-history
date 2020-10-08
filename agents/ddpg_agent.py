@@ -1,4 +1,4 @@
-from collections import namedtuple, defaultdict
+from collections import defaultdict
 import os.path as osp
 
 import numpy as np
@@ -8,7 +8,7 @@ import torch.nn.functional as F
 
 from helpers import logger
 from helpers.console_util import log_env_info, log_module_info
-from helpers.math_util import huber_quant_reg_loss
+from helpers.math_util import huber_quant_reg_loss, LRScheduler
 from helpers.distributed_util import average_gradients, sync_with_root, RunMoms
 from agents.memory import ReplayBuffer, PrioritizedReplayBuffer, UnrealReplayBuffer
 from agents.nets import Actor, Critic
@@ -33,7 +33,6 @@ class DDPGAgent(object):
         self.hps = hps
         assert self.hps.lookahead > 1 or not self.hps.n_step_returns
         assert self.hps.rollout_len <= self.hps.batch_size
-        assert self.hps.clip_norm >= 0
         if self.hps.clip_norm <= 0:
             logger.info("clip_norm={} <= 0, hence disabled.".format(self.hps.clip_norm))
 
@@ -116,16 +115,13 @@ class DDPGAgent(object):
                                              lr=self.hps.critic_lr,
                                              weight_decay=self.hps.wd_scale)
 
-        # Set up the learning rate schedule
-        def _lr(t):  # flake8: using a def instead of a lambda
-            if self.hps.with_scheduler:
-                return (1.0 - ((t - 1.0) / (self.hps.num_timesteps //
-                                            self.hps.rollout_len)))
-            else:
-                return 1.0
-
         # Set up lr scheduler
-        self.actr_sched = torch.optim.lr_scheduler.LambdaLR(self.actr_opt, _lr)
+        self.actr_sched = LRScheduler(
+            optimizer=self.actr_opt,
+            initial_lr=self.hps.actor_lr,
+            lr_schedule=self.hps.lr_schedule,
+            total_num_steps=self.hps.num_timesteps,
+        )
 
         assert self.hps.ret_norm or not self.hps.popart
         assert not (self.hps.use_c51 and self.hps.ret_norm)
@@ -498,14 +494,19 @@ class DDPGAgent(object):
         self.crit_opt.step()
         if self.hps.clipped_double:
             self.twin_opt.step()
+
         if update_actor:
+
             self.actr_opt.step()
-            self.actr_sched.step(iters_so_far)
-            # Update target nets
-            self.update_target_net(iters_so_far)  # not an error
+
+            _lr = self.actr_sched.step(steps_so_far=iters_so_far * self.hps.rollout_len)
+            logger.info(f"lr is {_lr} after {iters_so_far} timesteps")
+
+        # Update target nets
+        self.update_target_net(iters_so_far)
 
         metrics = {k: torch.stack(v).mean().cpu().data.numpy() for k, v in metrics.items()}
-        lrnows = {'actr': self.actr_sched.get_last_lr()}
+        lrnows = {'actr': _lr}
 
         return metrics, lrnows
 
@@ -578,37 +579,14 @@ class DDPGAgent(object):
                 param = self.actr.state_dict()[p].clone()
                 self.pnp_actr.state_dict()[p].data.copy_(param.data)
 
-    def save(self, path, iters):
-        SaveBundle = namedtuple('SaveBundle', ['model', 'optimizer', 'scheduler'])
-        actr_bundle = SaveBundle(
-            model=self.actr.state_dict(),
-            optimizer=self.actr_opt.state_dict(),
-            scheduler=self.actr_sched.state_dict(),
-        )
-        crit_bundle = SaveBundle(
-            model=self.crit.state_dict(),
-            optimizer=self.crit_opt.state_dict(),
-            scheduler=None,
-        )
-        torch.save(actr_bundle._asdict(), osp.join(path, "actr_iter{}.pth".format(iters)))
-        torch.save(crit_bundle._asdict(), osp.join(path, "crit_iter{}.pth".format(iters)))
+    def save(self, path, iters_so_far):
+        torch.save(self.actr.state_dict(), osp.join(path, f"actr_{iters_so_far}.pth"))
+        torch.save(self.crit.state_dict(), osp.join(path, f"crit_{iters_so_far}.pth"))
         if self.hps.clipped_double:
-            twin_bundle = SaveBundle(
-                model=self.twin.state_dict(),
-                optimizer=self.twin_opt.state_dict(),
-                scheduler=None,
-            )
-            torch.save(twin_bundle._asdict(), osp.join(path, "twin_iter{}.pth".format(iters)))
+            torch.save(self.twin.state_dict(), osp.join(path, f"twin_{iters_so_far}.pth"))
 
-    def load(self, path, iters):
-        actr_bundle = torch.load(osp.join(path, "actr_iter{}.pth".format(iters)))
-        self.actr.load_state_dict(actr_bundle['model'])
-        self.actr_opt.load_state_dict(actr_bundle['optimizer'])
-        self.actr_sched.load_state_dict(actr_bundle['scheduler'])
-        crit_bundle = torch.load(osp.join(path, "crit_iter{}.pth".format(iters)))
-        self.crit.load_state_dict(crit_bundle['model'])
-        self.crit_opt.load_state_dict(crit_bundle['optimizer'])
+    def load(self, path, iters_so_far):
+        self.actr.load_state_dict(torch.load(osp.join(path, f"actr_{iters_so_far}.pth")))
+        self.crit.load_state_dict(torch.load(osp.join(path, f"crit_{iters_so_far}.pth")))
         if self.hps.clipped_double:
-            twin_bundle = torch.load(osp.join(path, "twin_iter{}.pth".format(iters)))
-            self.twin.load_state_dict(twin_bundle['model'])
-            self.twin_opt.load_state_dict(twin_bundle['optimizer'])
+            self.twin.load_state_dict(torch.load(osp.join(path, f"twin_{iters_so_far}.pth")))

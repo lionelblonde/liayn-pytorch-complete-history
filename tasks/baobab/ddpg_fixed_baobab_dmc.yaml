@@ -28,7 +28,7 @@ parameters:
   # Optimization
   actor_lr: 1.0e-4
   critic_lr: 1.0e-4
-  with_scheduler: false
+  lr_schedule: 'linear'
   clip_norm: 1.
   wd_scale: 0.
 

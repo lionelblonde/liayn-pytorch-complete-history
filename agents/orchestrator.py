@@ -14,6 +14,9 @@ from helpers.console_util import timed_cm_wrapper, log_iter_info
 from helpers.opencv_util import record_video
 
 
+MAXLEN = 40
+
+
 def rl_rollout_generator(env, agent, rollout_len):
 
     t = 0
@@ -295,7 +298,7 @@ def learn(args,
 
     # Create collections
     d = defaultdict(list)
-    b_eval = deque(maxlen=10)
+    eval_deque = deque(maxlen=MAXLEN)
 
     if rank == 0:
         # Set up model save directory
@@ -458,7 +461,7 @@ def learn(args,
                         d['eval_len'].append(eval_ep['ep_len'])
                         d['eval_env_ret'].append(eval_ep['ep_env_ret'])
 
-                    b_eval.append(np.mean(d['eval_env_ret']))
+                    eval_deque.append(np.mean(d['eval_env_ret']))
 
         # Increment counters
         iters_so_far += 1
@@ -470,7 +473,7 @@ def learn(args,
             logger.record_tabular('timestep', timesteps_so_far)
             logger.record_tabular('eval_len', np.mean(d['eval_len']))
             logger.record_tabular('eval_env_ret', np.mean(d['eval_env_ret']))
-            logger.record_tabular('avg_eval_env_ret', np.mean(b_eval))
+            logger.record_tabular('avg_eval_env_ret', np.mean(eval_deque))
             if agent.hps.kye_p and agent.hps.adaptive_aux_scaling:
                 logger.record_tabular('cos_sim_p', np.mean(d['cos_sims_p']))
             logger.info("dumping stats in .csv file")
@@ -508,7 +511,7 @@ def learn(args,
 
             wandb.log({'eval_len': np.mean(d['eval_len']),
                        'eval_env_ret': np.mean(d['eval_env_ret']),
-                       'avg_eval_env_ret': np.mean(b_eval)},
+                       'avg_eval_env_ret': np.mean(eval_deque)},
                       step=timesteps_so_far)
 
         # Clear the iteration's running stats

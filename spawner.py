@@ -37,7 +37,7 @@ CONDA = CONFIG['resources']['conda_env']
 # Define experiment type
 TYPE = 'sweep' if args.sweep else 'fixed'
 # Write out the boolean arguments (using the 'boolean_flag' function)
-BOOL_ARGS = ['cuda', 'render', 'record', 'with_scheduler',
+BOOL_ARGS = ['cuda', 'render', 'record',
              'layer_norm',
              'prioritized_replay', 'ranked', 'unreal',
              'n_step_returns', 'ret_norm', 'popart',
@@ -273,7 +273,7 @@ def get_hps(sweep):
             # Optimization
             'actor_lr': float(np.random.choice([1e-4, 3e-4])),
             'critic_lr': float(np.random.choice([1e-4, 3e-4])),
-            'with_scheduler': CONFIG['parameters']['with_scheduler'],
+            'lr_schedule': CONFIG['parameters']['lr_schedule'],
             'clip_norm': CONFIG['parameters']['clip_norm'],
             'wd_scale': float(np.random.choice([1e-4, 3e-4, 1e-3])),
 
@@ -390,7 +390,7 @@ def get_hps(sweep):
             # Optimization
             'actor_lr': float(CONFIG['parameters'].get('actor_lr', 3e-4)),
             'critic_lr': float(CONFIG['parameters'].get('critic_lr', 3e-4)),
-            'with_scheduler': CONFIG['parameters']['with_scheduler'],
+            'lr_schedule': CONFIG['parameters']['lr_schedule'],
             'clip_norm': CONFIG['parameters']['clip_norm'],
             'wd_scale': float(CONFIG['parameters'].get('wd_scale', 3e-4)),
 
@@ -571,7 +571,7 @@ def create_job_str(name, command, envkey):
 def run(args):
     """Spawn jobs"""
 
-   if args.wandb_upgrade:
+    if args.wandb_upgrade:
         # Upgrade the wandb package
         logger.info(">>>>>>>>>>>>>>>>>>>> Upgrading wandb pip package")
         out = subprocess.check_output([sys.executable, '-m', 'pip', 'install', 'wandb', '--upgrade'])
