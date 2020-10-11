@@ -11,9 +11,12 @@ from agents.nets import init
 from helpers.distributed_util import RunMoms
 
 
+STANDARDIZED_OB_CLAMPS = [-5., 5.]
+
+
 class PredNet(nn.Module):
 
-    def __init__(self, env, hps):
+    def __init__(self, env, hps, rms_obs):
         super(PredNet, self).__init__()
         ob_dim = env.observation_space.shape[0]
         ac_dim = env.action_space.shape[0]
@@ -24,7 +27,7 @@ class PredNet(nn.Module):
         self.leak = 0.1
         if self.hps.kye_batch_norm:
             # Define observation whitening
-            self.rms_obs = RunMoms(shape=env.observation_space.shape, use_mpi=False)
+            self.rms_obs = rms_obs
         # Define the input dimension
         in_dim = ob_dim
         if self.hps.state_only:
@@ -53,23 +56,23 @@ class PredNet(nn.Module):
             if self.hps.wrap_absorb:
                 # Normalize state
                 input_a_ = input_a.clone()[:, 0:-1]
-                input_a_ = torch.clamp(self.rms_obs.standardize(input_a_), -5., 5.)
+                input_a_ = self.rms_obs.standardize(input_a_).clamp(*STANDARDIZED_OB_CLAMPS)
                 input_a = torch.cat([input_a_, input_a[:, -1].unsqueeze(-1)], dim=-1)
                 if self.hps.state_only:
                     # Normalize next state
                     input_b_ = input_b.clone()[:, 0:-1]
-                    input_b_ = torch.clamp(self.rms_obs.standardize(input_b_), -5., 5.)
+                    input_b_ = self.rms_obs.standardize(input_b_).clamp(*STANDARDIZED_OB_CLAMPS)
                     input_b = torch.cat([input_b_, input_b[:, -1].unsqueeze(-1)], dim=-1)
             else:
                 # Normalize state
-                input_a = torch.clamp(self.rms_obs.standardize(input_a), -5., 5.)
+                input_a = self.rms_obs.standardize(input_a).clamp(*STANDARDIZED_OB_CLAMPS)
                 if self.hps.state_only:
                     # Normalize next state
-                    input_b = torch.clamp(self.rms_obs.standardize(input_b), -5., 5.)
+                    input_b = self.rms_obs.standardize(input_b).clamp(*STANDARDIZED_OB_CLAMPS)
         else:
-            input_a = torch.clamp(input_a, -5., 5.)
+            input_a = input_a.clamp(*STANDARDIZED_OB_CLAMPS)
             if self.hps.state_only:
-                input_b = torch.clamp(input_b, -5., 5.)
+                input_b = input_b.clamp(*STANDARDIZED_OB_CLAMPS)
         # Concatenate
         x = torch.cat([input_a, input_b], dim=-1)
         x = self.fc_stack(x)
@@ -79,13 +82,14 @@ class PredNet(nn.Module):
 
 class KnowYourEnemy(object):
 
-    def __init__(self, env, device, hps):
+    def __init__(self, env, device, hps, rms_obs):
         self.env = env
         self.device = device
         self.hps = hps
+        self.rms_obs = rms_obs
 
         # Create nets
-        self.pred_net = PredNet(self.env, self.hps).to(self.device)
+        self.pred_net = PredNet(self.env, self.hps, self.rms_obs).to(self.device)
 
         # Create optimizer
         self.optimizer = torch.optim.Adam(self.pred_net.parameters(), lr=self.hps.kye_lr)

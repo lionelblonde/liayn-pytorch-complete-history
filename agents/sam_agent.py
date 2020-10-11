@@ -79,29 +79,39 @@ class SAMAgent(object):
         self.apply_ls_fake = self.parse_label_smoothing_type(self.hps.fake_ls_type)
         self.apply_ls_real = self.parse_label_smoothing_type(self.hps.real_ls_type)
 
+        # Create observation normalizer that maintains running statistics
+        self.rms_obs = RunMoms(shape=self.ob_shape, use_mpi=True)
+
+        assert self.hps.ret_norm or not self.hps.popart
+        assert not (self.hps.use_c51 and self.hps.ret_norm)
+        assert not (self.hps.use_qr and self.hps.ret_norm)
+        if self.hps.ret_norm:
+            # Create return normalizer that maintains running statistics
+            self.rms_ret = RunMoms(shape=(1,), use_mpi=False)
+
         # Create online and target nets, and initilize the target nets
-        self.actr = Actor(self.env, self.hps).to(self.device)
+        self.actr = Actor(self.env, self.hps, self.rms_obs).to(self.device)
         sync_with_root(self.actr)
-        self.targ_actr = Actor(self.env, self.hps).to(self.device)
+        self.targ_actr = Actor(self.env, self.hps, self.rms_obs).to(self.device)
         self.targ_actr.load_state_dict(self.actr.state_dict())
-        self.crit = Critic(self.env, self.hps).to(self.device)
+        self.crit = Critic(self.env, self.hps, self.rms_obs).to(self.device)
         sync_with_root(self.crit)
-        self.targ_crit = Critic(self.env, self.hps).to(self.device)
+        self.targ_crit = Critic(self.env, self.hps, self.rms_obs).to(self.device)
         self.targ_crit.load_state_dict(self.crit.state_dict())
         if self.hps.clipped_double:
             # Create second ('twin') critic and target critic
             # TD3, https://arxiv.org/abs/1802.09477
-            self.twin = Critic(self.env, self.hps).to(self.device)
+            self.twin = Critic(self.env, self.hps, self.rms_obs).to(self.device)
             sync_with_root(self.twin)
-            self.targ_twin = Critic(self.env, self.hps).to(self.device)
+            self.targ_twin = Critic(self.env, self.hps, self.rms_obs).to(self.device)
             self.targ_twin.load_state_dict(self.twin.state_dict())
 
         if self.param_noise is not None:
             # Create parameter-noise-perturbed ('pnp') actor
-            self.pnp_actr = Actor(self.env, self.hps).to(self.device)
+            self.pnp_actr = Actor(self.env, self.hps, self.rms_obs).to(self.device)
             self.pnp_actr.load_state_dict(self.actr.state_dict())
             # Create adaptive-parameter-noise-perturbed ('apnp') actor
-            self.apnp_actr = Actor(self.env, self.hps).to(self.device)
+            self.apnp_actr = Actor(self.env, self.hps, self.rms_obs).to(self.device)
             self.apnp_actr.load_state_dict(self.actr.state_dict())
 
         # Set up replay buffer
@@ -157,17 +167,10 @@ class SAMAgent(object):
             )
             assert len(self.e_dataloader) > 0
             # Create discriminator
-            self.disc = Discriminator(self.env, self.hps).to(self.device)
+            self.disc = Discriminator(self.env, self.hps, self.rms_obs).to(self.device)
             sync_with_root(self.disc)
             # Create optimizer
             self.disc_opt = torch.optim.Adam(self.disc.parameters(), lr=self.hps.d_lr)
-
-        assert self.hps.ret_norm or not self.hps.popart
-        assert not (self.hps.use_c51 and self.hps.ret_norm)
-        assert not (self.hps.use_qr and self.hps.ret_norm)
-        if self.hps.ret_norm:
-            # Create return normalizer that maintains running statistics
-            self.rms_ret = RunMoms(shape=(1,), use_mpi=False)  # Careful, set to False here
 
         log_module_info(logger, 'actr', self.actr)
         log_module_info(logger, 'crit', self.crit)
@@ -183,6 +186,7 @@ class SAMAgent(object):
                 self.device,
                 self.hps,
                 self.expert_dataset,
+                self.rms_obs,
             )
             # Train the predictor network on expert dataset
             logger.info(">>>> RED training: BEG")
@@ -198,6 +202,7 @@ class SAMAgent(object):
                 self.env,
                 self.device,
                 self.hps,
+                self.rms_obs,
             )
 
         if self.hps.reward_type == 'gail_dyn_mod':
@@ -205,6 +210,7 @@ class SAMAgent(object):
                 self.env,
                 self.device,
                 self.hps,
+                self.rms_obs,
             )
 
         if self.hps.reward_type in ['gail_grad_mod', 'gail_red_grad_mod']:
@@ -332,30 +338,14 @@ class SAMAgent(object):
         """Store the transition in memory and update running moments"""
         # Store transition in the replay buffer
         self.replay_buffer.append(transition)
-        # Update the running moments for all the networks (online and targets)
+        # Update the observation normalizer
         _state = transition['obs0']
         if self.hps.wrap_absorb:
             if np.all(np.equal(_state, np.append(np.zeros_like(_state[0:-1]), 1.))):
                 # logger.info("absorbing -> not using it to update rms_obs")
                 return
             _state = _state[0:-1]
-        self.actr.rms_obs.update(_state)
-        self.crit.rms_obs.update(_state)
-        self.targ_actr.rms_obs.update(_state)
-        self.targ_crit.rms_obs.update(_state)
-        if self.hps.clipped_double:
-            self.twin.rms_obs.update(_state)
-            self.targ_twin.rms_obs.update(_state)
-        if self.param_noise is not None:
-            self.pnp_actr.rms_obs.update(_state)
-            self.apnp_actr.rms_obs.update(_state)
-        if self.hps.d_batch_norm:
-            self.disc.rms_obs.update(_state)  # only with agent samples, no expert ones
-
-        if self.hps.reward_type == 'gail_kye_mod' and self.hps.kye_batch_norm:
-            self.kye.pred_net.rms_obs.update(_state)
-        if self.hps.reward_type == 'gail_dyn_mod' and self.hps.dyn_batch_norm:
-            self.dyn.pred_net.rms_obs.update(_state)
+        self.rms_obs.update(_state)
 
     def sample_batch(self):
         """Sample a batch of transitions from the replay buffer"""

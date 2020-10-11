@@ -5,7 +5,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.nn.utils as U
-from helpers.distributed_util import RunMoms
 
 
 STANDARDIZED_OB_CLAMPS = [-5., 5.]
@@ -49,7 +48,7 @@ def snwrap(use_sn=False):
 
 class Discriminator(nn.Module):
 
-    def __init__(self, env, hps):
+    def __init__(self, env, hps, rms_obs):
         super(Discriminator, self).__init__()
         ob_dim = env.observation_space.shape[0]
         ac_dim = env.action_space.shape[0]
@@ -61,7 +60,7 @@ class Discriminator(nn.Module):
         apply_sn = snwrap(use_sn=self.hps.spectral_norm)
         if self.hps.d_batch_norm:
             # Define observation whitening
-            self.rms_obs = RunMoms(shape=env.observation_space.shape, use_mpi=True)
+            self.rms_obs = rms_obs
         # Define the input dimension
         in_dim = ob_dim
         if self.hps.state_only:
@@ -119,14 +118,14 @@ class Discriminator(nn.Module):
 
 class Actor(nn.Module):
 
-    def __init__(self, env, hps):
+    def __init__(self, env, hps, rms_obs):
         super(Actor, self).__init__()
         ob_dim = env.observation_space.shape[0]
         ac_dim = env.action_space.shape[0]
         self.ac_max = env.action_space.high[0]
         self.hps = hps
         # Define observation whitening
-        self.rms_obs = RunMoms(shape=env.observation_space.shape, use_mpi=True)
+        self.rms_obs = rms_obs
         # Assemble the last layers and output heads
         self.fc_stack = nn.Sequential(OrderedDict([
             ('fc_block', nn.Sequential(OrderedDict([
@@ -192,7 +191,7 @@ class Actor(nn.Module):
 
 class Critic(nn.Module):
 
-    def __init__(self, env, hps):
+    def __init__(self, env, hps, rms_obs):
         super(Critic, self).__init__()
         ob_dim = env.observation_space.shape[0]
         ac_dim = env.action_space.shape[0]
@@ -204,7 +203,7 @@ class Critic(nn.Module):
             num_heads = 1
         self.hps = hps
         # Define observation whitening
-        self.rms_obs = RunMoms(shape=env.observation_space.shape, use_mpi=True)
+        self.rms_obs = rms_obs
         # Assemble the last layers and output heads
         self.fc_stack = nn.Sequential(OrderedDict([
             ('fc_block_1', nn.Sequential(OrderedDict([

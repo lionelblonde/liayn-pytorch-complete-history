@@ -11,9 +11,12 @@ from agents.nets import init
 from helpers.distributed_util import RunMoms
 
 
+STANDARDIZED_OB_CLAMPS = [-5., 5.]
+
+
 class PredNet(nn.Module):
 
-    def __init__(self, env, hps):
+    def __init__(self, env, hps, rms_obs):
         super(PredNet, self).__init__()
         ob_dim = env.observation_space.shape[0]
         ac_dim = env.action_space.shape[0]
@@ -24,7 +27,7 @@ class PredNet(nn.Module):
         self.leak = 0.1
         if self.hps.dyn_batch_norm:
             # Define observation whitening
-            self.rms_obs = RunMoms(shape=env.observation_space.shape, use_mpi=False)
+            self.rms_obs = rms_obs
         # Assemble the layers
         self.fc_stack = nn.Sequential(OrderedDict([
             ('fc_block_1', nn.Sequential(OrderedDict([
@@ -46,12 +49,12 @@ class PredNet(nn.Module):
             # Apply normalization
             if self.hps.wrap_absorb:
                 obs_ = obs.clone()[:, 0:-1]
-                obs_ = torch.clamp(self.rms_obs.standardize(obs_), -5., 5.)
+                obs_ = self.rms_obs.standardize(obs_).clamp(*STANDARDIZED_OB_CLAMPS)
                 obs = torch.cat([obs_, obs[:, -1].unsqueeze(-1)], dim=-1)
             else:
-                obs = torch.clamp(self.rms_obs.standardize(obs), -5., 5.)
+                obs = self.rms_obs.standardize(obs).clamp(*STANDARDIZED_OB_CLAMPS)
         else:
-            obs = torch.clamp(obs, -5., 5.)
+            obs = obs.clamp(*STANDARDIZED_OB_CLAMPS)
         # Concatenate
         x = torch.cat([obs, acs], dim=-1)
         x = self.fc_stack(x)
@@ -61,13 +64,14 @@ class PredNet(nn.Module):
 
 class Forward(object):
 
-    def __init__(self, env, device, hps):
+    def __init__(self, env, device, hps, rms_obs):
         self.env = env
         self.device = device
         self.hps = hps
+        self.rms_obs = rms_obs
 
         # Create nets
-        self.pred_net = PredNet(self.env, self.hps).to(self.device)
+        self.pred_net = PredNet(self.env, self.hps, self.rms_obs).to(self.device)
 
         # Create optimizer
         self.optimizer = torch.optim.Adam(self.pred_net.parameters(), lr=self.hps.dyn_lr)
