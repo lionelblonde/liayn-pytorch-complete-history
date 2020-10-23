@@ -296,11 +296,11 @@ def learn(args,
     timesteps_so_far = 0
     tstart = time.time()
 
-    # Create collections
-    d = defaultdict(list)
-    eval_deque = deque(maxlen=MAXLEN)
-
     if rank == 0:
+        # Create collections
+        d = defaultdict(list)
+        eval_deque = deque(maxlen=MAXLEN)
+
         # Set up model save directory
         ckpt_dir = osp.join(args.checkpoint_dir, experiment_name)
         os.makedirs(ckpt_dir, exist_ok=True)
@@ -348,9 +348,9 @@ def learn(args,
             break
 
     # Create rollout generator for training the agent
-    if args.algo == 'ddpg-td3':
+    if args.algo.split('_')[0] == 'ddpg-td3':
         roll_gen = rl_rollout_generator(env, agent, args.rollout_len)
-    elif args.algo == 'sam-dac':
+    elif args.algo.split('_')[0] == 'sam-dac':
         roll_gen = il_rollout_generator(env, agent, args.rollout_len)
     else:
         raise NotImplementedError
@@ -374,15 +374,16 @@ def learn(args,
         with timed("interacting"):
             roll_gen.__next__()  # no need to get the returned rollout, stored in buffer
 
-        if args.algo == 'ddpg-td3':
+        if args.algo.split('_')[0] == 'ddpg-td3':
 
             with timed('training'):
                 for training_step in range(args.training_steps_per_iter):
 
                     if agent.param_noise is not None:
-                        # Adapt parameter noise
-                        agent.adapt_param_noise()
                         if training_step % args.pn_adapt_frequency == 0:
+                            # Adapt parameter noise
+                            agent.adapt_param_noise()
+                        if rank == 0 and iters_so_far % args.eval_frequency == 0:
                             # Store the action-space dist between perturbed and non-perturbed
                             d['pn_dist'].append(agent.pn_dist)
                             # Store the new std resulting from the adaption
@@ -396,7 +397,7 @@ def learn(args,
                         update_actor=not bool(iters_so_far % args.actor_update_delay),
                         iters_so_far=iters_so_far,
                     )
-                    if iters_so_far % args.eval_frequency == 0:
+                    if rank == 0 and iters_so_far % args.eval_frequency == 0:
                         # Log training stats
                         d['actr_losses'].append(metrics['actr_loss'])
                         d['crit_losses'].append(metrics['crit_loss'])
@@ -405,15 +406,16 @@ def learn(args,
                         if agent.hps.prioritized_replay:
                             iws = metrics['iws']  # last one only
 
-        elif args.algo == 'sam-dac':
+        elif args.algo.split('_')[0] == 'sam-dac':
 
             with timed('training'):
                 for training_step in range(args.training_steps_per_iter):
 
                     if agent.param_noise is not None:
-                        # Adapt parameter noise
-                        agent.adapt_param_noise()
                         if training_step % args.pn_adapt_frequency == 0:
+                            # Adapt parameter noise
+                            agent.adapt_param_noise()
+                        if rank == 0 and iters_so_far % args.eval_frequency == 0:
                             # Store the action-space dist between perturbed and non-perturbed
                             d['pn_dist'].append(agent.pn_dist)
                             # Store the new std resulting from the adaption
@@ -428,7 +430,7 @@ def learn(args,
                             update_actor=not bool(iters_so_far % args.actor_update_delay),
                             iters_so_far=iters_so_far,
                         )
-                        if iters_so_far % args.eval_frequency == 0:
+                        if rank == 0 and iters_so_far % args.eval_frequency == 0:
                             # Log training stats
                             d['actr_losses'].append(metrics['actr_loss'])
                             d['crit_losses'].append(metrics['crit_loss'])
@@ -444,24 +446,22 @@ def learn(args,
                         batch = agent.sample_batch()
                         # Update the discriminator
                         metrics = agent.update_discriminator(batch)
-                        if iters_so_far % args.eval_frequency == 0:
+                        if rank == 0 and iters_so_far % args.eval_frequency == 0:
                             # Log training stats
                             d['disc_losses'].append(metrics['disc_loss'])
 
-        if eval_env is not None:
-            assert rank == 0, "non-zero rank mpi worker forbidden here"
+        if rank == 0 and iters_so_far % args.eval_frequency == 0:
 
-            if iters_so_far % args.eval_frequency == 0:
+            with timed("evaluating"):
 
-                with timed("evaluating"):
-                    for eval_step in range(args.eval_steps_per_iter):
-                        # Sample an episode w/ non-perturbed actor w/o storing anything
-                        eval_ep = eval_ep_gen.__next__()
-                        # Aggregate data collected during the evaluation to the buffers
-                        d['eval_len'].append(eval_ep['ep_len'])
-                        d['eval_env_ret'].append(eval_ep['ep_env_ret'])
+                for eval_step in range(args.eval_steps_per_iter):
+                    # Sample an episode w/ non-perturbed actor w/o storing anything
+                    eval_ep = eval_ep_gen.__next__()
+                    # Aggregate data collected during the evaluation to the buffers
+                    d['eval_len'].append(eval_ep['ep_len'])
+                    d['eval_env_ret'].append(eval_ep['ep_env_ret'])
 
-                    eval_deque.append(np.mean(d['eval_env_ret']))
+                eval_deque.append(np.mean(d['eval_env_ret']))
 
         # Increment counters
         iters_so_far += 1
@@ -502,7 +502,7 @@ def learn(args,
                 wandb.log({'twin_loss': np.mean(d['twin_losses'])},
                           step=timesteps_so_far)
 
-            if args.algo == 'sam-dac':
+            if args.algo.split('_')[0] == 'sam-dac':
                 wandb.log({'disc_loss': np.mean(d['disc_losses'])},
                           step=timesteps_so_far)
                 if agent.hps.kye_p and agent.hps.adaptive_aux_scaling:
@@ -514,8 +514,8 @@ def learn(args,
                        'avg_eval_env_ret': np.mean(eval_deque)},
                       step=timesteps_so_far)
 
-        # Clear the iteration's running stats
-        d.clear()
+            # Clear the iteration's running stats
+            d.clear()
 
     if rank == 0:
         # Save once we are done iterating

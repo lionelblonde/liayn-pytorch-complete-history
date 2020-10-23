@@ -118,7 +118,7 @@ class Spawner(object):
         except OSError:
             pass
 
-        uuid = f"{hpmap['uuid']}.{gitsha}.{hpmap['env_id']}"
+        uuid = f"{hpmap['uuid']}.{gitsha}.{hpmap['env_id']}.{hpmap['algo']}_{self.args.num_workers}"
         if self.need_demos:
             uuid += f".demos{str(hpmap['num_demos']).zfill(3)}"
         uuid += f".seed{str(seed).zfill(2)}"
@@ -416,6 +416,7 @@ class Spawner(object):
         command = os.path.join(os.environ['CONDA_PREFIX'], "bin", command)
 
         if self.args.deployment == 'slurm':
+            os.makedirs("./out", exist_ok=True)
             # Set sbatch config
             bash_script_str = ('#!/usr/bin/env bash\n\n')
             bash_script_str += (f"#SBATCH --job-name={name}\n"

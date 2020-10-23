@@ -48,6 +48,6 @@ optional arguments:
 
 Here is an example:
 ```bash
-python spawner.py --config tasks/train_mujoco_ppo.yaml --env_bundle debug --wandb_upgrade --no-sweep --deploy_now --caliber short --num_workers 2 --num_seeds 3 --deployment tmux --conda_env pytorch
+python spawner.py --config tasks/train_mujoco_ddpg.yaml --env_bundle debug --wandb_upgrade --no-sweep --deploy_now --caliber short --num_workers 2 --num_seeds 3 --deployment tmux --conda_env pytorch
 ```
 Check the argument parser in `spawner.py` to know what each of these arguments mean.
