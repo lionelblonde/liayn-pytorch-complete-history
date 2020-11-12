@@ -164,10 +164,20 @@ def ep_generator(env, agent, render, record):
     they will be converted to numpy arrays once complete and ready to be yielded.
     """
 
-    kwargs = {'mode': 'rgb_array'}
+    if record:
 
-    def _render():
-        return env.render(**kwargs)
+        def bgr_to_rgb(x):
+            _b = np.expand_dims(x[..., 0], -1)
+            _g = np.expand_dims(x[..., 1], -1)
+            _r = np.expand_dims(x[..., 2], -1)
+            rgb_x = np.concatenate([_r, _g, _b], axis=-1)
+            del x, _b, _g, _r
+            return rgb_x
+
+        kwargs = {'mode': 'rgb_array'}
+
+        def _render():
+            return env.render(**kwargs)
 
     ob = np.array(env.reset())
 

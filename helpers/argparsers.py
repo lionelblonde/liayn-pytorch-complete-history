@@ -8,13 +8,10 @@ def argparser(description="DDPG Experiment"):
     parser = argparse.ArgumentParser(description=description,
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
-    # Primary
     parser.add_argument('--wandb_project', help='wandb project name', default='DEFAULT')
     parser.add_argument('--env_id', help='environment identifier', default=None)
     parser.add_argument('--seed', help='RNG seed', type=int, default=0)
     parser.add_argument('--expert_path', help='demos location', type=str, default=None)
-
-    # Generic
     parser.add_argument('--uuid', type=str, default=None)
     boolean_flag(parser, 'cuda', default=False)
     boolean_flag(parser, 'render', help='render the interaction traces', default=False)
