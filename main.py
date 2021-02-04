@@ -44,6 +44,7 @@ def train(args):
     else:
         os.environ["CUDA_VISIBLE_DEVICES"] = ""  # kill any possibility of usage
         device = torch.device("cpu")
+    args.device = device  # add the device to hps for convenience
     logger.info("device in use: {}".format(device))
 
     # Seedify

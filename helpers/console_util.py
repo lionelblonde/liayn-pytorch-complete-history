@@ -42,18 +42,22 @@ def log_module_info(logger, name, model):
     logger.info("total trainable params: {}.".format(_fmt(sum(num_params))))
 
 
-def timed_cm_wrapper(logger, color_message='yellow', color_elapsed_time='cyan'):
+def timed_cm_wrapper(logger, use, color_message='yellow', color_elapsed_time='cyan'):
     """Wraps a context manager that records the time taken by encapsulated ops"""
+    assert isinstance(use, bool)
     @contextmanager
     def _timed(message):
         """Display the time it took for the mpi master
         to perform the task within the context manager
         """
-        logger.info(colorize(">>>> {}".format(message).ljust(50, '.'), color=color_message))
-        tstart = time.time()
-        yield
-        logger.info(colorize("[done in {:.3f} seconds]".format(time.time() - tstart).rjust(50, '.'),
-                             color=color_elapsed_time))
+        if use:
+            logger.info(colorize(">>>> {}".format(message).ljust(50, '.'), color=color_message))
+            tstart = time.time()
+            yield
+            logger.info(colorize("[done in {:.3f} seconds]".format(time.time() - tstart).rjust(50, '.'),
+                                 color=color_elapsed_time))
+        else:
+            yield
     return _timed
 
 

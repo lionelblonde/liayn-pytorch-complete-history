@@ -5,6 +5,7 @@ import sys
 import numpy as np
 import subprocess
 import yaml
+from datetime import datetime
 
 from helpers import logger
 from helpers.misc_util import zipsame, boolean_flag
@@ -70,8 +71,9 @@ class Spawner(object):
             self.num_demos = [0]  # arbitrary, only used for dim checking
 
         # Assemble wandb project name
-        self.wandb_project = (self.config['logging']['wandb_project'].upper() + '-' +
-                              self.args.deployment.upper())
+        self.wandb_project = '-'.join([self.config['logging']['wandb_project'].upper(),
+                                       self.args.deployment.upper(),
+                                       datetime.now().strftime('%B')[0:3].upper() + f"{datetime.now().year}"])
 
         # Define spawn type
         self.type = 'sweep' if self.args.sweep else 'fixed'
@@ -92,10 +94,22 @@ class Spawner(object):
 
         if self.args.deployment == 'slurm':
             # Translate intuitive 'caliber' into actual duration and partition on the Baobab cluster
-            calibers = dict(short='0-06:00:00', long='0-12:00:00',  # partition: 'shared-EL7'
-                            verylong='2-00:00:00', veryverylong='4-00:00:00')  # partition: 'mono-EL7'
-            self.duration = calibers[self.args.caliber]  # intented KeyError trigger if invalid caliber
-            self.partition = 'mono-EL7' if 'verylong' in self.args.caliber else 'shared-EL7'
+            calibers = dict(short='0-06:00:00',
+                            long='0-12:00:00',
+                            verylong='1-00:00:00',
+                            veryverylong='2-00:00:00',
+                            veryveryverylong='4-00:00:00')
+            self.duration = calibers[self.args.caliber]  # intended KeyError trigger if invalid caliber
+            if 'verylong' in self.args.caliber:
+                if self.config['resources']['cuda']:
+                    self.partition = 'public-gpu'
+                else:
+                    self.partition = 'public-cpu'
+            else:
+                if self.config['resources']['cuda']:
+                    self.partition = 'shared-gpu'
+                else:
+                    self.partition = 'shared-cpu'
 
         # Define the set of considered environments from the considered suite
         self.envs = ENV_BUNDLES[self.config['meta']['benchmark']][self.args.env_bundle]
@@ -498,8 +512,10 @@ def run(args):
 
     # Spawn the jobs
     for i, (name, job) in enumerate(zipsame(names, jobs)):
-        logger.info(f">>>>>>>>>>>>>>>>>>>> Job #{i} ready to submit. Config below.")
-        logger.info(job + "\n")
+        logger.info(f"job#={i},name={name} -> ready to be deployed.")
+        if args.debug:
+            logger.info("config below.")
+            logger.info(job + "\n")
         dirname = name.split('.')[1]
         full_dirname = os.path.join(spawn_dir, dirname)
         os.makedirs(full_dirname, exist_ok=True)
@@ -509,10 +525,9 @@ def run(args):
         if args.deploy_now and not args.deployment == 'tmux':
             # Spawn the job!
             stdout = subprocess.run(["sbatch", job_name]).stdout
-            logger.info(f"[STDOUT]\n{stdout}")
-            logger.info(f">>>>>>>>>>>>>>>>>>>> Job #{i} submitted.")
-    # Summarize the number of jobs spawned
-    logger.info(f">>>>>>>>>>>>>>>>>>>> {len(jobs)} jobs were spawned.")
+            if args.debug:
+                logger.info(f"[STDOUT]\n{stdout}")
+            logger.info(f"job#={i},name={name} -> deployed on slurm.")
 
     if args.deployment == 'tmux':
         dir_ = hpmaps[0]['uuid'].split('.')[0]  # arbitrarilly picked index 0
@@ -530,6 +545,7 @@ def run(args):
                       'focus': False,
                       'panes': [pane]}
             yaml_content['windows'].append(window)
+            logger.info(f"job#={i},name={name} -> will run in tmux, session={session_name},window={i}.")
         # Dump the assembled tmux config into a yaml file
         job_config = os.path.join(tmux_dir, f"{session_name}.yaml")
         with open(job_config, "w") as f:
@@ -537,7 +553,12 @@ def run(args):
         if args.deploy_now:
             # Spawn all the jobs in the tmux session!
             stdout = subprocess.run(["tmuxp", "load", "-d", job_config]).stdout
-            logger.info(f"[STDOUT]\n{stdout}")
+            if args.debug:
+                logger.info(f"[STDOUT]\n{stdout}")
+            logger.info(f"[{len(jobs)}] jobs are now running in tmux session '{session_name}'.")
+    else:
+        # Summarize the number of jobs spawned
+        logger.info(f"[{len(jobs)}] jobs were spawned.")
 
 
 if __name__ == "__main__":
@@ -549,13 +570,23 @@ if __name__ == "__main__":
     parser.add_argument('--num_workers', type=int, default=None)
     parser.add_argument('--deployment', type=str, choices=['tmux', 'slurm'], default='tmux', help='deploy how?')
     parser.add_argument('--num_seeds', type=int, default=None)
-    parser.add_argument('--caliber', type=str, choices=['short', 'long', 'verylong', 'veryverylong'],
-                        default='short')
+    parser.add_argument('--caliber', type=str, default=None)
     boolean_flag(parser, 'deploy_now', default=True, help="deploy immediately?")
     boolean_flag(parser, 'sweep', default=False, help="hp search?")
     boolean_flag(parser, 'wandb_upgrade', default=True, help="upgrade wandb?")
     parser.add_argument('--num_demos', '--list', nargs='+', type=str, default=None)
+    boolean_flag(parser, 'debug', default=False, help="toggle debug/verbose mode in spawner")
+    boolean_flag(parser, 'wandb_dryrun', default=True, help="toggle wandb offline mode")
+    parser.add_argument('--debug_lvl', type=int, default=0, help="set the debug level for the spawned runs")
     args = parser.parse_args()
+
+    if args.wandb_dryrun:
+        # Run wandb in offline mode (does not sync with wandb servers in real time,
+        # use `wandb sync` later on the local directory in `wandb/` to sync to the wandb cloud hosted app)
+        os.environ["WANDB_MODE"] = "dryrun"
+
+    # Set the debug level for the spawned runs
+    os.environ["DEBUG_LVL"] = str(args.debug_lvl)
 
     # Create (and optionally deploy) the jobs
     run(args)

@@ -108,6 +108,14 @@ class TargNet(PredNet):
                 ('fc', nn.Linear(in_dim, 100)),
                 ('nl', nn.LeakyReLU(negative_slope=self.leak)),
             ]))),
+            ('fc_block_2', nn.Sequential(OrderedDict([
+                ('fc', nn.Linear(100, 100)),
+                ('nl', nn.LeakyReLU(negative_slope=self.leak)),
+            ]))),
+            ('fc_block_3', nn.Sequential(OrderedDict([
+                ('fc', nn.Linear(100, 100)),
+                ('nl', nn.LeakyReLU(negative_slope=self.leak)),
+            ]))),
         ]))
         # Perform initialization
         self.fc_stack.apply(init(weight_scale=math.sqrt(2) / math.sqrt(1 + self.leak**2)))

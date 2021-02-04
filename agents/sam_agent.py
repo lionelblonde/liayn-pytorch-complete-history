@@ -1,4 +1,5 @@
 from collections import defaultdict
+import os
 import os.path as osp
 
 import numpy as np
@@ -22,6 +23,14 @@ from agents.ac_noise import NormalAcNoise, OUAcNoise
 from agents.red import RandomExpertDistillation
 from agents.kye import KnowYourEnemy
 from agents.dyn import Forward
+
+
+debug_lvl = os.environ.get('DEBUG_LVL', 0)
+try:
+    debug_lvl = np.clip(int(debug_lvl), a_min=0, a_max=3)
+except ValueError:
+    debug_lvl = 0
+DEBUG = bool(debug_lvl >= 2)
 
 
 class SAMAgent(object):
@@ -741,7 +750,8 @@ class SAMAgent(object):
             self.actr_opt.step()
 
             _lr = self.actr_sched.step(steps_so_far=iters_so_far * self.hps.rollout_len)
-            logger.info(f"lr is {_lr} after {iters_so_far} timesteps")
+            if DEBUG:
+                logger.info(f"lr is {_lr} after {iters_so_far} timesteps")
 
         # Update target nets
         self.update_target_net(iters_so_far)
