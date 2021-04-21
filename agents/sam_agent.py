@@ -205,22 +205,6 @@ class SAMAgent(object):
                                                              metrics['loss']))
             logger.info("RED training ends")
 
-        # if self.hps.reward_type == 'gail_kye_mod':
-        #     self.kye = KnowYourEnemy(
-        #         self.env,
-        #         self.device,
-        #         self.hps,
-        #         self.rms_obs,
-        #     )
-
-        # if self.hps.reward_type == 'gail_dyn_mod':
-        #     self.dyn = Forward(
-        #         self.env,
-        #         self.device,
-        #         self.hps,
-        #         self.rms_obs,
-        #     )
-
         if self.hps.monitor_mods or self.hps.reward_type == 'gail_mod':
             self.grad_pen_1_deque = deque(maxlen=10)
             self.grad_pen_2_deque = deque(maxlen=10)
@@ -426,10 +410,6 @@ class SAMAgent(object):
             state = torch.Tensor(batch['obs0_orig']).to(self.device)
             action = torch.Tensor(batch['acs_orig']).to(self.device)
             next_state = torch.Tensor(batch['obs1_orig']).to(self.device)
-            if self.hps.reward_type in ['gail_dyn_mod', 'gail_kye_mod']:
-                state_a = torch.Tensor(batch['obs0']).to(self.device)
-                action_a = torch.Tensor(batch['acs']).to(self.device)
-                next_state_a = torch.Tensor(batch['obs1_td1']).to(self.device)  # not n-step next!
         else:
             state = torch.Tensor(batch['obs0']).to(self.device)
             action = torch.Tensor(batch['acs']).to(self.device)
@@ -758,12 +738,6 @@ class SAMAgent(object):
 
         # Update target nets
         self.update_target_net(iters_so_far)
-
-        if self.hps.reward_type == 'gail_kye_mod':
-            self.kye.update(state_a, action_a, next_state_a, self.disc.D)  # ignore returned var
-
-        if self.hps.reward_type == 'gail_dyn_mod':
-            self.dyn.update(state_a, action_a, next_state_a)  # ignore returned var
 
         metrics = {k: torch.stack(v).mean().cpu().data.numpy() for k, v in metrics.items()}
         lrnows = {'actr': _lr}

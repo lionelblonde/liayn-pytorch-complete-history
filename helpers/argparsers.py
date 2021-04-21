@@ -111,14 +111,6 @@ def argparser(description="DDPG Experiment"):
     parser.add_argument('--red_lr', type=float, default=5e-4)
     parser.add_argument('--proportion_of_exp_per_red_update', type=float, default=1.)
 
-    boolean_flag(parser, 'kye_batch_norm', default=True)
-    parser.add_argument('--kye_lr', type=float, default=5e-4)
-    parser.add_argument('--proportion_of_exp_per_kye_update', type=float, default=1.)
-
-    boolean_flag(parser, 'dyn_batch_norm', default=True)
-    parser.add_argument('--dyn_lr', type=float, default=5e-4)
-    parser.add_argument('--proportion_of_exp_per_dyn_update', type=float, default=1.)
-
     boolean_flag(parser, 'use_purl', default=False)
     parser.add_argument('--purl_eta', type=float, default=0.25)
 

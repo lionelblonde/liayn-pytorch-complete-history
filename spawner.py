@@ -88,8 +88,7 @@ class Spawner(object):
                           'state_only', 'minimax_only', 'spectral_norm', 'grad_pen', 'one_sided_pen',
                           'wrap_absorb', 'd_batch_norm', 'historical_patching', 'monitor_mods',
                           'kye_p', 'kye_mixing', 'adaptive_aux_scaling',
-                          'red_batch_norm', 'rnd_explo', 'rnd_batch_norm',
-                          'kye_batch_norm', 'dyn_batch_norm', 'use_purl']
+                          'red_batch_norm', 'use_purl']
 
         if self.args.deployment == 'slurm':
             # Translate intuitive 'caliber' into actual duration and partition on the Baobab cluster
@@ -264,16 +263,6 @@ class Spawner(object):
                 'proportion_of_exp_per_red_update': self.config.get(
                     'proportion_of_exp_per_red_update', 1.),
 
-                'kye_batch_norm': self.config.get('kye_batch_norm', True),
-                'kye_lr': self.config.get('kye_lr', 5e-4),
-                'proportion_of_exp_per_kye_update': self.config.get(
-                    'proportion_of_exp_per_kye_update', 1.),
-
-                'dyn_batch_norm': self.config.get('dyn_batch_norm', True),
-                'dyn_lr': self.config.get('dyn_lr', 5e-4),
-                'proportion_of_exp_per_dyn_update': self.config.get(
-                    'proportion_of_exp_per_dyn_update', 1.),
-
                 'use_purl': self.config.get('use_purl', False),
                 'purl_eta': float(self.config.get('purl_eta', 0.25)),
             }
@@ -371,16 +360,6 @@ class Spawner(object):
                 'red_lr': self.config.get('red_lr', 5e-4),
                 'proportion_of_exp_per_red_update': self.config.get(
                     'proportion_of_exp_per_red_update', 1.),
-
-                'kye_batch_norm': self.config.get('kye_batch_norm', True),
-                'kye_lr': self.config.get('kye_lr', 5e-4),
-                'proportion_of_exp_per_kye_update': self.config.get(
-                    'proportion_of_exp_per_kye_update', 1.),
-
-                'dyn_batch_norm': self.config.get('dyn_batch_norm', True),
-                'dyn_lr': self.config.get('dyn_lr', 5e-4),
-                'proportion_of_exp_per_dyn_update': self.config.get(
-                    'proportion_of_exp_per_dyn_update', 1.),
 
                 'use_purl': self.config.get('use_purl', False),
                 'purl_eta': float(self.config.get('purl_eta', 0.25)),

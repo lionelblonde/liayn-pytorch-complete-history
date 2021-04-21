@@ -87,19 +87,12 @@ kye_mixing: false
 adaptive_aux_scaling: false
 
 reward_type: 'gail'
+monitor_mods: false
 
 red_epochs: 200
 red_batch_norm: true
 red_lr: 5.0e-4
 proportion_of_exp_per_red_update: 1.
-
-kye_batch_norm: true
-kye_lr: 5.0e-4
-proportion_of_exp_per_kye_update: 1.
-
-dyn_batch_norm: true
-dyn_lr: 5.0e-4
-proportion_of_exp_per_dyn_update: 1.
 
 use_purl: false
 purl_eta: 0.25

@@ -509,7 +509,7 @@ def learn(args,
                     # Aggregate data collected during the evaluation to the buffers
                     d['eval_len'].append(eval_ep['ep_len'])
                     d['eval_env_ret'].append(eval_ep['ep_env_ret'])
-                    if agent.hps.monitor_mods:  # FIXME
+                    if agent.hps.monitor_mods:
                         d['mod_1'].extend(eval_ep['mods_1'])
                         d['mod_2'].extend(eval_ep['mods_2'])
 
@@ -523,7 +523,7 @@ def learn(args,
             logger.record_tabular('timestep', timesteps_so_far)
             logger.record_tabular('eval_len', np.mean(d['eval_len']))
             logger.record_tabular('eval_env_ret', np.mean(d['eval_env_ret']))
-            if agent.hps.monitor_mods:  # FIXME
+            if agent.hps.monitor_mods:
                 logger.record_tabular('mod_1', np.mean(d['mod_1']))
                 logger.record_tabular('mod_2', np.mean(d['mod_2']))
             if agent.hps.kye_p and agent.hps.adaptive_aux_scaling:
@@ -564,7 +564,7 @@ def learn(args,
             wandb.log({'eval_len': np.mean(d['eval_len']),
                        'eval_env_ret': np.mean(d['eval_env_ret'])},
                       step=timesteps_so_far)
-            if agent.hps.monitor_mods:  # FIXME
+            if agent.hps.monitor_mods:
                 wandb.log({'mod_1': np.mean(d['mod_1']),
                            'mod_2': np.mean(d['mod_2'])},
                           step=timesteps_so_far)
