@@ -39,6 +39,9 @@ class Dataset(torch.utils.data.Dataset):
 class DemoDataset(Dataset):
 
     def __init__(self, expert_path, num_demos, env, wrap_absorb):
+        logger.info("dataset:")
+        logger.info(f"expert path: {expert_path}")
+        logger.info(f"num_demos: {num_demos}")
         self.num_demos = num_demos
         self.data = defaultdict(list)
         self.stats = defaultdict(list)
@@ -49,7 +52,7 @@ class DemoDataset(Dataset):
             if i == num_demos:
                 break
             # Log the location of the loaded demo
-            logger.info("[INFO] demo #{} loaded from: {}".format(str(i).zfill(3), f))
+            logger.info("[DEMO DATASET] demo #{} loaded from: {}".format(str(i).zfill(3), f))
             # Load the demo from the file
             tmp = load_dict_h5py(f)
             # Remove undesirable keys (at least in this application)
@@ -59,14 +62,14 @@ class DemoDataset(Dataset):
             # Extract and display content dims
             dims = {k: tmp[k].shape[1:] for k in tmp.keys()}
             dims = ' | '.join(["{}={}".format(k, v) for k, v in dims.items()])
-            logger.info("[INFO]      dims: {}".format(dims))
+            logger.info("[DEMO DATASET]      dims: {}".format(dims))
             # Get episode statistics
             ep_len = tmp.pop('ep_lens', None)  # return and delete key
             ep_ret = tmp.pop('ep_env_rets', None)  # return and delete key
             assert isinstance(ep_len, np.int64), "each file should contain only one episode"
             assert isinstance(ep_ret, np.float64), "each file should contain only one episode"
-            logger.info("[INFO]      {}{}".format("ep_len".ljust(20, '-'), ep_len))
-            logger.info("[INFO]      {}{}".format("ep_ret".ljust(20, '-'), ep_ret))
+            logger.info("[DEMO DATASET]      {}{}".format("ep_len".ljust(20, '-'), ep_len))
+            logger.info("[DEMO DATASET]      {}{}".format("ep_ret".ljust(20, '-'), ep_ret))
             self.stats['ep_len'].append(ep_len)
             self.stats['ep_ret'].append(ep_ret)
             # Determine if terminal because of timeout or real termination
@@ -77,8 +80,8 @@ class DemoDataset(Dataset):
             start = np.random.randint(low=0, high=sub_rate)
             indices = [start + (i * sub_rate) for i in range(ep_len // sub_rate)]
             ep_len = len(indices)  # overwrite ep_len
-            logger.info("[INFO]      {}{}".format("subsample".ljust(20, '-'),
-                                                  "{}(sub_rate={})".format(ep_len, sub_rate)))
+            logger.info("[DEMO DATASET]      {}{}".format("subsample".ljust(20, '-'),
+                                                          "{}(sub_rate={})".format(ep_len, sub_rate)))
             for k in tmp.keys():
                 tmp[k] = tmp[k][indices]
 
@@ -88,7 +91,7 @@ class DemoDataset(Dataset):
                     # If the last subsampled transition is done, then it must be
                     # the very last transition of the episode, and testing whether it is
                     # a true terminal state is given by 'terminal' determined above.
-                    logger.info("[INFO] >>>> wrapping with absorbing transition <<<<")
+                    logger.info("[DEMO DATASET] >>>> wrapping with absorbing transition <<<<")
                     # Wrap with an absorbing state
                     obs0 = np.concatenate(
                         [tmp['obs0'],
@@ -149,8 +152,8 @@ class DemoDataset(Dataset):
             self.data[k] = np.concatenate(v, axis=0)
 
         # Log demos' statistics
-        logger.info("[INFO] keys extracted: {}".format(list(self.data.keys())))
+        logger.info("[DEMO DATASET] keys extracted: {}".format(list(self.data.keys())))
         lens, rets = self.stats['ep_len'], self.stats['ep_ret']
-        logger.info("[INFO] got {} transitions, from {} eps".format(len(self), self.num_demos))
-        logger.info("[INFO] episodic length: {}({})".format(np.mean(lens), np.std(lens)))
-        logger.info("[INFO] episodic return: {}({})".format(np.mean(rets), np.std(rets)))
+        logger.info("[DEMO DATASET] got {} transitions, from {} eps".format(len(self), self.num_demos))
+        logger.info("[DEMO DATASET] episodic length: {}({})".format(np.mean(lens), np.std(lens)))
+        logger.info("[DEMO DATASET] episodic return: {}({})".format(np.mean(rets), np.std(rets)))

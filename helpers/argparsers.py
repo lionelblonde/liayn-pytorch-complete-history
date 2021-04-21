@@ -90,7 +90,7 @@ def argparser(description="DDPG Experiment"):
     parser.add_argument('--grad_pen_targ', type=float, default=1.)
     parser.add_argument('--grad_pen_scale', type=float, default=10.)
     parser.add_argument('--grad_pen_type', type=str, default=None,
-                        choices=['wgan', 'hyperwgan', 'dragan', 'nagard'])
+                        choices=['wgan', 'dragan', 'nagard'])
     boolean_flag(parser, 'one_sided_pen', help='whether to use the one-sided version', default=True)
     boolean_flag(parser, 'historical_patching', default=True)
     parser.add_argument('--fake_ls_type', type=str, default='none')
@@ -103,9 +103,8 @@ def argparser(description="DDPG Experiment"):
     boolean_flag(parser, 'kye_mixing', default=True)
     boolean_flag(parser, 'adaptive_aux_scaling', default=False)
 
-    parser.add_argument('--reward_type', type=str, default=None,
-                        choices=['gail', 'red', 'gail_red_mod', 'gail_kye_mod', 'gail_dyn_mod',
-                                 'gail_grad_mod', 'gail_red_grad_mod'])
+    parser.add_argument('--reward_type', type=str, default=None, choices=['red', 'gail', 'gail_mod'])
+    boolean_flag(parser, 'monitor_mods', default=False)
 
     parser.add_argument('--red_epochs', type=int, default=200)
     boolean_flag(parser, 'red_batch_norm', default=True)

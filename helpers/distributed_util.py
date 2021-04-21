@@ -127,6 +127,8 @@ def sync_check(model, comm=COMM):
             comm.Bcast(param_, root=0)
             param_ = torch.FloatTensor(param_)
             assert torch.all(torch.eq(param.cpu(), param_.cpu())), "not in sync anymore"
+            # XXX: clusters with non-deterministic mpi computations make the `torch.eq` assert fail,
+            # use `torch.allclose` instead if needed
     logger.info("workers all synced with root")
 
 
@@ -226,3 +228,11 @@ class RunMoms(object):
         assert isinstance(x, torch.Tensor)
         std = torch.Tensor(self.std).to(x)
         return x / std
+
+    def load_state_dict(self, state_dict):
+        self.__dict__.update(state_dict)
+
+    def state_dict(self):
+        _state_dict = self.__dict__.copy()
+        _state_dict.pop('comm')
+        return _state_dict

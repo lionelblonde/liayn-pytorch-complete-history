@@ -196,6 +196,9 @@ def ep_generator(env, agent, render, record):
         obs_render = []
     acs = []
     env_rews = []
+    if agent.hps.monitor_mods:
+        mods_1 = []
+        mods_2 = []
 
     while True:
 
@@ -211,6 +214,24 @@ def ep_generator(env, agent, render, record):
         acs.append(ac)
         new_ob, env_rew, done, _ = env.step(ac)
 
+        if agent.hps.monitor_mods:
+            if agent.hps.wrap_absorb:
+                _ob = np.append(ob, 0)
+                _ac = np.append(ac, 0)
+                if done and not env._elapsed_steps == env._max_episode_steps:
+                    # Wrap with an absorbing state
+                    _new_ob = np.append(np.zeros(agent.ob_shape), 1)
+                else:
+                    _new_ob = np.append(new_ob, 0)
+                _, mod_1, mod_2 = agent.get_syn_rew(_ob[None], _ac[None], _new_ob[None],
+                                                    monitor_mods=agent.hps.monitor_mods)
+            else:
+                _, mod_1, mod_2 = agent.get_syn_rew(ob[None], ac[None], new_ob[None],
+                                                    monitor_mods=agent.hps.monitor_mods)
+
+            mod_1 = np.asscalar(mod_1.cpu().numpy().flatten())
+            mod_2 = np.asscalar(mod_2.cpu().numpy().flatten())
+
         if render:
             env.render()
 
@@ -221,6 +242,11 @@ def ep_generator(env, agent, render, record):
         cur_ep_len += 1
         cur_ep_env_ret += env_rew
         ob = np.array(deepcopy(new_ob))
+
+        if agent.hps.monitor_mods:
+            mods_1.append(mod_1)
+            mods_2.append(mod_2)
+
         if done:
             obs = np.array(obs)
             if record:
@@ -235,6 +261,12 @@ def ep_generator(env, agent, render, record):
             if record:
                 out.update({"obs_render": obs_render})
 
+            if agent.hps.monitor_mods:
+                mods_1 = np.array(mods_1)
+                mods_2 = np.array(mods_2)
+                out.update({"mods_1": mods_1,
+                            "mods_2": mods_2})
+
             yield out
 
             cur_ep_len = 0
@@ -244,6 +276,9 @@ def ep_generator(env, agent, render, record):
                 obs_render = []
             acs = []
             env_rews = []
+            if agent.hps.monitor_mods:
+                mods_1 = []
+                mods_2 = []
             ob = np.array(env.reset())
 
             if record:
@@ -474,6 +509,9 @@ def learn(args,
                     # Aggregate data collected during the evaluation to the buffers
                     d['eval_len'].append(eval_ep['ep_len'])
                     d['eval_env_ret'].append(eval_ep['ep_env_ret'])
+                    if agent.hps.monitor_mods:  # FIXME
+                        d['mod_1'].extend(eval_ep['mods_1'])
+                        d['mod_2'].extend(eval_ep['mods_2'])
 
         # Increment counters
         iters_so_far += 1
@@ -485,6 +523,9 @@ def learn(args,
             logger.record_tabular('timestep', timesteps_so_far)
             logger.record_tabular('eval_len', np.mean(d['eval_len']))
             logger.record_tabular('eval_env_ret', np.mean(d['eval_env_ret']))
+            if agent.hps.monitor_mods:  # FIXME
+                logger.record_tabular('mod_1', np.mean(d['mod_1']))
+                logger.record_tabular('mod_2', np.mean(d['mod_2']))
             if agent.hps.kye_p and agent.hps.adaptive_aux_scaling:
                 logger.record_tabular('cos_sim_p', np.mean(d['cos_sims_p']))
             logger.info("dumping stats in .csv file")
@@ -523,6 +564,10 @@ def learn(args,
             wandb.log({'eval_len': np.mean(d['eval_len']),
                        'eval_env_ret': np.mean(d['eval_env_ret'])},
                       step=timesteps_so_far)
+            if agent.hps.monitor_mods:  # FIXME
+                wandb.log({'mod_1': np.mean(d['mod_1']),
+                           'mod_2': np.mean(d['mod_2'])},
+                          step=timesteps_so_far)
 
             # Clear the iteration's running stats
             d.clear()

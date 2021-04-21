@@ -51,7 +51,7 @@ ENV_BUNDLES = {
     },
 }
 
-MEMORY = 32
+MEMORY = 16
 
 
 class Spawner(object):
@@ -63,8 +63,7 @@ class Spawner(object):
         self.config = yaml.safe_load(open(self.args.config))
 
         # Check if we need expert demos
-        self.need_demos = self.config['meta']['algo'] == 'gail'
-        assert not self.need_demos or self.config['offline']
+        self.need_demos = self.config['meta']['algo'] == 'sam-dac'
         if self.need_demos:
             self.num_demos = [int(i) for i in self.args.num_demos]
         else:
@@ -87,7 +86,7 @@ class Spawner(object):
                           'n_step_returns', 'ret_norm', 'popart',
                           'clipped_double', 'targ_actor_smoothing', 'use_c51', 'use_qr',
                           'state_only', 'minimax_only', 'spectral_norm', 'grad_pen', 'one_sided_pen',
-                          'wrap_absorb', 'd_batch_norm', 'historical_patching',
+                          'wrap_absorb', 'd_batch_norm', 'historical_patching', 'monitor_mods',
                           'kye_p', 'kye_mixing', 'adaptive_aux_scaling',
                           'red_batch_norm', 'rnd_explo', 'rnd_batch_norm',
                           'kye_batch_norm', 'dyn_batch_norm', 'use_purl']
@@ -258,6 +257,7 @@ class Spawner(object):
                 'adaptive_aux_scaling': self.config.get('adaptive_aux_scaling', False),
 
                 'reward_type': self.config.get('reward_type', 'gail'),
+                'monitor_mods': self.config.get('monitor_mods', False),
 
                 'red_epochs': self.config.get('red_epochs', 200),
                 'red_lr': self.config.get('red_lr', 5e-4),
@@ -365,6 +365,7 @@ class Spawner(object):
                 'adaptive_aux_scaling': self.config.get('adaptive_aux_scaling', False),
 
                 'reward_type': self.config.get('reward_type', 'gail'),
+                'monitor_mods': self.config.get('monitor_mods', False),
 
                 'red_epochs': self.config.get('red_epochs', 200),
                 'red_lr': self.config.get('red_lr', 5e-4),
