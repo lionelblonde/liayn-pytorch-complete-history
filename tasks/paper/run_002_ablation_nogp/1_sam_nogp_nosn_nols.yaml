@@ -69,9 +69,9 @@ d_lr: 5.0e-4
 state_only: false
 minimax_only: true
 ent_reg_scale: 0.001
-spectral_norm: true
-grad_pen: true
-grad_pen_type: 'nagard'
+spectral_norm: false
+grad_pen: false
+grad_pen_type: 'wgan'
 grad_pen_targ: 1.
 grad_pen_scale: 10.
 one_sided_pen: false
@@ -86,7 +86,7 @@ kye_p_scale: 1.
 kye_mixing: false
 adaptive_aux_scaling: false
 
-reward_type: 'gail_mod'
+reward_type: 'gail'
 monitor_mods: true
 
 red_epochs: 200

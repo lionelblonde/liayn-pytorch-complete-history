@@ -31,6 +31,18 @@ def huber_quant_reg_loss(td_errors, quantile, kappa=1.0):
     return torch.abs(quantile - ((td_errors.le(0.)).float())) * aux / kappa
 
 
+def smooth_out_w_ema(elist, weight):
+    """Exponential moving average"""
+    assert 0. <= weight <= 1.
+    acc = elist[0]  # accumulator
+    smoothed_elist = []
+    for e in elist:
+        smoothed_e = acc * weight + (1 - weight) * e
+        smoothed_elist.append(smoothed_e)
+        acc = smoothed_e
+    return smoothed_elist
+
+
 class LRScheduler(object):
 
     def __init__(self, optimizer, initial_lr, lr_schedule, total_num_steps, kwargs=None):

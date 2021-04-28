@@ -17,6 +17,11 @@ ENV_BUNDLES = {
         'debug': ['Hopper-v3'],
         'eevee': ['InvertedPendulum-v2',
                   'InvertedDoublePendulum-v2'],
+        'jolteon': ['Hopper-v3',
+                    'Walker2d-v3',
+                    'HalfCheetah-v3'],
+        'flareon': ['InvertedDoublePendulum-v2',
+                    'Ant-v3'],
         'glaceon': ['Hopper-v3',
                     'Walker2d-v3',
                     'HalfCheetah-v3',
@@ -145,6 +150,12 @@ class Spawner(object):
         hpmap_.update({'env_id': env})
         if self.need_demos:
             hpmap_.update({'expert_path': self.demos[env]})
+        # Overwrite discount factor per environment
+        if env == 'Hopper-v3':
+            old_gamma = hpmap_['gamma']
+            new_gamma = 0.995
+            logger.info(f"overwrite discount for {env}: {old_gamma} -> {new_gamma}")
+            hpmap_.update({'gamma': 0.995})
         return hpmap_
 
     def copy_and_add_num_demos(self, hpmap, num_demos):
