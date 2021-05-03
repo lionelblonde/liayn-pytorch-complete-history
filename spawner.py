@@ -15,6 +15,7 @@ from helpers.experiment import uuid as create_uuid
 ENV_BUNDLES = {
     'mujoco': {
         'debug': ['Hopper-v3'],
+        'idp': ['InvertedDoublePendulum-v2'],
         'eevee': ['InvertedPendulum-v2',
                   'InvertedDoublePendulum-v2'],
         'jolteon': ['Hopper-v3',
@@ -95,7 +96,7 @@ class Spawner(object):
                           'kye_p', 'kye_mixing', 'adaptive_aux_scaling',
                           'red_batch_norm', 'use_purl']
 
-        if self.args.deployment == 'slurm':
+        if 'slurm' in self.args.deployment:
             # Translate intuitive 'caliber' into actual duration and partition on the Baobab cluster
             calibers = dict(short='0-06:00:00',
                             long='0-12:00:00',
@@ -267,6 +268,7 @@ class Spawner(object):
                 'adaptive_aux_scaling': self.config.get('adaptive_aux_scaling', False),
 
                 'reward_type': self.config.get('reward_type', 'gail'),
+                'f_grad_pen_targ': self.config.get('f_grad_pen_targ', 9.0),
                 'monitor_mods': self.config.get('monitor_mods', False),
 
                 'red_epochs': self.config.get('red_epochs', 200),
@@ -365,6 +367,7 @@ class Spawner(object):
                 'adaptive_aux_scaling': self.config.get('adaptive_aux_scaling', False),
 
                 'reward_type': self.config.get('reward_type', 'gail'),
+                'f_grad_pen_targ': self.config.get('f_grad_pen_targ', 9.0),
                 'monitor_mods': self.config.get('monitor_mods', False),
 
                 'red_epochs': self.config.get('red_epochs', 200),
@@ -420,7 +423,7 @@ class Spawner(object):
         # Prepend python command with python binary path
         command = os.path.join(os.environ['CONDA_PREFIX'], "bin", command)
 
-        if self.args.deployment == 'slurm':
+        if 'slurm' in self.args.deployment:
             os.makedirs("./out", exist_ok=True)
             # Set sbatch config
             bash_script_str = ('#!/usr/bin/env bash\n\n')
@@ -430,22 +433,28 @@ class Spawner(object):
                                 "#SBATCH --cpus-per-task=1\n"
                                 f"#SBATCH --time={self.duration}\n"
                                 f"#SBATCH --mem={self.memory}000\n"
-                                "#SBATCH --output=./out/run_%j.out\n"
-                                '#SBATCH --constraint="V3|V4|V5|V6|V7"\n')  # single quote to escape
+                                "#SBATCH --output=./out/run_%j.out\n")
+            if self.args.deployment == 'slurm':
+                bash_script_str += '#SBATCH --constraint="V3|V4|V5|V6|V7"\n'  # single quote to escape
+
             if self.config['resources']['cuda']:
-                contraint = "COMPUTE_CAPABILITY_6_0|COMPUTE_CAPABILITY_6_1"
-                bash_script_str += ("#SBATCH --gres=gpu:1\n"
-                                    f'#SBATCH --constraint="{contraint}"\n')  # single quote to escape
+                bash_script_str += f'#SBATCH --gres=gpu:"{self.args.num_workers}"\n'  # single quote to escape
+                if self.args.deployment == 'slurm':
+                    contraint = "COMPUTE_CAPABILITY_6_0|COMPUTE_CAPABILITY_6_1"
+                    bash_script_str += f'#SBATCH --constraint="{contraint}"\n'  # single quote to escape
             bash_script_str += ('\n')
             # Load modules
             bash_script_str += ("module load GCC/8.3.0 OpenMPI/3.1.4\n")
             if self.config['meta']['benchmark'] == 'dmc':  # legacy comment: needed for dmc too
                 bash_script_str += ("module load Mesa/19.2.1\n")
             if self.config['resources']['cuda']:
-                bash_script_str += ("module load CUDA\n")
+                bash_script_str += ("module load CUDA/11.1.1\n")
             bash_script_str += ('\n')
             # Launch command
-            bash_script_str += (f"srun {command}")
+            if self.args.deployment == 'slurm':
+                bash_script_str += (f"srun {command}")
+            else:
+                bash_script_str += (f"mpirun {command}")
 
         elif self.args.deployment == 'tmux':
             # Set header
@@ -559,7 +568,8 @@ if __name__ == "__main__":
     parser.add_argument('--conda_env', type=str, default=None)
     parser.add_argument('--env_bundle', type=str, default=None)
     parser.add_argument('--num_workers', type=int, default=None)
-    parser.add_argument('--deployment', type=str, choices=['tmux', 'slurm'], default='tmux', help='deploy how?')
+    parser.add_argument('--deployment', type=str, choices=['tmux', 'slurm', 'slurm2'],
+                        default='tmux', help='deploy how?')
     parser.add_argument('--num_seeds', type=int, default=None)
     parser.add_argument('--caliber', type=str, default=None)
     boolean_flag(parser, 'deploy_now', default=True, help="deploy immediately?")

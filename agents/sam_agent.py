@@ -206,10 +206,6 @@ class SAMAgent(object):
                                                              metrics['loss']))
             logger.info("RED training ends")
 
-        if self.hps.monitor_mods or self.hps.reward_type == 'gail_mod_r':
-            self.grad_pen_r_deque = deque(maxlen=10)
-            self.rms_grad_pen_r = RunMoms(shape=(1,), use_mpi=False)
-
         if self.hps.monitor_mods or self.hps.reward_type == 'gail_mod_f':
             self.hps.forward_batch_norm = True
             self.forward = Forward(
@@ -218,8 +214,8 @@ class SAMAgent(object):
                 self.hps,
                 self.rms_obs,
             )
-            self.grads_norm_f_deque = deque(maxlen=10)
-            self.rms_grads_norm_f = RunMoms(shape=(1,), use_mpi=False)
+            self.grad_pen_f_deque = deque(maxlen=10)
+            self.rms_grad_pen_f = RunMoms(shape=(1,), use_mpi=False)
 
     def norm_rets(self, x):
         """Standardize if return normalization is used, do nothing otherwise"""
@@ -920,7 +916,30 @@ class SAMAgent(object):
             grad_pen = _grad_pen.mean()
             return grad_pen
 
-    def forward_grad_pen(self, p_input_a, p_input_b):
+    def policy_grad_norm(self, p_input_a):
+        """Define the gradient penalty for the policy"""
+        input_a_i = Variable(p_input_a, requires_grad=True)
+        # Create the operation of interest
+        if self.hps.wrap_absorb:
+            input_a_i = self.remove_absorbing(input_a_i)[0][:, 0:-1]
+        pred = self.actr.act(input_a_i)
+        # Get the gradient of this operation with respect to its inputs
+        grads = autograd.grad(
+            outputs=pred,
+            inputs=[input_a_i],
+            only_inputs=True,
+            grad_outputs=[torch.ones_like(pred)],
+            retain_graph=True,
+            create_graph=True,
+            allow_unused=False,
+        )
+        assert len(list(grads)) == 1, "length must be exactly 1"
+        # Return the gradient penalty (try to induce k-Lipschitzness)
+        grads = torch.cat(list(grads), dim=-1)
+        grads_norm = grads.norm(2, dim=-1)
+        return grads_norm
+
+    def forward_grad_pen_and_norm(self, p_input_a, p_input_b):
         """Define the gradient penalty for the forward model"""
         input_a_i = Variable(p_input_a, requires_grad=True)
         input_b_i = Variable(p_input_b, requires_grad=True)
@@ -940,7 +959,10 @@ class SAMAgent(object):
         # Return the gradient penalty (try to induce k-Lipschitzness)
         grads = torch.cat(list(grads), dim=-1)
         grads_norm = grads.norm(2, dim=-1)
-        return grads_norm
+        # Penalize the gradient for having a norm GREATER than k
+        _grad_pen = torch.max(torch.zeros_like(grads_norm), grads_norm - self.hps.f_grad_pen_targ).pow(2)
+        grad_pen = _grad_pen.mean()
+        return grad_pen, grads_norm
 
     def get_syn_rew(self, state, action, next_state, monitor_mods=False):
         # Define the discriminator inputs
@@ -960,7 +982,7 @@ class SAMAgent(object):
         if self.hps.reward_type == 'red':
             red_reward = self.red.get_syn_rew(input_a, input_b)
             return red_reward
-        elif self.hps.reward_type in ['gail', 'gail_mod_r', 'gail_mod_f']:
+        elif self.hps.reward_type in ['gail', 'gail_mod_f']:
             # Compure score
             score = self.disc.D(input_a, input_b).detach().view(-1, 1)
             # Counterpart of GAN's minimax (also called "saturating") loss
@@ -981,51 +1003,41 @@ class SAMAgent(object):
                 # Numerics: might be better might be way worse
                 reward = non_satur_reward + minimax_reward
 
-            if monitor_mods or self.hps.reward_type == 'gail_mod_r':
-                # Compute modulations
+            if monitor_mods:
                 grad_pen_r = self.grad_pen('bare', input_a, input_b, None, None)
                 grad_pen_r = grad_pen_r.detach().view(-1, 1)
-                self.grad_pen_r_deque.append(grad_pen_r.mean())
-                self.rms_grad_pen_r.update(np.array(self.grad_pen_r_deque))
-                rescaled_grad_pen_r = self.rms_grad_pen_r.divide_by_std(grad_pen_r)
-
-                rescaled_mod_r = torch.exp(-rescaled_grad_pen_r)
                 mod_r = torch.exp(-grad_pen_r)
 
             if monitor_mods or self.hps.reward_type == 'gail_mod_f':
-                # Compute modulations
-                grads_norm_f = self.forward_grad_pen(input_a, input_b)
+                grad_pen_f, grads_norm_f = self.forward_grad_pen_and_norm(input_a, input_b)
+                grad_pen_f = grad_pen_f.detach().view(-1, 1)
                 grads_norm_f = grads_norm_f.detach().view(-1, 1)
-                self.grads_norm_f_deque.append(grads_norm_f.mean())
-                self.rms_grads_norm_f.update(np.array(self.grads_norm_f_deque))
+                mod_f = grads_norm_f  # for monitoring only
+                self.grad_pen_f_deque.append(grad_pen_f.mean())
+                self.rms_grad_pen_f.update(np.array(self.grad_pen_f_deque))
+                rescaled_grad_pen_f = self.rms_grad_pen_f.divide_by_std(grad_pen_f)
+                actual_mod_f = torch.clamp(torch.exp(-rescaled_grad_pen_f), min=0.7)
 
-                standardized_grads_norm_f = self.rms_grads_norm_f.standardize(grads_norm_f)
-                NUM_SIGMAS = 2
-                punish_bool = 1.0 * (torch.abs(standardized_grads_norm_f) >= NUM_SIGMAS)  # cast to float
-                REWARD_MALUS = 0.1
-                mod_f = grads_norm_f
+            if monitor_mods:
+                grads_norm_p = self.policy_grad_norm(input_a)
+                grads_norm_p = grads_norm_p.detach().view(-1, 1)
+                mod_p = grads_norm_p  # for monitoring only
 
             # Return reward
             if monitor_mods:
                 if self.hps.reward_type == 'gail':
-                    return reward, mod_r, mod_f
-                elif self.hps.reward_type == 'gail_mod_r':
-                    r_modded_reward = reward * rescaled_mod_r
-                    return r_modded_reward, mod_r, mod_f
+                    return reward, mod_r, mod_f, mod_p
                 elif self.hps.reward_type == 'gail_mod_f':
-                    f_modded_reward = reward - (punish_bool * REWARD_MALUS)
-                    return f_modded_reward, mod_r, mod_f
+                    modded_reward = reward * actual_mod_f
+                    return modded_reward, mod_r, mod_f, mod_p
                 else:
                     raise ValueError("invalid reward type (1)")
             else:
                 if self.hps.reward_type == 'gail':
                     return reward
-                elif self.hps.reward_type == 'gail_mod_r':
-                    r_modded_reward = reward * rescaled_mod_r
-                    return r_modded_reward
                 elif self.hps.reward_type == 'gail_mod_f':
-                    f_modded_reward = reward - (punish_bool * REWARD_MALUS)
-                    return f_modded_reward
+                    modded_reward = reward * actual_mod_f
+                    return modded_reward
                 else:
                     raise ValueError("invalid reward type (2)")
 

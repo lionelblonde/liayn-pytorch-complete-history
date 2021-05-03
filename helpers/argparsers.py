@@ -103,8 +103,8 @@ def argparser(description="DDPG Experiment"):
     boolean_flag(parser, 'kye_mixing', default=True)
     boolean_flag(parser, 'adaptive_aux_scaling', default=False)
 
-    parser.add_argument('--reward_type', type=str, default=None, choices=['red', 'gail',
-                                                                          'gail_mod_r', 'gail_mod_f'])
+    parser.add_argument('--reward_type', type=str, default=None, choices=['red', 'gail', 'gail_mod_f'])
+    parser.add_argument('--f_grad_pen_targ', type=float, default=9.0)
     boolean_flag(parser, 'monitor_mods', default=False)
 
     parser.add_argument('--red_epochs', type=int, default=200)

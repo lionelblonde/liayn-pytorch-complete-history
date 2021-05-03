@@ -74,7 +74,7 @@ grad_pen: true
 grad_pen_type: 'wgan'
 grad_pen_targ: 1.
 grad_pen_scale: 10.
-one_sided_pen: false
+one_sided_pen: true
 historical_patching: true
 fake_ls_type: '"none"'
 real_ls_type: '"none"'
@@ -86,7 +86,8 @@ kye_p_scale: 1.
 kye_mixing: false
 adaptive_aux_scaling: false
 
-reward_type: 'gail'
+reward_type: 'gail_mod_f'
+f_grad_pen_targ: 8.0
 monitor_mods: true
 
 red_epochs: 200
