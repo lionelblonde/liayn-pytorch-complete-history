@@ -22,11 +22,11 @@ def plot(args, dest_dir, ycolkey, barplot):
 
     # Font (must be first)
     font_dir = "/Users/lionelblonde/Library/Fonts/"
-    if args.font == 'Colfax':
-        f1 = fm.FontProperties(fname=osp.join(font_dir, 'Colfax-Light.otf'), size=12)
-        f2 = fm.FontProperties(fname=osp.join(font_dir, 'Colfax-Light.otf'), size=24)
-        f3 = fm.FontProperties(fname=osp.join(font_dir, 'Colfax-Regular.otf'), size=14)
-        f4 = fm.FontProperties(fname=osp.join(font_dir, 'Colfax-Medium.otf'), size=16)
+    if args.font == 'Basier':
+        f1 = fm.FontProperties(fname=osp.join(font_dir, 'BasierCircle-Regular.otf'), size=20)
+        f2 = fm.FontProperties(fname=osp.join(font_dir, 'BasierCircle-Regular.otf'), size=32)
+        f3 = fm.FontProperties(fname=osp.join(font_dir, 'BasierCircle-Regular.otf'), size=22)
+        f4 = fm.FontProperties(fname=osp.join(font_dir, 'BasierCircle-Medium.otf'), size=24)
     elif args.font == 'SourceCodePro':
         f1 = fm.FontProperties(fname=osp.join(font_dir, 'SourceCodePro-Light.otf'), size=20)
         f2 = fm.FontProperties(fname=osp.join(font_dir, 'SourceCodePro-Regular.otf'), size=32)
@@ -34,6 +34,8 @@ def plot(args, dest_dir, ycolkey, barplot):
         f4 = fm.FontProperties(fname=osp.join(font_dir, 'SourceCodePro-Medium.otf'), size=24)
     else:
         raise ValueError("invalid font")
+
+    marker_list = ['d', 'X', 'P', '*', '^', 's', 'D', 'v']
 
     # Palette
     palette = {
@@ -69,6 +71,7 @@ def plot(args, dest_dir, ycolkey, barplot):
     xcol_dump = defaultdict(list)
     ycol_dump = defaultdict(list)
     color_map = defaultdict(str)
+    marker_map = defaultdict(str)
     text_map = defaultdict(str)
     dirs = [d.split('/')[-1] for d in glob.glob(f"{args.dir}/*")]
     print(f"pulling logs from sub-directories: {dirs}")
@@ -78,6 +81,7 @@ def plot(args, dest_dir, ycolkey, barplot):
     print(dirs)
     # Colors
     colors = {d: palette['curves'][i] for i, d in enumerate(dirs)}
+    markers = {d: marker_list[i] for i, d in enumerate(dirs)}
 
     for d in dirs:
 
@@ -104,6 +108,8 @@ def plot(args, dest_dir, ycolkey, barplot):
             ycol_dump[key].append(ycol)
             # Add color
             color_map[key] = colors[d]
+            # Add marker
+            marker_map[key] = markers[d]
             # Add text
             text_map[key] = fname.split('/')[-3]
 
@@ -129,7 +135,7 @@ def plot(args, dest_dir, ycolkey, barplot):
 
     patches = [plt.plot([],
                         [],
-                        marker="o",
+                        marker=marker_list[i],
                         ms=18,
                         ls="",
                         color=palette['curves'][i],
@@ -145,18 +151,15 @@ def plot(args, dest_dir, ycolkey, barplot):
         print(f"{key}: {xmax}")
         xmaxes[key] = xmax
 
-    GRID_SIZE_X = 1
+    # Create constants from arguments to make the names more intuitive
+    GRID_SIZE_X = args.grid_height
     GRID_SIZE_Y = args.grid_width
-    if args.grid_width == 3:
-        fig, axs = plt.subplots(GRID_SIZE_X, GRID_SIZE_Y, figsize=(21, 7))
-    elif args.grid_width == 4:
-        fig, axs = plt.subplots(GRID_SIZE_X, GRID_SIZE_Y, figsize=(28, 7))
-    elif args.grid_width == 5:
-        fig, axs = plt.subplots(GRID_SIZE_X, GRID_SIZE_Y, figsize=(35, 7))
-    else:
-        raise ValueError("invalid grid width")
+    CELL_SIZE = 7
+    fig, axs = plt.subplots(GRID_SIZE_X, GRID_SIZE_Y, figsize=(CELL_SIZE * GRID_SIZE_Y, CELL_SIZE * GRID_SIZE_X))
 
     if GRID_SIZE_X == 1:
+        axs = np.expand_dims(axs, axis=0)
+    if GRID_SIZE_Y == 1:
         axs = np.expand_dims(axs, axis=0)
     for i in range(GRID_SIZE_X):
         for j in range(GRID_SIZE_Y):
@@ -213,7 +216,12 @@ def plot(args, dest_dir, ycolkey, barplot):
                     bars_errors[text_map[key]] = smooth_std[-1]
                     bars_colors[text_map[key]] = color_map[key]
                 else:
-                    ax.plot(xcol_dump[key][0][0:xmax], smooth_mean, color=color_map[key], alpha=1.0)
+                    ax.plot(xcol_dump[key][0][0:xmax], smooth_mean,
+                            marker=marker_map[key],
+                            markersize=20,
+                            markevery=args.markevery,
+                            color=color_map[key],
+                            alpha=1.0)
                     ax.fill_between(xcol_dump[key][0][0:xmax],
                                     smooth_mean - (args.stdfrac * smooth_std),
                                     smooth_mean + (args.stdfrac * smooth_std),
@@ -233,8 +241,16 @@ def plot(args, dest_dir, ycolkey, barplot):
                    yerr=[bars_errors[k] for k in sorted(list(bars_errors.keys()))],
                    color=[bars_colors[k] for k in sorted(list(bars_colors.keys()))],
                    width=0.6,
-                   alpha=0.9,
+                   alpha=0.6,
                    capsize=5)
+            for i, key in enumerate(experiment_map[env]):
+                print(key, text_map[key])
+                _x = text_map[key].split('__')[-1] if PLOT_NAME else text_map[key].split('__')[0]
+                ax.plot(_x, bars[text_map[key]],
+                        marker=marker_map[key],
+                        markersize=20,
+                        color=color_map[key],
+                        alpha=1.0)
 
         # Create the axes labels
         ax.tick_params(width=0.2, length=1, pad=1, colors=palette['axes'], labelcolor=palette['font'])
@@ -248,7 +264,7 @@ def plot(args, dest_dir, ycolkey, barplot):
             tick.set_fontproperties(f1)
         if not barplot:
             ax.set_xlabel("Timesteps", color=palette['font'], fontproperties=f3)  # , labelpad=6
-        ax.set_ylabel("Episodic Return", color=palette['font'], fontproperties=f3)  # , labelpad=12
+        ax.set_ylabel(args.ylabel, color=palette['font'], fontproperties=f3)  # , labelpad=12
         # Create title
         ax.set_title(f"{env}", color=palette['font'], fontproperties=f4, pad=-10)
 
@@ -256,10 +272,10 @@ def plot(args, dest_dir, ycolkey, barplot):
     legend = fig.legend(
         handles=patches,
         # ncol=num_cols,
-        loc='center right',
+        loc='center left',
         # borderaxespad=0,
         facecolor='w',
-        # bbox_to_anchor=(0.0, -0.01)
+        bbox_to_anchor=(1.03, 0.5)
     )
     legend.get_frame().set_linewidth(0.0)
     for text in legend.get_texts():
@@ -267,6 +283,7 @@ def plot(args, dest_dir, ycolkey, barplot):
         text.set_fontproperties(f2)
 
     fig.set_tight_layout(True)
+    fig.subplots_adjust(right=0.75)
 
     # Save figure to disk
     plt.savefig(f"{dest_dir}/plots_{ycolkey}_{'barplot' if barplot else 'plot'}.pdf",
@@ -287,7 +304,10 @@ if __name__ == "__main__":
     parser.add_argument('--stdfrac', type=float, default=1., help='std envelope fraction')
     parser.add_argument('--round', type=int, default=2, help='round logs were conducted at')
     parser.add_argument('--grid_width', type=int, default=3, help='width of the grid in number of plots')
+    parser.add_argument('--grid_height', type=int, default=3, help='height of the grid in number of plots')
     parser.add_argument('--truncate', type=int, default=-1, help='negative values prevent x truncation')
+    parser.add_argument('--ylabel', type=str, default='Episodic Return', help='Y-axis label')
+    parser.add_argument('--markevery', type=int, default=124, help='how often to put a mark')
     args = parser.parse_args()
 
     # Create unique destination dir name

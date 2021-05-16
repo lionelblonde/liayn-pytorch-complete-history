@@ -16,6 +16,7 @@ ENV_BUNDLES = {
     'mujoco': {
         'debug': ['Hopper-v3'],
         'idp': ['InvertedDoublePendulum-v2'],
+        'walker': ['Walker2d-v3'],
         'eevee': ['InvertedPendulum-v2',
                   'InvertedDoublePendulum-v2'],
         'jolteon': ['Hopper-v3',
