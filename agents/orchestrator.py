@@ -495,8 +495,6 @@ def learn(args,
                                 d['twin_losses'].append(metrics['twin_loss'])
                             if agent.hps.prioritized_replay:
                                 iws = metrics['iws']  # last one only
-                            if agent.hps.kye_p and agent.hps.adaptive_aux_scaling:
-                                d['cos_sims_p'].append(metrics['cos_sim_aux'])
 
                     for _ in range(agent.hps.d_steps):
                         # Sample a batch of transitions from the replay buffer
@@ -540,8 +538,6 @@ def learn(args,
                 logger.record_tabular('mod_2', _mod_2)
                 logger.record_tabular('mod_3', _mod_3)
                 logger.record_tabular('gamma2c', gamma2c)
-            if agent.hps.kye_p and agent.hps.adaptive_aux_scaling:
-                logger.record_tabular('cos_sim_p', np.mean(d['cos_sims_p']))
             logger.info("dumping stats in .csv file")
             logger.dump_tabular()
 
@@ -571,9 +567,6 @@ def learn(args,
             if args.algo.split('_')[0] == 'sam-dac':
                 wandb.log({'disc_loss': np.mean(d['disc_losses'])},
                           step=timesteps_so_far)
-                if agent.hps.kye_p and agent.hps.adaptive_aux_scaling:
-                    wandb.log({'cos_sim_p': np.mean(d['cos_sims_p'])},
-                              step=timesteps_so_far)
 
             wandb.log({'eval_len': np.mean(d['eval_len']),
                        'eval_env_ret': np.mean(d['eval_env_ret'])},

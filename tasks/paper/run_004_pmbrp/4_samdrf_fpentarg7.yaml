@@ -81,11 +81,6 @@ real_ls_type: '"none"'
 wrap_absorb: true
 d_batch_norm: false
 
-kye_p: false
-kye_p_scale: 1.
-kye_mixing: false
-adaptive_aux_scaling: false
-
 reward_type: 'gail_mod_f'
 f_grad_pen_targ: 7.0
 monitor_mods: true

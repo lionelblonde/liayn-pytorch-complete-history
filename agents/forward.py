@@ -75,7 +75,7 @@ class Forward(object):
         # Create optimizer
         self.optimizer = torch.optim.Adam(self.pred_net.parameters(), lr=self.hps.actor_lr)  # using actor lr
 
-        log_module_info(logger, 'KYE Pred Network', self.pred_net)
+        log_module_info(logger, 'Forward Pred Network', self.pred_net)
 
     def update(self, state, action, next_state):
         """Update the dynamics predictor network"""

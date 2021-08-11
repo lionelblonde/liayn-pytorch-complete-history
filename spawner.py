@@ -94,7 +94,6 @@ class Spawner(object):
                           'clipped_double', 'targ_actor_smoothing', 'use_c51', 'use_qr',
                           'state_only', 'minimax_only', 'spectral_norm', 'grad_pen', 'one_sided_pen',
                           'wrap_absorb', 'd_batch_norm', 'historical_patching', 'monitor_mods',
-                          'kye_p', 'kye_mixing', 'adaptive_aux_scaling',
                           'red_batch_norm', 'use_purl']
 
         if 'slurm' in self.args.deployment:
@@ -263,11 +262,6 @@ class Spawner(object):
                 'wrap_absorb': self.config.get('wrap_absorb', False),
                 'd_batch_norm': self.config.get('d_batch_norm', False),
 
-                'kye_p': self.config.get('kye_p', False),
-                'kye_p_scale': np.random.choice([0.01, 0.1, 0.5]),
-                'kye_mixing': self.config.get('kye_mixing', False),
-                'adaptive_aux_scaling': self.config.get('adaptive_aux_scaling', False),
-
                 'reward_type': self.config.get('reward_type', 'gail'),
                 'f_grad_pen_targ': self.config.get('f_grad_pen_targ', 9.0),
                 'monitor_mods': self.config.get('monitor_mods', False),
@@ -361,11 +355,6 @@ class Spawner(object):
                 'real_ls_type': self.config.get('real_ls_type', 'random-uniform_0.7_1.2'),
                 'wrap_absorb': self.config.get('wrap_absorb', False),
                 'd_batch_norm': self.config.get('d_batch_norm', False),
-
-                'kye_p': self.config.get('kye_p', False),
-                'kye_p_scale': self.config.get('kye_p_scale', 0.1),
-                'kye_mixing': self.config.get('kye_mixing', False),
-                'adaptive_aux_scaling': self.config.get('adaptive_aux_scaling', False),
 
                 'reward_type': self.config.get('reward_type', 'gail'),
                 'f_grad_pen_targ': self.config.get('f_grad_pen_targ', 9.0),

@@ -142,42 +142,20 @@ class Actor(nn.Module):
             ]))),
         ]))
         self.a_head = nn.Linear(200, ac_dim)
-        if self.hps.kye_p:
-            self.r_fc_stack = nn.Sequential(OrderedDict([
-                ('fc_block_1', nn.Sequential(OrderedDict([
-                    ('fc', nn.Linear(300, 200)),
-                    ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(200)),
-                    ('nl', nn.ReLU()),
-                ]))),
-            ]))
-            self.r_head = nn.Linear(200, 1)
         # Perform initialization
         self.fc_stack.apply(init(weight_scale=math.sqrt(2)))
         self.a_fc_stack.apply(init(weight_scale=math.sqrt(2)))
         self.a_head.apply(init(weight_scale=0.01))
-        if self.hps.kye_p:
-            self.r_fc_stack.apply(init(weight_scale=math.sqrt(2)))
-            self.r_head.apply(init(weight_scale=0.01))
 
     def act(self, ob):
         out = self.forward(ob)
         return out[0]  # ac
-
-    def auxo(self, ob):
-        if self.hps.kye_p:
-            out = self.forward(ob)
-            return out[1]  # aux
-        else:
-            raise ValueError("should not be called")
 
     def forward(self, ob):
         ob = self.rms_obs.standardize(ob).clamp(*STANDARDIZED_OB_CLAMPS)
         x = self.fc_stack(ob)
         ac = float(self.ac_max) * torch.tanh(self.a_head(self.a_fc_stack(x)))
         out = [ac]
-        if self.hps.kye_p:
-            aux = self.r_head(self.r_fc_stack(x))
-            out.append(aux)
         return out
 
     @property
